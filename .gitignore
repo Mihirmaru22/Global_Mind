@@ -26,3 +26,4 @@ data/qdrant_local/
 .DS_Store
 Thumbs.db
 docs
+data/
