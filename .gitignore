@@ -25,3 +25,4 @@ data/qdrant_local/
 # OS
 .DS_Store
 Thumbs.db
+docs

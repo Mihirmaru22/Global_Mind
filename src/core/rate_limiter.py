@@ -91,8 +91,8 @@ class RateLimiter:
             # Check backoff
             if now < state.backoff_until:
                 wait = state.backoff_until - now
-                logger.info("Rate limiter: waiting %.1fs for %s backoff", wait, provider)
-                await asyncio.sleep(wait)
+                logger.info("Rate limiter: provider %s is in backoff (%.1fs remaining) — rejecting to trigger fallback", provider, wait)
+                raise RuntimeError(f"Provider '{provider}' is currently rate-limited (backoff).")
 
             # Prune old timestamps (older than 60s)
             cutoff = now - 60.0
@@ -103,8 +103,8 @@ class RateLimiter:
                 oldest = state.request_timestamps[0]
                 wait = 60.0 - (now - oldest) + 0.1  # small buffer
                 if wait > 0:
-                    logger.info("Rate limiter: waiting %.1fs for %s RPM", wait, provider)
-                    await asyncio.sleep(wait)
+                    logger.info("Rate limiter: provider %s RPM exhausted (wait %.1fs) — rejecting to trigger fallback", provider, wait)
+                    raise RuntimeError(f"Provider '{provider}' RPM limit exhausted.")
 
             # Record this request
             state.request_timestamps.append(time.time())

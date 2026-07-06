@@ -118,7 +118,7 @@ class EmbeddingService:
 
         all_dense: list[list[float]] = []
         all_sparse: list[SparseVector] = []
-        batch_size = 32  # Jina's recommended batch size
+        batch_size = 64  # Increased for faster ingestion
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]

@@ -167,7 +167,7 @@ Head back to `http://localhost:8000`, open a chat, and ask deep analytical quest
 
 - **RAG Limits:** You can tweak the context limits (e.g., retrieving 50 chunks, reranking to 25) in `src/core/config.py`.
 - **Dynamic Routing Rules:** Model routing priorities and fallback chains can be edited entirely without touching Python code by updating `config/providers.yaml`.
-- **State Persistence:** UI state (chats, messages) is managed locally via JSON files in the `/data` directory using file-level advisory locks (`fcntl.flock`) for concurrency safety—meaning zero database setup is required.
+- **State Persistence:** Data persistence completely avoids SQL databases for application state. UI state is managed via flat JSON files (`/data`), and vectors are handled by Qdrant (cloud or local). (Note: A Text-to-SQL branch is supported for querying live operational data, but the core system state remains JSON-backed).
 
 ## 📚 Architecture Details
 For a deep dive into the internal mechanics, state management, and file structure of GlobleMind, please read the comprehensive **[ARCHITECTURE.md](ARCHITECTURE.md)** file included in this repository.

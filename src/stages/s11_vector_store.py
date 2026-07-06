@@ -18,6 +18,11 @@ from src.stages.s10_embeddings import SparseVector
 
 logger = logging.getLogger(__name__)
 
+# Module-level singletons — shared across all QdrantStore instances in the
+# same process so _ensure_collection() only runs once and never wipes data.
+_global_client: Any = None
+_global_has_sparse: bool = False
+
 
 @runtime_checkable
 class VectorStore(Protocol):
@@ -60,48 +65,61 @@ class QdrantStore:
     ) -> None:
         self._collection_name = collection_name
         self._vector_size = vector_size
-        self._client: Any = None  # qdrant_client.AsyncQdrantClient
         self._has_sparse: bool = False  # Set True once sparse collection is confirmed
 
     async def _get_client(self) -> Any:
-        if self._client is None:
+        global _global_client, _global_has_sparse
+        if _global_client is None:
             from qdrant_client import AsyncQdrantClient
 
             if settings.qdrant_url and settings.qdrant_api_key:
-                self._client = AsyncQdrantClient(
+                _global_client = AsyncQdrantClient(
                     url=settings.qdrant_url,
                     api_key=settings.qdrant_api_key,
                 )
             else:
                 # Local in-memory for dev/testing
-                self._client = AsyncQdrantClient(location=":memory:")
+                _global_client = AsyncQdrantClient(location=":memory:")
                 logger.info("Using in-memory Qdrant (no QDRANT_URL configured)")
 
-            await self._ensure_collection()
+            await self._ensure_collection(_global_client)
 
-        return self._client
+        self._has_sparse = _global_has_sparse
+        return _global_client
 
-    async def _ensure_collection(self) -> None:
+    async def _ensure_collection(self, client: Any) -> None:
         """Create collection with both dense and sparse vector support.
 
         If the collection already exists, check whether it already has
         the sparse vector config. If not (legacy collection), recreate it.
+
+        NOTE: sparse_vectors_config from qdrant_client is a Pydantic model,
+        not a plain dict — use hasattr() to check for keys safely.
         """
+        global _global_has_sparse
         from qdrant_client.models import (
             Distance,
             SparseVectorParams,
             VectorParams,
         )
 
-        client = self._client
         collections = await client.get_collections()
         existing_names = [c.name for c in collections.collections]
 
         if self._collection_name in existing_names:
-            # Check if existing collection has sparse vector support
+            # Check if existing collection has sparse vector support.
+            # In qdrant_client, sparse vectors live at:
+            #   info.config.params.sparse_vectors  (a plain dict, may be None)
+            # NOT at info.config.sparse_vectors_config (that field is always None).
             info = await client.get_collection(self._collection_name)
-            sparse_config = getattr(info.config, "sparse_vectors_config", None)
-            if sparse_config and "text_sparse" in (sparse_config or {}):
+            sparse_vectors = getattr(info.config.params, "sparse_vectors", None)
+
+            has_sparse_field = bool(
+                sparse_vectors and "text_sparse" in sparse_vectors
+            )
+
+            if has_sparse_field:
+                _global_has_sparse = True
                 self._has_sparse = True
                 logger.info(
                     "Collection '%s' already exists with sparse support",
@@ -127,6 +145,7 @@ class QdrantStore:
                 "text_sparse": SparseVectorParams(),
             },
         )
+        _global_has_sparse = True
         self._has_sparse = True
         logger.info(
             "Created Qdrant collection '%s' (vector_size=%d, sparse=True)",

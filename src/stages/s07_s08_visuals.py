@@ -21,6 +21,9 @@ from src.models.schemas import FigureData, PageContent, ParsedDocument
 logger = logging.getLogger(__name__)
 
 
+_STAGE_TIMEOUT = 120.0  # seconds for the entire visual analysis stage
+
+
 async def analyze_visuals(
     document: ParsedDocument,
     router: ProviderRouter,
@@ -28,7 +31,29 @@ async def analyze_visuals(
     """Extract and analyze charts, graphs, and images from document pages.
 
     Runs on pages that have embedded images detected by PyMuPDF.
+    Enforces a per-image timeout (30s) and an overall stage timeout (120s)
+    so that provider 503s / hangs can never block the ingestion pipeline.
     """
+    import asyncio
+
+    try:
+        return await asyncio.wait_for(
+            _analyze_visuals_impl(document, router),
+            timeout=_STAGE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Visual analysis timed out after %.0fs for '%s' — continuing without figures",
+            _STAGE_TIMEOUT, document.file_path,
+        )
+        return document
+
+
+async def _analyze_visuals_impl(
+    document: ParsedDocument,
+    router: ProviderRouter,
+) -> ParsedDocument:
+    """Internal implementation of analyze_visuals (wrapped by timeout above)."""
     if not document.file_path.lower().endswith(".pdf"):
         # For non-PDFs, visual analysis happens during Stage 3 parsing
         # (e.g., PPTX slides rendered to images)
@@ -53,6 +78,7 @@ async def analyze_visuals(
         import asyncio
 
         semaphore = asyncio.Semaphore(3)
+        _VISION_TIMEOUT = 30.0  # seconds per image — prevents hung 503s from blocking
 
         async def process_figure(fig_idx: int, img_info: tuple) -> FigureData | None:
             xref = img_info[0]
@@ -74,12 +100,25 @@ async def analyze_visuals(
                 is_chart = _likely_chart(width, height)
 
                 async with semaphore:
-                    if is_chart:
-                        description = await _analyze_chart(image_data, mime_type, router)
-                        task_used = "chart_analysis"
-                    else:
-                        description = await _analyze_image(image_data, mime_type, router)
-                        task_used = "image_understanding"
+                    try:
+                        if is_chart:
+                            description = await asyncio.wait_for(
+                                _analyze_chart(image_data, mime_type, router),
+                                timeout=_VISION_TIMEOUT,
+                            )
+                            task_used = "chart_analysis"
+                        else:
+                            description = await asyncio.wait_for(
+                                _analyze_image(image_data, mime_type, router),
+                                timeout=_VISION_TIMEOUT,
+                            )
+                            task_used = "image_understanding"
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Vision timeout (>%.0fs) for xref %d on page %d — skipping",
+                            _VISION_TIMEOUT, xref, page_content.page_number,
+                        )
+                        return None
 
                 return FigureData(
                     page_number=page_content.page_number,
@@ -94,8 +133,11 @@ async def analyze_visuals(
                 return None
 
         tasks = [process_figure(fig_idx, img_info) for fig_idx, img_info in enumerate(images)]
-        results = await asyncio.gather(*tasks)
-        figures = [r for r in results if r is not None]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        figures = [
+            r for r in results
+            if r is not None and not isinstance(r, BaseException)
+        ]
 
         if figures:
             document.pages[idx].figures = figures

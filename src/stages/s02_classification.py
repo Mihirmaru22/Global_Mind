@@ -167,20 +167,32 @@ async def classify_semantic(
         return DocumentType.SPREADSHEET
 
     # Truncate to ~2000 chars — enough for classification, cheap on tokens
-    sample = text_sample[:2000]
+    sample = text_sample[:2000].lower()
 
     if not sample.strip():
         logger.info("No text available for semantic classification — defaulting to GENERAL")
         return DocumentType.GENERAL
 
+    # Local heuristic fast-path for common types
+    if "abstract" in sample and "introduction" in sample and "references" in sample:
+        return DocumentType.SCIENTIFIC_PAPER
+    if "invoice" in sample and ("total" in sample or "due" in sample or "tax" in sample):
+        return DocumentType.INVOICE
+    if "financial" in sample and ("revenue" in sample or "earnings" in sample or "quarterly" in sample):
+        return DocumentType.FINANCIAL_REPORT
+
     try:
-        response = await router.chat(
-            "semantic_classification",
-            messages=[
-                {"role": "user", "content": _CLASSIFICATION_PROMPT.format(text=sample)},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=100,
+        import asyncio
+        response = await asyncio.wait_for(
+            router.chat(
+                "semantic_classification",
+                messages=[
+                    {"role": "user", "content": _CLASSIFICATION_PROMPT.format(text=text_sample[:2000])},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=100,
+            ),
+            timeout=10.0,
         )
 
         data = json.loads(response)
@@ -196,6 +208,9 @@ async def classify_semantic(
         logger.info("Semantic classification: %s (confidence: %.2f)", doc_type.value, confidence)
         return doc_type
 
+    except asyncio.TimeoutError:
+        logger.warning("Semantic classification timed out — defaulting to GENERAL")
+        return DocumentType.GENERAL
     except Exception as e:
         logger.warning("Semantic classification failed: %s — defaulting to GENERAL", e)
         return DocumentType.GENERAL

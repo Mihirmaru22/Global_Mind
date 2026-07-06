@@ -125,3 +125,12 @@ tasks:
       - provider: gemini
         model: gemini-2.5-flash-lite
         priority: 2
+
+  classification:
+    providers:
+      - provider: groq
+        model: llama-3.1-8b-instant
+        priority: 1
+      - provider: gemini
+        model: gemini-2.5-flash-lite
+        priority: 2

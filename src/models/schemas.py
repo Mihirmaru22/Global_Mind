@@ -140,6 +140,7 @@ class ChunkType(str, Enum):
     HEADING = "heading"
     CODE = "code"
     KEY_VALUE = "key_value"
+    SQL_RESULT = "sql_result"
 
 
 class Chunk(BaseModel):

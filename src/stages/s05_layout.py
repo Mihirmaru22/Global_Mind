@@ -145,13 +145,20 @@ Rules:
 Output the structured Markdown:"""
 
     try:
-        return await router.vision(
-            "layout_analysis",
-            image_data,
-            prompt,
-            mime_type="image/png",
-            max_tokens=8192,
+        import asyncio
+        return await asyncio.wait_for(
+            router.vision(
+                "layout_analysis",
+                image_data,
+                prompt,
+                mime_type="image/png",
+                max_tokens=8192,
+            ),
+            timeout=30.0,
         )
+    except asyncio.TimeoutError:
+        logger.warning("Vision layout analysis timed out for page %d", page_number)
+        return ""
     except Exception as e:
         logger.warning("Vision layout analysis failed for page %d: %s", page_number, e)
         return ""

@@ -87,16 +87,6 @@ async def get_messages(chat_id: str) -> list[dict[str, Any]]:
     return state_manager.get_messages(chat_id)
 
 
-# Module-level singleton — rate limiter state and HTTP clients persist across requests.
-_query_pipeline: QueryPipeline | None = None
-
-def _get_pipeline() -> QueryPipeline:
-    global _query_pipeline
-    if _query_pipeline is None:
-        _query_pipeline = QueryPipeline()
-    return _query_pipeline
-
-
 @router.post("/chats/{chat_id}/messages")
 async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
     """Send a message to a chat, process it via RAG, and return the response."""
@@ -111,9 +101,11 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
     state_manager.add_message(chat_id, user_message)
 
     try:
-        # Run the RAG pipeline
-        pipeline = _get_pipeline()
+        # Fresh pipeline per request — avoids accumulated RateLimiter backoff
+        # bleeding across unrelated queries and biasing provider selection.
+        pipeline = QueryPipeline()
         result = await pipeline.query(msg.message)
+
         
         # Save the assistant's message
         assistant_message = {
@@ -157,7 +149,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
     }
     state_manager.add_message(chat_id, user_message)
 
-    pipeline = _get_pipeline()
+    pipeline = QueryPipeline()
     
     async def event_generator():
         try:

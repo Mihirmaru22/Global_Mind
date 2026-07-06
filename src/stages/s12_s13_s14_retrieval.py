@@ -50,6 +50,7 @@ class Retriever:
         query: str,
         top_k: int = 30,
         filters: dict[str, Any] | None = None,
+        exhaustive: bool = False,
     ) -> list[RetrievedChunk]:
         """Retrieve the top-k most relevant chunks for a query.
 
@@ -58,10 +59,14 @@ class Retriever:
             top_k: Number of results to retrieve.
             filters: Optional metadata filter dict. Supported keys:
                      document_type, source_file, page_number, document_id, chunk_type.
+            exhaustive: When True, boosts top_k and disables per-document caps to
+                        maximise recall for "list all X" style queries.
 
         Returns:
             List of RetrievedChunk sorted by descending relevance score.
         """
+        effective_top_k = min(top_k * 2, 120) if exhaustive else top_k
+
         # Get dense + sparse query embeddings in one API call
         dense_vector, sparse_vector = await self._embeddings.embed_query(query)
 
@@ -70,7 +75,7 @@ class Retriever:
             query_vector=dense_vector,
             sparse_vector=sparse_vector,
             query_text=query,
-            top_k=top_k,
+            top_k=effective_top_k,
             filters=filters,
         )
 
@@ -202,7 +207,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=4096,
+            max_tokens=1024,
         )
 
         # Extract citations and format the answer text
@@ -266,7 +271,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=4096,
+            max_tokens=1024,
         ):
             full_answer_parts.append(chunk_text)
             yield chunk_text
@@ -299,6 +304,94 @@ def _classify_query_task(query: str) -> str:
     return "general_qa"
 
 
+_EXHAUSTIVE_KEYWORDS = [
+    "list every", "list all", "all companies", "every company", "all products",
+    "every product", "all entities", "every entity", "all mentions", "all models",
+    "every model", "all documents", "enumerate", "comprehensive list",
+    "complete list", "full list", "all names", "every name", "all people",
+    "every person", "all locations", "every location", "across all", "across documents",
+]
+
+
+def _is_exhaustive_query(query: str) -> bool:
+    """Return True if the query asks for an exhaustive enumeration."""
+    q = query.lower()
+    return any(kw in q for kw in _EXHAUSTIVE_KEYWORDS)
+
+
+def _enforce_document_diversity(
+    chunks: list[RetrievedChunk],
+    target_k: int,
+) -> list[RetrievedChunk]:
+    """Guarantee proportional document representation in the final context.
+
+    Algorithm:
+    1. Group chunks by document_id.
+    2. Compute per-document quota = ceil(target_k / num_unique_docs), min 2.
+    3. Fill slots round-robin by score, respecting per-document quota.
+    4. If slots remain after all quotas are filled, top up from leftovers.
+
+    This prevents a single high-volume or high-similarity document from
+    crowding out all chunks from other documents.
+    """
+    import math
+    from collections import defaultdict
+
+    if not chunks:
+        return chunks
+
+    # Group by document preserving score order (chunks are already sorted desc)
+    doc_buckets: dict[str, list[RetrievedChunk]] = defaultdict(list)
+    for c in chunks:
+        doc_buckets[c.chunk.document_id].append(c)
+
+    num_docs = len(doc_buckets)
+    if num_docs <= 1:
+        # Single document — no diversity enforcement needed
+        return chunks[:target_k]
+
+    # Per-document slot quota
+    quota = max(2, math.ceil(target_k / num_docs))
+    logger.debug(
+        "Document diversity: %d docs, target_k=%d, quota=%d per doc",
+        num_docs, target_k, quota,
+    )
+
+    # Fill slots: take up to `quota` from each document in round-robin passes
+    selected: list[RetrievedChunk] = []
+    pointers = {doc_id: 0 for doc_id in doc_buckets}
+    leftover: list[RetrievedChunk] = []
+
+    # Pass 1: take quota from each doc (preserving intra-doc score order)
+    for doc_id, bucket in doc_buckets.items():
+        taken = bucket[:quota]
+        selected.extend(taken)
+        leftover.extend(bucket[quota:])
+
+    # Trim to target_k
+    selected = selected[:target_k]
+
+    # Pass 2: if we still have room, fill from leftover sorted by score
+    if len(selected) < target_k:
+        leftover_sorted = sorted(leftover, key=lambda r: r.score, reverse=True)
+        selected.extend(leftover_sorted[: target_k - len(selected)])
+
+    # Re-sort the final selection by score so the LLM sees best chunks first
+    selected.sort(key=lambda r: r.score, reverse=True)
+
+    doc_counts = defaultdict(int)
+    for c in selected:
+        doc_counts[c.chunk.document_id] += 1
+    logger.info(
+        "Post-diversity chunks: %d total from %d docs — %s",
+        len(selected),
+        len(doc_counts),
+        dict(doc_counts),
+    )
+
+    return selected
+
+
 def _build_system_prompt(task: str) -> str:
     """Build a task-appropriate system prompt."""
     base = "You are a precise document analysis assistant. "
@@ -314,12 +407,27 @@ def _build_system_prompt(task: str) -> str:
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:
-    """Format retrieved chunks into a context string."""
+    """Format retrieved chunks into a context string, bounded by a token limit."""
     parts: list[str] = []
+    current_tokens = 0
+    MAX_CONTEXT_TOKENS = 6000
+
     for chunk in chunks:
         c = chunk.chunk
         header = f"[{c.chunk_id}] (page {c.page_number}, type: {c.chunk_type.value})"
-        parts.append(f"{header}\n{c.content}")
+        chunk_text = f"{header}\n{c.content}"
+        
+        # Rough token estimate
+        est_tokens = len(chunk_text) // 4
+        
+        if current_tokens + est_tokens > MAX_CONTEXT_TOKENS and parts:
+            logger.info("Context length bounded to %d tokens (dropped %d lower-ranked chunks)", 
+                       current_tokens, len(chunks) - len(parts))
+            break
+            
+        parts.append(chunk_text)
+        current_tokens += est_tokens
+
     return "\n\n---\n\n".join(parts)
 
 

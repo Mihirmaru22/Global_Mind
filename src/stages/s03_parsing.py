@@ -342,7 +342,7 @@ def _parse_xlsx(path: Path, classification: ClassificationResult) -> ParsedDocum
         page_content = PageContent(
             page_number=sheet_num,
             structure=PageStructure.NATIVE_TEXT,
-            text=f"Sheet: {sheet_name}\n" + "\n".join(rows),
+            text=f"Sheet: {sheet_name}\n\n" + "\n\n".join(rows),
             ocr_confidence=1.0,
             ocr_method="openpyxl",
         )
@@ -372,7 +372,7 @@ def _parse_csv(path: Path, classification: ClassificationResult) -> ParsedDocume
             PageContent(
                 page_number=1,
                 structure=PageStructure.NATIVE_TEXT,
-                text="\n".join(rows),
+                text="\n\n".join(rows),
                 ocr_confidence=1.0,
                 ocr_method="csv_reader",
             )
@@ -394,7 +394,7 @@ def _parse_tsv(path: Path, classification: ClassificationResult) -> ParsedDocume
             PageContent(
                 page_number=1,
                 structure=PageStructure.NATIVE_TEXT,
-                text="\n".join(rows),
+                text="\n\n".join(rows),
                 ocr_confidence=1.0,
                 ocr_method="tsv_reader",
             )
