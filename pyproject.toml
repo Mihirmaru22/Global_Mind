@@ -50,6 +50,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
+mysql = [
+    "aiomysql>=0.2",
+]
 
 [project.scripts]
 globle-mind = "src.cli:main"

@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     qdrant_api_key: str = ""
     openrouter_api_key: str = ""
 
+    # --- Live data / Text-to-SQL ---
+    # "sqlite" (default, uses the local live_data.db file) or "mysql".
+    db_engine: str = "sqlite"
+    db_host: str = ""
+    db_port: int = 3306
+    db_name: str = ""
+    db_readonly_user: str = ""
+    db_readonly_password: str = ""
+
     # --- Runtime paths ---
     upload_dir: Path = Field(default_factory=lambda: DATA_DIR / "uploads")
     processed_dir: Path = Field(default_factory=lambda: DATA_DIR / "processed")

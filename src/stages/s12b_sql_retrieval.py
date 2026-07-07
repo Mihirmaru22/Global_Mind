@@ -11,11 +11,42 @@ from typing import Any
 
 from sqlglot import parse_one, exp
 
+from src.core.config import settings
 from src.core.db_client import run_readonly_query
 from src.core.provider_client import ProviderRouter
+from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
 
 logger = logging.getLogger(__name__)
+
+
+def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -> str:
+    """Turn an engine's raw introspection rows into schema text for the NL2SQL prompt.
+
+    Pure function of (dialect profile, rows) — no instance state, no global
+    settings — so it can be unit tested directly for each engine.
+
+    SQLite's sqlite_master query already returns one full CREATE TABLE
+    statement per row. MySQL's information_schema.columns query returns
+    one row per column, so those need grouping by table first.
+    """
+    if profile.key == "sqlite":
+        return "\n\n".join(
+            row["sql"] for row in rows if row["name"] != "sqlite_sequence"
+        )
+
+    if profile.key == "mysql":
+        tables: dict[str, list[str]] = {}
+        for row in rows:
+            tables.setdefault(row["table_name"], []).append(
+                f"  {row['column_name']} {row['data_type']}"
+            )
+        return "\n\n".join(
+            f"TABLE {name} (\n" + ",\n".join(cols) + "\n)"
+            for name, cols in tables.items()
+        )
+
+    raise ValueError(f"Unsupported dialect key {profile.key!r}")
 
 class UnsafeQueryError(Exception):
     """Raised when sqlglot rejects a query (e.g. not a SELECT). Never retried."""
@@ -28,6 +59,7 @@ class SQLRetriever:
     def __init__(self, router: ProviderRouter) -> None:
         self._router = router
         self._schema_cache: str | None = None
+        self._dialect = get_dialect_profile(settings.db_engine)
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
@@ -83,18 +115,10 @@ class SQLRetriever:
         """Fetch the DB schema (cached)."""
         if self._schema_cache:
             return self._schema_cache
-            
+
         try:
-            # SQLite specific schema fetch
-            rows = await run_readonly_query(
-                "SELECT name, sql FROM sqlite_master WHERE type='table';"
-            )
-            schema_parts = []
-            for row in rows:
-                if row['name'] != 'sqlite_sequence':
-                    schema_parts.append(row['sql'])
-            
-            self._schema_cache = "\\n\\n".join(schema_parts)
+            rows = await run_readonly_query(self._dialect.schema_query)
+            self._schema_cache = format_schema_rows(self._dialect, rows)
             return self._schema_cache
         except Exception as e:
             logger.error(f"Failed to fetch schema: {e}")
@@ -102,8 +126,8 @@ class SQLRetriever:
 
     async def _generate_sql(self, query: str, schema: str, last_error: str | None = None) -> str:
         """Prompt the reasoning LLM to generate SQL."""
-        system_prompt = f"""You are a SQLite expert. 
-Given the following database schema, generate a highly optimized SQLite SELECT statement to answer the user's question.
+        system_prompt = f"""You are a {self._dialect.name} expert. 
+Given the following database schema, generate a highly optimized {self._dialect.name} SELECT statement to answer the user's question.
 Return ONLY the raw SQL query, no markdown formatting, no explanations, no backticks.
 
 Schema:
@@ -140,7 +164,7 @@ Schema:
         """Use sqlglot to parse AST and ensure it's a single SELECT statement."""
         try:
             # Parse into AST (using sqlglot)
-            ast = parse_one(sql, read="sqlite")
+            ast = parse_one(sql, read=self._dialect.sqlglot_dialect)
             
             # Must be a SELECT statement
             if not isinstance(ast, exp.Select):
