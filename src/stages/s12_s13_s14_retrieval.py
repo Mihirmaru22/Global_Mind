@@ -320,6 +320,25 @@ def _is_exhaustive_query(query: str) -> bool:
     return any(kw in q for kw in _EXHAUSTIVE_KEYWORDS)
 
 
+_VISUALIZATION_KEYWORDS = [
+    "chart", "graph", "plot", "diagram", "visualize", "visualise",
+    "visualization", "visualisation", "bar chart", "line chart", "pie chart",
+    "scatter", "histogram", "flowchart", "timeline", "trend", "breakdown",
+    "distribution", "draw", "sketch",
+]
+
+
+def _is_visualization_query(query: str) -> bool:
+    """Return True if the query asks for a chart / graph / diagram.
+
+    Used to keep document retrieval in play even when a metric keyword like
+    "total" would otherwise route the request to the SQL table alone — a
+    chart may need to draw on values that live in the uploaded documents.
+    """
+    q = query.lower()
+    return any(kw in q for kw in _VISUALIZATION_KEYWORDS)
+
+
 def _enforce_document_diversity(
     chunks: list[RetrievedChunk],
     target_k: int,
@@ -486,12 +505,24 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
     """
     import re
 
-    # A single chunk-id token, e.g. "418c66529513d93e_chunk_0043"
-    _CHUNK_ID = r"[a-f0-9]+_chunk_\d+"
-    # A bracket containing one or more comma-separated chunk-ids (and whitespace)
-    _CITATION_BRACKET = re.compile(rf"\[\s*{_CHUNK_ID}(?:\s*,\s*{_CHUNK_ID})*\s*\]")
-
     chunk_by_id = {c.chunk.chunk_id: c for c in chunks}
+
+    # Build the citation-bracket matcher from the *actual* retrieved chunk ids,
+    # so we catch every id shape the pipeline emits — hex "..._chunk_0043" from
+    # documents AND synthetic ids like "live_sql_001" from the SQL stage —
+    # without touching real prose brackets such as [1] or Markdown links.
+    if chunk_by_id:
+        _ID_ALT = "|".join(
+            re.escape(cid) for cid in sorted(chunk_by_id, key=len, reverse=True)
+        )
+        _CITATION_BRACKET = re.compile(rf"\[\s*(?:{_ID_ALT})(?:\s*,\s*(?:{_ID_ALT}))*\s*\]")
+    else:
+        _CITATION_BRACKET = None
+
+    # Shapes of internal ids, used only as a safety net to strip brackets for
+    # chunks the model invented (cited but never retrieved), so raw ids never
+    # reach the user regardless of source.
+    _INTERNAL_ID = r"(?:[a-f0-9]+_chunk_\d+|live_[a-z0-9]+_\d+)"
 
     citations: list[Citation] = []
     sources_text: list[str] = []
@@ -528,11 +559,14 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
         # If none resolved, drop the bracket entirely (no raw IDs leak through)
         return "".join(f"[{fn}]" for fn in footnotes)
 
-    clean_answer = _CITATION_BRACKET.sub(_replace_bracket, answer)
+    clean_answer = _CITATION_BRACKET.sub(_replace_bracket, answer) if _CITATION_BRACKET else answer
 
-    # Safety net: strip any stray single chunk-id bracket the pattern above
-    # somehow missed, so internal IDs are never shown to the user.
-    clean_answer = re.sub(rf"\[\s*{_CHUNK_ID}\s*\]", "", clean_answer)
+    # Safety net: strip any stray internal-id bracket the pattern above missed
+    # (e.g. an id the model invented for a chunk that wasn't retrieved), so raw
+    # ids are never shown to the user — hex chunk ids and live_sql_* alike.
+    clean_answer = re.sub(
+        rf"\[\s*{_INTERNAL_ID}(?:\s*,\s*{_INTERNAL_ID})*\s*\]", "", clean_answer
+    )
 
     if sources_text:
         clean_answer += "\n\n**References**\n\n" + "\n".join(sources_text)

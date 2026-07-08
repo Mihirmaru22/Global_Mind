@@ -1261,6 +1261,12 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   margin: 0 auto;
 }
 
+/* xy-charts keep their natural (category-driven) width and scroll horizontally,
+   so many-category axes stay readable instead of being squashed to fit. */
+.mermaid-diagram--wide svg {
+  max-width: none;
+}
+
 /* Shown while a diagram is still streaming in or if its syntax is invalid */
 .mermaid-fallback {
   overflow-x: auto;
