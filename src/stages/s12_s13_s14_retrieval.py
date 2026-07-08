@@ -207,7 +207,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=1024,
+            max_tokens=2048,
         )
 
         # Extract citations and format the answer text
@@ -271,7 +271,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=1024,
+            max_tokens=2048,
         ):
             full_answer_parts.append(chunk_text)
             yield chunk_text

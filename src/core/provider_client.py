@@ -227,8 +227,9 @@ class GeminiProvider:
                 role = "user" if msg["role"] == "user" else "model"
                 contents.append({"role": role, "parts": [{"text": msg["content"]}]})
 
-        # Gemini 2.5 Flash is a thinking model — enforce minimum token budget
-        # so internal reasoning doesn't consume the entire output allocation.
+        # Floor the output budget so short callers (e.g. max_tokens=10) still
+        # get a usable answer. Thinking is disabled below, so this budget is
+        # spent entirely on the visible response.
         effective_max_tokens = max(max_tokens, 1024)
 
         body: dict[str, Any] = {
@@ -236,6 +237,11 @@ class GeminiProvider:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": effective_max_tokens,
+                # Gemini 2.5 thinking models draw reasoning tokens from the
+                # maxOutputTokens budget, so leaving thinking enabled starves
+                # and truncates the visible answer mid-sentence. Disable it for
+                # text generation so the entire budget goes to the response.
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         if system_instruction:
@@ -280,6 +286,11 @@ class GeminiProvider:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": effective_max_tokens,
+                # Gemini 2.5 thinking models draw reasoning tokens from the
+                # maxOutputTokens budget, so leaving thinking enabled starves
+                # and truncates the visible answer mid-sentence. Disable it for
+                # text generation so the entire budget goes to the response.
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         if system_instruction:
