@@ -1232,6 +1232,31 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   font-size: 0.94em;
 }
 
+/* Rendered Mermaid diagrams (pie, bar, flowchart, etc.) */
+.mermaid-diagram {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 6px 0 10px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* Shown while a diagram is still streaming in or if its syntax is invalid */
+.mermaid-fallback {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
 .message__meta {
   display: flex;
   align-items: center;

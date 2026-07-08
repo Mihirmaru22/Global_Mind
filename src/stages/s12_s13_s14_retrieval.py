@@ -392,6 +392,19 @@ def _enforce_document_diversity(
     return selected
 
 
+_VISUALIZATION_GUIDANCE = """
+
+Formatting and visualization:
+- Present tabular or comparison data as a GitHub-flavored Markdown table.
+- When the user asks for a chart, graph, or diagram — or when one would communicate the answer more clearly — render it as a fenced ```mermaid code block. The app renders Mermaid natively, so DO NOT claim you lack tools to create visualizations.
+  - Proportions / share of a whole → `pie`
+  - Comparing values across categories, or trends → `xychart-beta` (bar or line)
+  - Processes, flows, hierarchies → `flowchart`
+  - Steps over time → `timeline`; interactions → `sequenceDiagram`
+- Only chart numbers that actually appear in the context. If the exact values needed for a chart are missing, say which values are missing and chart whatever related data IS available (e.g. benchmark scores, context-window sizes) rather than refusing outright.
+- Keep Mermaid syntax valid and self-contained; put every data point on its own line."""
+
+
 def _build_system_prompt(task: str) -> str:
     """Build a task-appropriate system prompt."""
     base = "You are a precise document analysis assistant. "
@@ -403,7 +416,7 @@ def _build_system_prompt(task: str) -> str:
         "summarization": base + "Provide comprehensive summaries. Cover all key points from the context. Cite sources.",
     }
 
-    return prompts.get(task, prompts["general_qa"])
+    return prompts.get(task, prompts["general_qa"]) + _VISUALIZATION_GUIDANCE
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:

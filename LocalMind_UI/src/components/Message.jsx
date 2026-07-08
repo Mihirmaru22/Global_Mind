@@ -15,6 +15,40 @@ import rehypeHighlight from 'rehype-highlight'
 import clsx from 'clsx'
 import TextareaAutosize from 'react-textarea-autosize'
 import { useAppStore } from '../store/store.js'
+import MermaidDiagram from './MermaidDiagram.jsx'
+
+/** Recursively flatten a react-markdown children tree back into plain text.
+ * rehype-highlight can split code into nested <span> tokens, so a simple
+ * String() is not enough — we walk the tree and concatenate the text. */
+function nodeText(node) {
+  if (node == null || node === false) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeText).join('')
+  if (typeof node === 'object' && node.props) return nodeText(node.props.children)
+  return ''
+}
+
+/**
+ * Pull the source out of a ```mermaid fenced block, if that's what this <pre>
+ * wraps. react-markdown renders fenced code as <pre><code className="language-*">.
+ */
+function mermaidSource(children) {
+  const child = Array.isArray(children) ? children[0] : children
+  const className = child?.props?.className || ''
+  if (!/\bmermaid\b/.test(className)) return null
+  return nodeText(child.props.children).replace(/\n$/, '')
+}
+
+// Custom renderers for assistant markdown: mermaid code blocks become diagrams,
+// everything else falls through to the default <pre>.
+const markdownComponents = {
+  pre(props) {
+    const { children, ...rest } = props
+    const source = mermaidSource(children)
+    if (source !== null) return <MermaidDiagram code={source} />
+    return <pre {...rest}>{children}</pre>
+  },
+}
 
 /* eslint-disable react-hooks/set-state-in-effect */
 const ragStages = [
@@ -200,7 +234,8 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
           <div className="message__assistant markdown">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
+              rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+              components={markdownComponents}
             >
               {typedContent}
             </ReactMarkdown>
@@ -288,7 +323,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
               <div className="message__bubble markdown">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[rehypeHighlight]}
+                  rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
                 >
                   {message.content}
                 </ReactMarkdown>
