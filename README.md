@@ -25,6 +25,7 @@ A resilient `ProviderRouter` directs workloads to the best free-tier model for t
 - **Metadata Filtering:** Constrain searches with surgical precision (e.g., by document type, filename, or page range).
 - **Parallel Batching:** Ingest folders of documents concurrently without violating rate limits using an `asyncio.Semaphore`.
 - **Live Pipeline Streaming:** The frontend syncs with the 14-stage pipeline in real-time via the `/upload/stream` SSE endpoint.
+- **Confidence Gates (QA):** OCR and table-extraction output is scored against multiple heuristics (garbage-character ratio, dictionary-word ratio, cross-checking OCR text against the reported engine confidence) before it's allowed into the vector store — low-confidence extractions get flagged rather than silently corrupting retrieval later (`src/core/confidence.py`).
 
 ### 📄 14-Stage Ingestion Pipeline
 Documents are processed through a rigorous pipeline designed for high accuracy. If a stage fails, the document is discarded without corrupting the vector database.
@@ -41,6 +42,9 @@ Documents are processed through a rigorous pipeline designed for high accuracy. 
 
 ### 💻 Modern React UI
 A beautiful, unified single-page React interface served directly by the FastAPI backend. It features **Server-Sent Events (SSE)** for real-time generative streaming responses, giving you a fluid chat experience with typing effects. The UI seamlessly replaces the raw streamed chunks with fully formatted Markdown and citation footnotes upon completion. You can also upload and ingest new documents directly from the UI sidebar without touching the CLI!
+
+### 💬 Chat & Document Management
+Full CRUD for conversations, backed by the JSON state layer (`state.py`) rather than a stub: create, rename, and delete chats (`POST` / `PATCH` / `DELETE /api/chats/{chat_id}`), each with its own persisted message history. The Documents view lists ingested files via the real `/api/documents` endpoint, and UI preferences are persisted via `/api/settings` (`get_settings`/`save_settings` in `state.py`). Note: the Settings and Documents *pages themselves* still carry some leftover "demo data" placeholder copy in their UI text from earlier scaffolding, even though the endpoints they call are real and working — worth a quick pass to update that copy so it doesn't undersell what's already wired up.
 
 ---
 
@@ -69,6 +73,9 @@ globle_mind/
 │   ├── core/                  # Core Engine Logic
 │   │   ├── config.py          # System limits and env vars
 │   │   ├── provider_client.py # The Multi-LLM Orchestrator
+│   │   ├── confidence.py      # OCR/table extraction QA gates
+│   │   ├── db_client.py       # Read-only Text-to-SQL execution (SQLite / MySQL)
+│   │   ├── sql_dialects.py    # Per-engine dialect facts (prompt wording, sqlglot dialect, schema query)
 │   │   ├── state.py           # File-locking UI state manager
 │   │   └── ingestion_registry.py # Idempotency logic
 │   ├── models/
@@ -83,11 +90,13 @@ globle_mind/
 │   │   ├── ...                # Modular atomic steps
 │   │   ├── s10_embeddings.py  # Jina Dense + Sparse generation
 │   │   ├── s11_vector_store.py# Qdrant Upsert (RRF)
-│   │   └── s12_s13_s14_retrieval.py
+│   │   ├── s12_s13_s14_retrieval.py
+│   │   └── s12b_sql_retrieval.py # Text-to-SQL: NL2SQL generation + AST-validated read-only execution
 │   ├── cli.py                 # Command Line Interface
 │   └── main.py                # FastAPI Server Entrypoint
 ├── tests/                     # Comprehensive test suite (pytest)
-│   └── test_pipeline_e2e_integration.py # E2E isolated registry tests
+│   ├── test_pipeline_e2e_integration.py # E2E isolated registry tests
+│   └── test_sql_dialects.py   # Dialect registry, schema formatting, SQLite + MySQL query paths
 ├── ARCHITECTURE.md            # Deep-dive system mechanics documentation
 └── pyproject.toml             # Python dependencies
 ```
@@ -118,6 +127,17 @@ Copy the example `.env` file and fill in your API keys:
 cp .env.example .env
 ```
 Ensure you have keys for: `GEMINI_API_KEY`, `NVIDIA_NIM_API_KEY`, `GROQ_API_KEY`, `JINA_API_KEY`, `QDRANT_URL`, and `QDRANT_API_KEY`.
+
+**Optional — Text-to-SQL live data:** By default, `DB_ENGINE=sqlite` and no further setup is needed beyond having a `data/live_data.db` file. To point the Text-to-SQL stage at MySQL instead, set:
+```text
+DB_ENGINE=mysql
+DB_HOST=your-mysql-host
+DB_PORT=3306
+DB_NAME=your-database-name
+DB_READONLY_USER=readonly_user
+DB_READONLY_PASSWORD=your-readonly-password
+```
+`DB_READONLY_USER` should be a dedicated MySQL user with **only** `SELECT` granted (`GRANT SELECT ON your_db.* TO 'readonly_user'@'%';`) — this is the actual enforcement mechanism for write-prevention on MySQL, not just the query validation in code.
 
 ### 4. Build the Frontend
 The React UI is designed to be served statically by FastAPI. You must build it first:
@@ -161,13 +181,27 @@ Head back to `http://localhost:8000`, open a chat, and ask deep analytical quest
 3. Rerank them to the top 25 chunks using a Jina Cross-Encoder.
 4. Synthesize a fully cited answer using Groq (Llama 3.3 70B), streaming it back to your screen in real-time.
 
+### 4. Other CLI Commands
+Beyond `ingest`, the CLI supports:
+```text
+# Query the pipeline directly from the terminal (no UI needed)
+globle-mind query "What were the key findings in the Q3 report?"
+
+# Start the FastAPI server (equivalent to the uvicorn command above)
+globle-mind serve
+
+# Check which LLM providers are currently reachable
+globle-mind health
+```
+
 ---
 
 ## ⚙️ Configuration & Extensibility
 
 - **RAG Limits:** You can tweak the context limits (e.g., retrieving 50 chunks, reranking to 25) in `src/core/config.py`.
 - **Dynamic Routing Rules:** Model routing priorities and fallback chains can be edited entirely without touching Python code by updating `config/providers.yaml`.
-- **State Persistence:** Data persistence completely avoids SQL databases for application state. UI state is managed via flat JSON files (`/data`), and vectors are handled by Qdrant (cloud or local). (Note: A Text-to-SQL branch is supported for querying live operational data, but the core system state remains JSON-backed).
+- **State Persistence:** Data persistence completely avoids SQL databases for application state. UI state is managed via flat JSON files (`/data`), and vectors are handled by Qdrant (cloud or local).
+- **Text-to-SQL (Live Data):** A separate retrieval stage (`s12b_sql_retrieval.py`) lets the assistant answer questions against a live, structured database — independent of the JSON-backed UI state above. It supports **SQLite** (default, local file at `data/live_data.db`) and **MySQL**, selected via the `DB_ENGINE` env var (`sqlite` or `mysql`; see `.env.example`). Every generated query is AST-validated as a read-only `SELECT` (via `sqlglot`) and capped to a maximum row count before execution, and — for MySQL — should be run against a dedicated read-only database user (`GRANT SELECT` only) as the actual last line of defense at the database level. Adding a new engine (e.g. SQL Server) means adding one entry to the `DIALECTS` registry in `src/core/sql_dialects.py`, not a new class hierarchy.
 
 ## 📚 Architecture Details
 For a deep dive into the internal mechanics, state management, and file structure of GlobleMind, please read the comprehensive **[ARCHITECTURE.md](ARCHITECTURE.md)** file included in this repository.
