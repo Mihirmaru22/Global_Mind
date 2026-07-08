@@ -1135,7 +1135,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   background: transparent;
   line-height: 1.35;
   color: var(--text-primary);
-  max-width: min(640px, 82%);
+  max-width: 100%;
   font-size: 0.9rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1147,7 +1147,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   margin-left: auto;
   width: fit-content;
   height: fit-content;
-  max-width: min(640px, 82%);
+  max-width: 100%;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 16px;
@@ -1244,6 +1244,8 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   display: grid;
   gap: 10px;
   justify-items: start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .message--user .message__content {
