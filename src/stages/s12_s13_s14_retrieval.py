@@ -432,37 +432,65 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
 
 
 def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> tuple[list[Citation], str]:
-    """Extract chunk IDs, replace with readable footnotes, and append a source list."""
+    """Extract chunk IDs, replace with readable footnotes, and append a source list.
+
+    Handles two citation shapes the model produces:
+      1. Single-ID brackets:  [<doc>_chunk_0043]
+      2. Multi-ID brackets:   [<doc>_chunk_0043, <doc>_chunk_0027, ...]
+
+    Every referenced chunk maps to a stable footnote number (deduped by the
+    chunk's *source file + page*, so ten chunks from page 8 of one PDF collapse
+    into a single [1] rather than [1][2]...[10]). Any chunk-ID bracket that
+    can't be resolved to a retrieved chunk is stripped rather than left raw,
+    so internal IDs never leak into the visible answer.
+    """
     import re
 
+    # A single chunk-id token, e.g. "418c66529513d93e_chunk_0043"
+    _CHUNK_ID = r"[a-f0-9]+_chunk_\d+"
+    # A bracket containing one or more comma-separated chunk-ids (and whitespace)
+    _CITATION_BRACKET = re.compile(rf"\[\s*{_CHUNK_ID}(?:\s*,\s*{_CHUNK_ID})*\s*\]")
+
+    chunk_by_id = {c.chunk.chunk_id: c for c in chunks}
+
     citations: list[Citation] = []
-    cited_ids: list[str] = []
-
-    # Find all unique cited chunk IDs in order of appearance
-    for match in re.finditer(r"\[([a-f0-9_]+(?:_chunk_\d+)?)\]", answer):
-        chunk_id = match.group(1)
-        if chunk_id not in cited_ids:
-            cited_ids.append(chunk_id)
-
-    clean_answer = answer
     sources_text: list[str] = []
+    # Footnote numbers are assigned per unique (source_file, page) so repeated
+    # chunks from the same page share one number.
+    footnote_by_source: dict[tuple[str, int], int] = {}
 
-    for idx, chunk_id in enumerate(cited_ids, 1):
-        # Find the actual chunk
-        chunk = next((c for c in chunks if c.chunk.chunk_id == chunk_id), None)
-        if chunk:
+    def _footnote_for(chunk: RetrievedChunk) -> int:
+        key = (chunk.chunk.source_file, chunk.chunk.page_number)
+        if key not in footnote_by_source:
+            idx = len(footnote_by_source) + 1
+            footnote_by_source[key] = idx
             citations.append(Citation(
-                chunk_id=chunk_id,
+                chunk_id=chunk.chunk.chunk_id,
                 source_file=chunk.chunk.source_file,
                 page_number=chunk.chunk.page_number,
                 relevance_score=chunk.score,
             ))
-            # Replace all occurrences of [chunk_id] with [idx]
-            clean_answer = clean_answer.replace(f"[{chunk_id}]", f"[{idx}]")
-
-            # Add to sources list
             page_text = f" (Page {chunk.chunk.page_number})" if chunk.chunk.page_number else ""
             sources_text.append(f"[{idx}] {chunk.chunk.source_file}{page_text}")
+        return footnote_by_source[key]
+
+    def _replace_bracket(match: re.Match) -> str:
+        raw_ids = [tok.strip() for tok in match.group(0).strip("[]").split(",")]
+        footnotes: list[int] = []
+        for cid in raw_ids:
+            chunk = chunk_by_id.get(cid)
+            if chunk is not None:
+                fn = _footnote_for(chunk)
+                if fn not in footnotes:
+                    footnotes.append(fn)
+        # If none resolved, drop the bracket entirely (no raw IDs leak through)
+        return "".join(f"[{fn}]" for fn in footnotes)
+
+    clean_answer = _CITATION_BRACKET.sub(_replace_bracket, answer)
+
+    # Safety net: strip any stray single chunk-id bracket the pattern above
+    # somehow missed, so internal IDs are never shown to the user.
+    clean_answer = re.sub(rf"\[\s*{_CHUNK_ID}\s*\]", "", clean_answer)
 
     if sources_text:
         clean_answer += "\n\n**Sources:**\n" + "\n".join(sources_text)

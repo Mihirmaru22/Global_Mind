@@ -187,8 +187,33 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
 
 @router.get("/documents")
 async def get_documents() -> list[dict[str, Any]]:
-    """List all ingested documents."""
-    return state_manager.get_documents()
+    """List all ingested documents.
+
+    Reads from the ingestion registry (ingested_files.json) — the single
+    source of truth that the ingestion pipeline actually populates. The
+    previous implementation read documents.json, which nothing ever wrote
+    to, so this endpoint always returned an empty list.
+    """
+    from src.core.ingestion_registry import IngestionRegistry
+
+    registry = IngestionRegistry()
+    entries = registry.get_all().values()
+
+    documents: list[dict[str, Any]] = []
+    for entry in entries:
+        documents.append(
+            {
+                "id": entry.get("document_id", ""),
+                "name": entry.get("file_name", "Unknown"),
+                "sizeBytes": entry.get("file_size_bytes", 0),
+                "chunks": entry.get("total_chunks", 0),
+                "ingestedAt": entry.get("ingested_at", ""),
+            }
+        )
+
+    # Newest first
+    documents.sort(key=lambda d: d.get("ingestedAt", ""), reverse=True)
+    return documents
 
 
 @router.get("/settings")
