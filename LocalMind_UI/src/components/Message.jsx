@@ -29,15 +29,25 @@ function nodeText(node) {
   return ''
 }
 
+// First-line directives that unambiguously mark a Mermaid diagram, so we can
+// still render when the model fences the block as ```xychart / plain ``` /
+// anything other than ```mermaid.
+const MERMAID_DIRECTIVE =
+  /^(?:%%\{[^]*?\}%%\s*)?(?:xychart-beta|pie\b|flowchart\b|graph\b|sequenceDiagram\b|timeline\b|gantt\b|classDiagram\b|stateDiagram(?:-v2)?\b|erDiagram\b|journey\b|mindmap\b|quadrantChart\b)/
+
 /**
- * Pull the source out of a ```mermaid fenced block, if that's what this <pre>
- * wraps. react-markdown renders fenced code as <pre><code className="language-*">.
+ * Pull the source out of a fenced code block if it's a Mermaid diagram — either
+ * tagged ```mermaid, or any block whose first line is a Mermaid directive.
+ * react-markdown renders fenced code as <pre><code className="language-*">.
  */
 function mermaidSource(children) {
   const child = Array.isArray(children) ? children[0] : children
-  const className = child?.props?.className || ''
-  if (!/\bmermaid\b/.test(className)) return null
-  return nodeText(child.props.children).replace(/\n$/, '')
+  if (!child?.props) return null
+  const className = child.props.className || ''
+  const source = nodeText(child.props.children).replace(/\n$/, '')
+  if (/\bmermaid\b/.test(className)) return source
+  if (MERMAID_DIRECTIVE.test(source.trimStart())) return source
+  return null
 }
 
 // Custom renderers for assistant markdown: mermaid code blocks become diagrams,
