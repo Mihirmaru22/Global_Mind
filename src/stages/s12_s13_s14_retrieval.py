@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -197,7 +198,7 @@ class Generator:
 Question: {query}
 
 Answer the question using ONLY the information provided in the context above.
-For each claim, cite the chunk ID(s) in square brackets, like [chunk_id].
+Each excerpt is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% [a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a separate column or heading for them and do NOT refer to them as "chunks" in your prose.
 If the context doesn't contain enough information to answer, say so explicitly."""
 
         # Generate
@@ -261,7 +262,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
 Question: {query}
 
 Answer the question using ONLY the information provided in the context above.
-For each claim, cite the chunk ID(s) in square brackets, like [chunk_id].
+Each excerpt is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% [a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a separate column or heading for them and do NOT refer to them as "chunks" in your prose.
 If the context doesn't contain enough information to answer, say so explicitly."""
 
         full_answer_parts = []
@@ -410,10 +411,10 @@ def _build_system_prompt(task: str) -> str:
     base = "You are a precise document analysis assistant. "
 
     prompts = {
-        "general_qa": base + "Answer questions accurately based on the provided context. Always cite your sources using chunk IDs.",
-        "reasoning": base + "Perform careful multi-step reasoning. Show your reasoning process. Cite all sources.",
-        "extraction": base + "Extract structured information precisely. Use JSON format when appropriate. Cite sources.",
-        "summarization": base + "Provide comprehensive summaries. Cover all key points from the context. Cite sources.",
+        "general_qa": base + "Answer questions accurately based on the provided context. Always cite your sources using their bracketed source markers.",
+        "reasoning": base + "Perform careful multi-step reasoning. Show your reasoning process. Cite all sources with their bracketed markers.",
+        "extraction": base + "Extract structured information precisely. Use JSON format when appropriate. Cite sources with their bracketed markers.",
+        "summarization": base + "Provide comprehensive summaries. Cover all key points from the context. Cite sources with their bracketed markers.",
     }
 
     return prompts.get(task, prompts["general_qa"]) + _VISUALIZATION_GUIDANCE
@@ -484,7 +485,9 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
                 relevance_score=chunk.score,
             ))
             page_text = f" (Page {chunk.chunk.page_number})" if chunk.chunk.page_number else ""
-            sources_text.append(f"[{idx}] {chunk.chunk.source_file}{page_text}")
+            # Show the clean document name, never the absolute path or chunk id.
+            doc_name = Path(chunk.chunk.source_file).name or chunk.chunk.source_file
+            sources_text.append(f"{idx}. {doc_name}{page_text}")
         return footnote_by_source[key]
 
     def _replace_bracket(match: re.Match) -> str:
@@ -506,6 +509,6 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
     clean_answer = re.sub(rf"\[\s*{_CHUNK_ID}\s*\]", "", clean_answer)
 
     if sources_text:
-        clean_answer += "\n\n**Sources:**\n" + "\n".join(sources_text)
+        clean_answer += "\n\n**References**\n\n" + "\n".join(sources_text)
 
     return citations, clean_answer

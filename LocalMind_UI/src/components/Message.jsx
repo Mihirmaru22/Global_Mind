@@ -16,6 +16,7 @@ import clsx from 'clsx'
 import TextareaAutosize from 'react-textarea-autosize'
 import { useAppStore } from '../store/store.js'
 import MermaidDiagram from './MermaidDiagram.jsx'
+import rehypeCitations from './rehypeCitations.js'
 
 /** Recursively flatten a react-markdown children tree back into plain text.
  * rehype-highlight can split code into nested <span> tokens, so a simple
@@ -234,7 +235,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
           <div className="message__assistant markdown">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+              rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
               components={markdownComponents}
             >
               {typedContent}
@@ -323,7 +324,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
               <div className="message__bubble markdown">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+                  rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
                 >
                   {message.content}
                 </ReactMarkdown>

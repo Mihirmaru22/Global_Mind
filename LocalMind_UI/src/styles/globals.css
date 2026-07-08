@@ -1232,6 +1232,16 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   font-size: 0.94em;
 }
 
+/* Subtle gray inline citation markers: [1], [2], ... */
+.citation-ref {
+  color: var(--text-muted);
+  font-size: 0.72em;
+  font-weight: 500;
+  vertical-align: super;
+  line-height: 0;
+  margin-left: 1px;
+}
+
 /* Rendered Mermaid diagrams (pie, bar, flowchart, etc.) */
 .mermaid-diagram {
   width: 100%;
