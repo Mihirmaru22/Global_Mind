@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from src.core.config import PROJECT_ROOT, settings
+from src.core.paths import contained_path
 
 # Configure logging
 logging.basicConfig(
@@ -23,10 +24,16 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# CORS: a wildcard origin combined with credentials makes Starlette reflect any
+# caller's Origin AND allow credentials — effectively trusting every website. We
+# pin an explicit allow-list (configurable via CORS_ALLOW_ORIGINS) instead. The
+# bundled UI is served same-origin so it needs no CORS at all; the defaults just
+# cover the Vite dev server. Credentials stay off (there is no cookie/session
+# auth), so no wildcard/credentials footgun.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_allow_origins_list,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,10 +85,14 @@ async def serve_spa(full_path: str):
             "status": "Frontend not built yet. Run 'npm run build' in LocalMind_UI."
         }
     
-    # If the file exists in the root of frontend (e.g., vite.svg), serve it
-    file_path = frontend_dir / full_path
-    if full_path and file_path.exists() and file_path.is_file():
+    # If a real file is requested (e.g. vite.svg), serve it — but only if it
+    # stays inside frontend_dir. full_path is attacker-controlled, so a naive
+    # join like `frontend_dir / full_path` would let "../.env" or "/etc/passwd"
+    # escape the web root and leak secrets/source. contained_path() resolves and
+    # containment-checks before we serve anything.
+    file_path = contained_path(frontend_dir, full_path)
+    if file_path is not None and file_path.is_file():
         return FileResponse(file_path)
-    
+
     # Otherwise, return index.html for client-side routing
     return FileResponse(frontend_dir / "index.html")

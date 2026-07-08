@@ -50,7 +50,19 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 50
     rerank_top_k: int = 25
 
+    # --- CORS ---
+    # Comma-separated allow-list of browser origins permitted to call the API
+    # cross-origin. The bundled UI is same-origin (needs nothing here); the
+    # defaults just cover the Vite dev server. A "*" wildcard is intentionally
+    # NOT the default — see the CORS note in main.py.
+    cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     model_config = {"env_file": str(PROJECT_ROOT / ".env"), "env_file_encoding": "utf-8"}
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        """Parse the comma-separated CORS origins into a clean list."""
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
 
     def ensure_dirs(self) -> None:
         """Create runtime directories if they don't exist."""
