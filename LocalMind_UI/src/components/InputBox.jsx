@@ -1,18 +1,20 @@
 import { forwardRef } from 'react'
-import { Send } from 'lucide-react'
-import Button from './Button.jsx'
+import { ArrowUp, Square } from 'lucide-react'
+import TextareaAutosize from 'react-textarea-autosize'
 
 const InputBox = forwardRef(function InputBox(
   {
     value,
     onChange,
     onSubmit,
+    onStop,
     disabled = false,
-    placeholder = 'Type a message ...',
+    loading = false,
+    placeholder = 'Write a message...',
   },
   ref,
 ) {
-  const canSubmit = value.trim().length > 0 && !disabled
+  const canSubmit = value.trim().length > 0 && !disabled && !loading
 
   return (
     <form
@@ -22,7 +24,7 @@ const InputBox = forwardRef(function InputBox(
         if (canSubmit) onSubmit?.()
       }}
     >
-      <textarea
+      <TextareaAutosize
         ref={ref}
         className="composer__input"
         placeholder={placeholder}
@@ -32,14 +34,33 @@ const InputBox = forwardRef(function InputBox(
           if (event.key !== 'Enter') return
           if (event.shiftKey) return
           event.preventDefault()
-          if (canSubmit) {
-            onSubmit?.()
-          }
+          if (canSubmit) onSubmit?.()
         }}
+        minRows={1}
+        maxRows={5}
+        disabled={disabled || loading}
       />
-      <Button type="submit" disabled={!canSubmit} className="composer__send" aria-label="Send message">
-        <Send size={18} />
-      </Button>
+      <div className="composer__actions">
+        {loading ? (
+          <button
+            type="button"
+            className="composer__stop"
+            onClick={onStop}
+            aria-label="Stop generating"
+          >
+            <Square size={14} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="composer__send"
+            disabled={!canSubmit}
+            aria-label="Send message"
+          >
+            <ArrowUp size={18} strokeWidth={2.5} />
+          </button>
+        )}
+      </div>
     </form>
   )
 })

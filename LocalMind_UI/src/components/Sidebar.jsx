@@ -2,6 +2,7 @@ import {
   MessageSquareText,
   MoreVertical,
   PlusCircle,
+  PanelLeftClose,
   Settings,
   Trash2,
   PencilLine,
@@ -9,6 +10,7 @@ import {
 } from 'lucide-react'
 import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
@@ -28,11 +30,13 @@ export default function Sidebar() {
   const renameChat = useAppStore((state) => state.renameChat)
   const deleteChat = useAppStore((state) => state.deleteChat)
   const sidebarOpen = useAppStore((state) => state.sidebarOpen)
+  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
+  const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
   const navigate = useNavigate()
-  const menuRef = useRef(null)
   const fileInputRef = useRef(null)
   const [openMenuId, setOpenMenuId] = useState(null)
+  const [menuPosition, setMenuPosition] = useState(null)
   const [dialog, setDialog] = useState({ type: null, chat: null, value: '' })
   const [isUploading, setIsUploading] = useState(false)
 
@@ -61,33 +65,69 @@ export default function Sidebar() {
   }
 
   useEffect(() => {
-    const handlePointerDown = (event) => {
-      if (!menuRef.current?.contains(event.target)) {
-        setOpenMenuId(null)
-      }
+    if (!openMenuId) return undefined
+
+    const handleViewportChange = () => {
+      setOpenMenuId(null)
+      setMenuPosition(null)
     }
 
-    window.addEventListener('pointerdown', handlePointerDown)
-    return () => window.removeEventListener('pointerdown', handlePointerDown)
-  }, [])
+    window.addEventListener('scroll', handleViewportChange, true)
+    window.addEventListener('resize', handleViewportChange)
+
+    return () => {
+      window.removeEventListener('scroll', handleViewportChange, true)
+      window.removeEventListener('resize', handleViewportChange)
+    }
+  }, [openMenuId])
 
   const handleNewChat = async () => {
     setOpenMenuId(null)
+    setMenuPosition(null)
     await newChat()
     navigate('/chat')
   }
 
   const handleRename = async (chat) => {
     setOpenMenuId(null)
+    setMenuPosition(null)
     setDialog({ type: 'rename', chat, value: chat.title })
   }
 
   const handleDelete = async (chat) => {
     setOpenMenuId(null)
+    setMenuPosition(null)
     setDialog({ type: 'delete', chat, value: '' })
   }
 
   const closeDialog = () => setDialog({ type: null, chat: null, value: '' })
+
+  const closeMenu = () => {
+    setOpenMenuId(null)
+    setMenuPosition(null)
+  }
+
+  const toggleChatMenu = (chat, event) => {
+    const triggerRect = event.currentTarget.getBoundingClientRect()
+    const menuWidth = 168
+    const menuHeight = 96
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+    const nextLeft = Math.max(12, Math.min(triggerRect.right - menuWidth, viewportWidth - menuWidth - 12))
+    const enoughRoomBelow = triggerRect.bottom + menuHeight + 12 <= viewportHeight
+
+    if (openMenuId === chat.id) {
+      closeMenu()
+      return
+    }
+
+    setOpenMenuId(chat.id)
+    setMenuPosition(
+      enoughRoomBelow
+        ? { top: triggerRect.bottom + 8, left: nextLeft }
+        : { bottom: viewportHeight - triggerRect.top + 8, left: nextLeft },
+    )
+  }
 
   const confirmDialog = async () => {
     if (!dialog.chat) return
@@ -111,27 +151,50 @@ export default function Sidebar() {
 
   return (
     <>
-      <aside className="sidebar" data-open={sidebarOpen}>
+      <aside className="sidebar" data-open={sidebarOpen} data-collapsed={sidebarCollapsed}>
         <div className="brand">
-          <h1 className="brand__title">Local Mind</h1>
-          <p className="brand__subtitle">Local intelligence</p>
+          <div className="brand__row">
+            <div>
+              <h1 className="brand__title">Local Mind</h1>
+              <p className="brand__subtitle">Data - Decisions</p>
+            </div>
+            <button
+              type="button"
+              className="icon-button desktop-toggle"
+              onClick={toggleSidebarCollapse}
+              aria-label="Collapse sidebar"
+            >
+              <PanelLeftClose size={18} />
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: '8px', padding: '0 16px', margin: '24px 0 16px' }}>
-          <button type="button" onClick={handleNewChat} className="new-chat-action" style={{ margin: 0, flex: 1, padding: '10px 8px' }}>
+          <button
+            type="button"
+            onClick={handleNewChat}
+            className="new-chat-action"
+            style={{ margin: 0, flex: 1, padding: '10px 8px' }}
+          >
             <PlusCircle size={18} />
             <span>New</span>
           </button>
-          
-          <button type="button" onClick={handleUploadClick} disabled={isUploading} className="new-chat-action" style={{ margin: 0, flex: 1, padding: '10px 8px' }}>
+
+          <button
+            type="button"
+            onClick={handleUploadClick}
+            disabled={isUploading}
+            className="new-chat-action"
+            style={{ margin: 0, flex: 1, padding: '10px 8px' }}
+          >
             {isUploading ? <Loader size={18} /> : <Upload size={18} />}
             <span>{isUploading ? 'Ingesting...' : 'Upload'}</span>
           </button>
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            style={{ display: 'none' }} 
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            style={{ display: 'none' }}
           />
         </div>
 
@@ -151,7 +214,7 @@ export default function Sidebar() {
           ))}
         </nav>
 
-        <section className="sidebar__section" ref={menuRef}>
+        <section className="sidebar__section">
           <p className="section-title">Recent Chats</p>
           <div className="chat-list">
             {chats.map((chat) => (
@@ -180,34 +243,47 @@ export default function Sidebar() {
                     type="button"
                     className="chat-item__menu-trigger"
                     aria-label={`Chat actions for ${chat.title}`}
-                    onClick={() =>
-                      setOpenMenuId((current) => (current === chat.id ? null : chat.id))
-                    }
+                    onClick={(event) => toggleChatMenu(chat, event)}
                   >
                     <MoreVertical size={14} />
                   </button>
 
                   {openMenuId === chat.id ? (
-                    <div className="chat-menu" role="menu" aria-label="Chat actions">
-                      <button
-                        type="button"
-                        className="chat-menu__item"
-                        onClick={() => handleRename(chat)}
-                        role="menuitem"
+                    createPortal(
+                      <div
+                        className="chat-menu-backdrop"
+                        role="presentation"
+                        onClick={closeMenu}
                       >
-                        <PencilLine size={14} />
-                        <span>Rename</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="chat-menu__item chat-menu__item--danger"
-                        onClick={() => handleDelete(chat)}
-                        role="menuitem"
-                      >
-                        <Trash2 size={14} />
-                        <span>Delete</span>
-                      </button>
-                    </div>
+                        <div
+                          className="chat-menu"
+                          role="menu"
+                          aria-label="Chat actions"
+                          style={menuPosition ?? undefined}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            className="chat-menu__item"
+                            onClick={() => handleRename(chat)}
+                            role="menuitem"
+                          >
+                            <PencilLine size={14} />
+                            <span>Rename</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="chat-menu__item chat-menu__item--danger"
+                            onClick={() => handleDelete(chat)}
+                            role="menuitem"
+                          >
+                            <Trash2 size={14} />
+                            <span>Delete</span>
+                          </button>
+                        </div>
+                      </div>,
+                      document.body,
+                    )
                   ) : null}
                 </div>
               </div>

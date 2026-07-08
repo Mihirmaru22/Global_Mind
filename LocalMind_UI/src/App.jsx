@@ -13,6 +13,8 @@ import './styles/globals.css'
 function App() {
   const theme = useAppStore((state) => state.settings?.theme)
   const appliedTheme = useResolvedTheme(theme)
+  const themeMode = appliedTheme.mode
+  const toasterTheme = themeMode === 'light' ? 'light' : 'dark'
 
   return (
     <BrowserRouter>
@@ -27,20 +29,20 @@ function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster
-        theme={appliedTheme}
+        theme={toasterTheme}
         richColors
         position="top-right"
         closeButton
         toastOptions={{
           style: {
             background:
-              appliedTheme === 'light'
+              themeMode === 'light'
                 ? 'rgba(255, 253, 251, 0.95)'
                 : 'rgba(18, 18, 18, 0.95)',
             color: 'var(--text-primary)',
             border:
-              appliedTheme === 'light'
-                ? '1px solid rgba(153, 70, 42, 0.12)'
+              themeMode === 'light'
+                ? '1px solid rgba(35, 35, 35, 0.12)'
                 : '1px solid rgba(255, 255, 255, 0.08)',
           },
         }}

@@ -1,49 +1,181 @@
-import { useState, useEffect } from 'react'
-import dayjs from 'dayjs'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Check,
+  Copy,
+  PencilLine,
+  RefreshCw,
+  ThumbsDown,
+  ThumbsUp,
+  X,
+} from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import clsx from 'clsx'
+import TextareaAutosize from 'react-textarea-autosize'
+import { useAppStore } from '../store/store.js'
 
-const THINKING_MESSAGES = [
-  "Searching database...",
-  "Retrieving context...",
-  "Reranking documents...",
-  "Applying reasoning...",
-  "Generating answer..."
+/* eslint-disable react-hooks/set-state-in-effect */
+const ragStages = [
+  'searching documents...',
+  'retrieving context...',
+  'gathering information...',
+  'analyzing findings...',
+  'reasoning through data...',
+  'connecting insights...',
+  'generating response...',
+  'crafting answer...',
+  'finalizing response...',
 ]
 
-function DynamicThinkingLabel() {
-  const [index, setIndex] = useState(0)
+function useTypewriterText(text, enabled) {
+  const [displayedText, setDisplayedText] = useState(enabled ? '' : text)
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setIndex((i) => Math.min(i + 1, THINKING_MESSAGES.length - 1))
-    }, 2000)
-    return () => clearInterval(interval)
-  }, [])
+    if (!enabled) {
+      // This hook intentionally syncs local animation state with incoming props.
+      setDisplayedText(text)
+      return undefined
+    }
 
-  return (
-    <span className="message__typing-label" style={{ position: 'relative', display: 'inline-flex' }}>
-      <AnimatePresence mode="wait">
-        <motion.span
-          key={index}
-          initial={{ opacity: 0, y: 5 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -5 }}
-          transition={{ duration: 0.2 }}
-        >
-          {THINKING_MESSAGES[index]}
-        </motion.span>
-      </AnimatePresence>
-    </span>
-  )
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+
+    if (reducedMotion) {
+      // This hook intentionally syncs local animation state with incoming props.
+      setDisplayedText(text)
+      return undefined
+    }
+
+    setDisplayedText('')
+
+    let index = 0
+    const interval = window.setInterval(() => {
+      index += 1
+      setDisplayedText(text.slice(0, index))
+
+      if (index >= text.length) {
+        window.clearInterval(interval)
+      }
+    }, 18)
+
+    return () => window.clearInterval(interval)
+  }, [enabled, text])
+
+  return displayedText
 }
 
-export default function Message({ message, index = 0 }) {
+function useRagStage(isLoading) {
+  const [stageIndex, setStageIndex] = useState(0)
+
+  useEffect(() => {
+    if (!isLoading) {
+      // This hook intentionally syncs local animation state with loading status.
+      setStageIndex(0)
+      return undefined
+    }
+
+    setStageIndex(0)
+    const interval = window.setInterval(() => {
+      setStageIndex((current) => (current + 1) % ragStages.length)
+    }, 800)
+
+    return () => window.clearInterval(interval)
+  }, [isLoading])
+
+  return useMemo(() => ragStages[stageIndex], [stageIndex])
+}
+
+export default function Message({ message, index = 0, chatId, isLast = false }) {
+  const markMessageAsSeen = useAppStore((state) => state.markMessageAsSeen)
+  const setMessageFeedback = useAppStore((state) => state.setMessageFeedback)
+  const regenerateMessage = useAppStore((state) => state.regenerateMessage)
+  const editMessage = useAppStore((state) => state.editMessage)
+  const loading = useAppStore((state) => state.loading)
   const isAssistant = message.role === 'assistant'
   const isLoading = message.status === 'loading'
+  const isStreaming = message.status === 'streaming'
+  const [copied, setCopied] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState(message.content || '')
+  const editRef = useRef(null)
+  const copyTimerRef = useRef(null)
+  const stageLabel = useRagStage(isLoading)
+  const typedContent = useTypewriterText(
+    message.content || '',
+    isAssistant && !isLoading && !!message.isNew,
+  )
+  // Show the blinking cursor both while the typewriter fallback is actively
+  // typing AND while real tokens are streaming in live from the backend —
+  // the latter never touches useTypewriterText's animation path (isNew is
+  // never set for streamed completions), so it needs its own indicator.
+  const isTyping =
+    (isAssistant && !isLoading && typedContent.length < (message.content || '').length) || isStreaming
+  const feedback = message.feedback || null
+  const canRegenerate = isAssistant && !isLoading && !isStreaming && isLast
+  const canEdit = !isAssistant && !loading
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraft(message.content || '')
+    }
+  }, [isEditing, message.content])
+
+  useEffect(() => {
+    if (!isEditing) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      editRef.current?.focus()
+      editRef.current?.setSelectionRange?.(draft.length, draft.length)
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [draft.length, isEditing])
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!chatId || !message.isNew || isTyping) return
+    markMessageAsSeen(chatId, message.id)
+  }, [chatId, isTyping, markMessageAsSeen, message.id, message.isNew])
+
+  const handleCopy = async () => {
+    if (!message.content) return
+
+    try {
+      await navigator.clipboard.writeText(message.content)
+      setCopied(true)
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard access can fail outside a secure context.
+    }
+  }
+
+  const handleSaveEdit = async () => {
+    if (!canEdit || !chatId) return
+
+    const nextContent = draft.trim()
+    if (!nextContent || nextContent === (message.content || '').trim()) {
+      setIsEditing(false)
+      setDraft(message.content || '')
+      return
+    }
+
+    setIsEditing(false)
+    await editMessage(chatId, message.id, nextContent)
+  }
+
+  const handleCancelEdit = () => {
+    setDraft(message.content || '')
+    setIsEditing(false)
+  }
 
   return (
     <motion.div
@@ -54,41 +186,128 @@ export default function Message({ message, index = 0 }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.24, delay: index * 0.03 }}
     >
-      <div className="message__meta">
-        <strong>{isAssistant ? 'Local Mind' : 'You'}</strong>
-        <span>
-          {isLoading ? 'Generating response' : dayjs(message.createdAt).format('MMM D, HH:mm')}
-        </span>
-      </div>
       {isLoading ? (
         <div className="message__assistant message__assistant--loading" aria-live="polite">
           <span className="message__typing">
             <span className="loader__dot" />
             <span className="loader__dot" />
             <span className="loader__dot" />
-            <DynamicThinkingLabel />
+            <span className="message__typing-label">{stageLabel}</span>
           </span>
         </div>
       ) : isAssistant ? (
-        <div className="message__assistant markdown">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-          >
-            {message.content}
-          </ReactMarkdown>
+        <div className="message__content">
+          <div className="message__assistant markdown">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+            >
+              {typedContent}
+            </ReactMarkdown>
+            {isTyping ? <span className="typing-cursor" aria-hidden="true" /> : null}
+          </div>
+          <div className="message__actions" aria-label="Assistant actions">
+            <button
+              type="button"
+              className={clsx('message__action', copied && 'message__action--active')}
+              onClick={handleCopy}
+              aria-label="Copy message"
+            >
+              {copied ? <Check size={14} /> : <Copy size={14} />}
+            </button>
+            <button
+              type="button"
+              className={clsx('message__action', feedback === 'up' && 'message__action--active')}
+              onClick={() => setMessageFeedback(chatId, message.id, 'up')}
+              aria-label="Thumbs up"
+            >
+              <ThumbsUp size={14} />
+            </button>
+            <button
+              type="button"
+              className={clsx('message__action', feedback === 'down' && 'message__action--active')}
+              onClick={() => setMessageFeedback(chatId, message.id, 'down')}
+              aria-label="Thumbs down"
+            >
+              <ThumbsDown size={14} />
+            </button>
+            {canRegenerate ? (
+              <button
+                type="button"
+                className="message__action"
+                onClick={() => regenerateMessage(chatId, message.id)}
+                aria-label="Regenerate reply"
+                disabled={loading}
+              >
+                <RefreshCw size={14} />
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : (
-        <div className="message__bubble markdown">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-          >
-            {message.content}
-          </ReactMarkdown>
+        <div className="message__content">
+          {isEditing ? (
+            <div className="message__edit-shell">
+              <TextareaAutosize
+                ref={editRef}
+                className="message__edit"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    handleCancelEdit()
+                    return
+                  }
+
+                  if (event.key !== 'Enter' || event.shiftKey) return
+                  event.preventDefault()
+                  handleSaveEdit()
+                }}
+                minRows={3}
+                maxRows={10}
+              />
+              <div className="message__edit-actions">
+                <button type="button" className="secondary-button" onClick={handleCancelEdit}>
+                  <X size={14} />
+                  <span>Cancel</span>
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={handleSaveEdit}
+                  disabled={!draft.trim() || draft.trim() === (message.content || '').trim()}
+                >
+                  <PencilLine size={14} />
+                  <span>Save</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="message__bubble markdown">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeHighlight]}
+                >
+                  {message.content}
+                </ReactMarkdown>
+              </div>
+              <div className="message__actions message__actions--user">
+                <button
+                  type="button"
+                  className="message__action"
+                  onClick={() => setIsEditing(true)}
+                  aria-label="Edit message"
+                  disabled={!canEdit}
+                >
+                  <PencilLine size={14} />
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </motion.div>
   )
 }
-

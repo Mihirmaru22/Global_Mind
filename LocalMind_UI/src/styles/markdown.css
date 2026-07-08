@@ -24,9 +24,9 @@
 
 .markdown blockquote {
   padding: 10px 12px;
-  border-left: 2px solid rgba(217, 119, 87, 0.45);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: 0 10px 10px 0;
-  background: rgba(217, 119, 87, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
   color: var(--text-secondary);
 }
 
@@ -35,11 +35,11 @@
   padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid var(--panel-border);
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in srgb, var(--accent) 2%, transparent);
 }
 
-:root[data-theme='light'] .markdown pre {
-  background: #fbf7f2;
+:root[data-theme-mode='light'] .markdown pre {
+  background: var(--panel);
   border-color: var(--panel-border);
 }
 
@@ -51,7 +51,7 @@
 .markdown :not(pre) > code {
   padding: 0.12rem 0.32rem;
   border-radius: 0.35rem;
-  background: rgba(217, 119, 87, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--text-primary);
 }
 
@@ -75,7 +75,7 @@
   text-align: left;
 }
 
-:root[data-theme='light'] .markdown th,
-:root[data-theme='light'] .markdown td {
+:root[data-theme-mode='light'] .markdown th,
+:root[data-theme-mode='light'] .markdown td {
   border-color: var(--panel-border);
 }

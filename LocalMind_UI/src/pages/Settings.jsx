@@ -5,17 +5,51 @@ import { useAppStore } from '../store/store.js'
 const themeOptions = [
   {
     id: 'dark',
-    name: 'Obsidian Hearth',
-    label: 'Active',
+    name: 'Espresso Noir',
+    label: 'Warm Dark',
     mode: 'dark',
     previewClass: 'theme-preview theme-preview--dark',
+    previewType: 'bars',
   },
   {
     id: 'light',
-    name: 'Warm Minimalist',
-    label: 'Light mode',
+    name: 'Parchment',
+    label: 'Soft Light',
     mode: 'light',
     previewClass: 'theme-preview theme-preview--light',
+    previewType: 'bars',
+  },
+  {
+    id: 'academic-dark',
+    name: 'Midnight',
+    label: 'Focus Dark',
+    mode: 'academic-dark',
+    previewClass: 'theme-preview theme-preview--academic-dark',
+    previewType: 'bars',
+  },
+  {
+    id: 'academic-light',
+    name: 'Day Light',
+    label: 'Clear Light',
+    mode: 'academic-light',
+    previewClass: 'theme-preview theme-preview--academic-light',
+    previewType: 'bars',
+  },
+  {
+    id: 'aurora-dark',
+    name: 'Jade Horizon',
+    label: 'Aurora Dark',
+    mode: 'aurora-dark',
+    previewClass: 'theme-preview theme-preview--aurora-dark',
+    previewType: 'aurora',
+  },
+  {
+    id: 'sonoct-light',
+    name: 'Sea Glass',
+    label: 'Coastal Light',
+    mode: 'sonoct-light',
+    previewClass: 'theme-preview theme-preview--sonoct-light',
+    previewType: 'command',
   },
 ]
 
@@ -47,8 +81,7 @@ export default function Settings() {
         <div>
           <h2 className="section__title">Settings</h2>
           <p className="section__subtitle">
-            Minimal controls for model behavior and appearance. Demo values are
-            shown now, with API-backed settings ready later.
+            Model behavior and appearance. Changes are saved automatically.
           </p>
         </div>
       </div>
@@ -148,9 +181,36 @@ export default function Settings() {
                   onClick={() => setSetting({ theme: theme.mode })}
                 >
                   <div className={theme.previewClass}>
-                    <div className="theme-preview__bar theme-preview__bar--primary" />
-                    <div className="theme-preview__bar" />
-                    <div className="theme-preview__bar theme-preview__bar--secondary" />
+                    {theme.previewType === 'command' ? (
+                      <>
+                        <div className="theme-preview__command-bar" />
+                        <div className="theme-preview__command-shell">
+                          <div className="theme-preview__command-rail">
+                            <span className="theme-preview__command-badge" />
+                            <span className="theme-preview__command-line" />
+                            <span className="theme-preview__command-line theme-preview__command-line--short" />
+                          </div>
+                          <div className="theme-preview__command-panel">
+                            <span className="theme-preview__command-title" />
+                            <span className="theme-preview__command-copy" />
+                            <div className="theme-preview__command-card" />
+                          </div>
+                        </div>
+                      </>
+                    ) : theme.previewType === 'aurora' ? (
+                      <>
+                        <div className="theme-preview__aurora-glow" />
+                        <div className="theme-preview__bar theme-preview__bar--primary" />
+                        <div className="theme-preview__bar" />
+                        <div className="theme-preview__bar theme-preview__bar--secondary" />
+                      </>
+                    ) : (
+                      <>
+                        <div className="theme-preview__bar theme-preview__bar--primary" />
+                        <div className="theme-preview__bar" />
+                        <div className="theme-preview__bar theme-preview__bar--secondary" />
+                      </>
+                    )}
                     {active ? (
                       <span className="theme-card__check">
                         <Check size={12} />
@@ -166,10 +226,6 @@ export default function Settings() {
             })}
           </div>
         </div>
-
-        {/* <div className="settings-actions">
-          <Button onClick={() => updateSettings(current)}>Save Settings</Button>
-        </div> */}
       </motion.section>
     </section>
   )

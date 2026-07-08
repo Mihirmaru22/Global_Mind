@@ -20,13 +20,14 @@ export async function sendMessage(chatId, message) {
   return response.data
 }
 
-export async function sendMessageStream(chatId, message, onChunk) {
-  const response = await fetch(`${API_URL}/chats/${chatId}/messages/stream`, {
+export async function sendMessageStream(chatId, message, onChunk, signal) {
+  const response = await fetch(`${http.defaults.baseURL}/chats/${chatId}/messages/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ message }),
+    signal,
   })
 
   if (!response.ok) {

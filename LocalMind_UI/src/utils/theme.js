@@ -1,15 +1,16 @@
-export function resolveTheme(theme) {
-  return theme || 'dark'
+const themeMap = {
+  dark: { value: 'dark', mode: 'dark' },
+  light: { value: 'light', mode: 'light' },
+  'academic-dark': { value: 'academic-dark', mode: 'dark' },
+  'academic-light': { value: 'academic-light', mode: 'light' },
+  'sonoct-light': { value: 'sonoct-light', mode: 'light' },
+  'aurora-dark': { value: 'aurora-dark', mode: 'dark' },
 }
 
-import { useEffect, useState } from 'react'
+export function resolveTheme(theme) {
+  return themeMap[theme] || themeMap.dark
+}
 
 export function useResolvedTheme(theme) {
-  const [resolvedTheme, setResolvedTheme] = useState(() => resolveTheme(theme))
-
-  useEffect(() => {
-    setResolvedTheme(resolveTheme(theme))
-  }, [theme])
-
-  return resolvedTheme
+  return resolveTheme(theme)
 }

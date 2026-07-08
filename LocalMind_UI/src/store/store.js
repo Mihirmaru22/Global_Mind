@@ -1,14 +1,17 @@
 import { create } from 'zustand'
 import {
   createChat,
+  deleteChat as deleteChatApi,
   getChats,
   getDocuments,
   getMessages,
   getOverview,
   getSettings,
+  renameChat as renameChatApi,
   saveSettings,
   sendMessage,
   sendMessageStream,
+  uploadDocument,
 } from '../services/api.js'
 
 function normalizeList(value, fallback = []) {
@@ -25,6 +28,184 @@ const demoChats = [
   { id: 'chat-2', title: 'Document Q&A', updatedAt: new Date().toISOString() },
 ]
 
+let requestSequence = 0
+
+function readStoredBoolean(key, fallback = false) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return fallback
+    return JSON.parse(raw)
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredBoolean(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(Boolean(value)))
+  } catch {
+    // Ignore storage issues and keep the in-memory state working.
+  }
+}
+
+function buildUntitledChatTitle(prompt) {
+  const trimmed = prompt.trim()
+  if (trimmed.length <= 48) return trimmed
+  return `${trimmed.slice(0, 45).trimEnd()}...`
+}
+
+function touchChat(chats, chatId) {
+  const updatedAt = new Date().toISOString()
+  return chats.map((chat) => (chat.id === chatId ? { ...chat, updatedAt } : chat))
+}
+
+function createLoadingAssistantMessage(requestId) {
+  return {
+    id: `assistant-pending-${requestId}-${Date.now()}`,
+    role: 'assistant',
+    content: '',
+    createdAt: new Date().toISOString(),
+    status: 'loading',
+  }
+}
+
+/**
+ * Drives one assistant response via the real SSE stream, updating the
+ * placeholder message in place as chunks arrive. This is what gives the
+ * "live streamed tokens" experience — content grows incrementally as
+ * `status: 'streaming'`, and the typewriter effect in Message.jsx is never
+ * enabled for these messages (no `isNew` flag is set on the streamed
+ * completion), since the text was already shown live, token by token.
+ *
+ * If the stream transport itself fails (not aborted by the user, a genuine
+ * connection error), falls back to one plain non-streaming request. That
+ * fallback response *does* get `isNew: true`, since it arrives as a single
+ * complete blob — this is the one path where the typewriter effect actually
+ * fires, exactly as intended: a fallback for non-streaming responses, never
+ * a replacement for real streaming.
+ */
+async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
+  const controller = new AbortController()
+  set((state) => ({
+    activeRequest: state.activeRequest && { ...state.activeRequest, abortController: controller },
+  }))
+
+  const isStale = () => {
+    const request = get().activeRequest
+    return !request || request.id !== requestId
+  }
+
+  try {
+    await sendMessageStream(
+      chatId,
+      prompt,
+      (chunkData) => {
+        if (isStale()) return
+        const request = get().activeRequest
+
+        set((state) => {
+          const chatMessages = state.messagesByChatId[chatId] || []
+          return {
+            messagesByChatId: {
+              ...state.messagesByChatId,
+              [chatId]: chatMessages.map((message) => {
+                if (message.id !== request.placeholderId) return message
+                if (chunkData.type === 'chunk') {
+                  return { ...message, content: message.content + chunkData.text, status: 'streaming' }
+                }
+                if (chunkData.type === 'done') {
+                  return { ...chunkData.message, status: 'done' }
+                }
+                if (chunkData.type === 'error') {
+                  return { ...chunkData.message, status: 'error' }
+                }
+                return message
+              }),
+            },
+          }
+        })
+      },
+      controller.signal,
+    )
+
+    if (isStale()) return
+    set((state) => ({
+      chats: touchChat(state.chats, chatId),
+      activeRequest: null,
+      loading: false,
+    }))
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      // User pressed stop. Leave whatever content already streamed in place
+      // rather than discarding it — it's a real, if incomplete, answer.
+      set((state) => {
+        const request = state.activeRequest
+        const chatMessages = state.messagesByChatId[chatId] || []
+        return {
+          messagesByChatId: {
+            ...state.messagesByChatId,
+            [chatId]: chatMessages.map((message) =>
+              request && message.id === request.placeholderId
+                ? { ...message, status: 'done' }
+                : message,
+            ),
+          },
+          activeRequest: null,
+          loading: false,
+        }
+      })
+      return
+    }
+
+    if (isStale()) return
+    console.warn('Streaming request failed, falling back to a non-streaming request:', error)
+
+    try {
+      const assistantMessage = await sendMessage(chatId, prompt)
+      if (isStale()) return
+      set((state) => {
+        const request = state.activeRequest
+        const chatMessages = state.messagesByChatId[chatId] || []
+        return {
+          messagesByChatId: {
+            ...state.messagesByChatId,
+            [chatId]: chatMessages.map((message) =>
+              request && message.id === request.placeholderId
+                ? { ...assistantMessage, status: 'done', isNew: true }
+                : message,
+            ),
+          },
+          chats: touchChat(state.chats, chatId),
+          activeRequest: null,
+          loading: false,
+        }
+      })
+    } catch (fallbackError) {
+      console.error('Non-streaming fallback also failed:', fallbackError)
+      set((state) => {
+        const request = state.activeRequest
+        const chatMessages = state.messagesByChatId[chatId] || []
+        return {
+          messagesByChatId: {
+            ...state.messagesByChatId,
+            [chatId]: chatMessages.map((message) =>
+              request && message.id === request.placeholderId
+                ? {
+                    ...message,
+                    content: "Sorry, I wasn't able to reach the backend. Please try again.",
+                    status: 'error',
+                  }
+                : message,
+            ),
+          },
+          activeRequest: null,
+          loading: false,
+        }
+      })
+    }
+  }
+}
+
 export const useAppStore = create((set, get) => ({
   chats: demoChats,
   activeChatId: demoChats[0].id,
@@ -34,7 +215,9 @@ export const useAppStore = create((set, get) => ({
   settings: null,
   loading: false,
   sidebarOpen: false,
+  sidebarCollapsed: readStoredBoolean('localmind-sidebar-collapsed', false),
   selectedDocId: null,
+  activeRequest: null,
 
   initApp: async () => {
     set({ loading: true })
@@ -97,11 +280,17 @@ export const useAppStore = create((set, get) => ({
 
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   closeSidebar: () => set({ sidebarOpen: false }),
+  toggleSidebarCollapse: () =>
+    set((state) => {
+      const nextValue = !state.sidebarCollapsed
+      writeStoredBoolean('localmind-sidebar-collapsed', nextValue)
+      return { sidebarCollapsed: nextValue }
+    }),
 
   newChat: async () => {
-    const chat = await createChat(`New Chat ${get().chats.length + 1}`)
+    const chat = await createChat('New Chat')
     set((state) => ({
-      chats: [chat, ...normalizeList(state.chats, demoChats)],
+      chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, demoChats)],
       activeChatId: chat.id,
       sidebarOpen: false,
       messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
@@ -115,10 +304,16 @@ export const useAppStore = create((set, get) => ({
     set((state) => ({
       chats: state.chats.map((chat) =>
         chat.id === chatId
-          ? { ...chat, title: nextTitle, updatedAt: new Date().toISOString() }
+          ? { ...chat, title: nextTitle, isUntitled: false, updatedAt: new Date().toISOString() }
           : chat,
       ),
     }))
+
+    try {
+      await renameChatApi(chatId, nextTitle)
+    } catch (error) {
+      console.error('renameChat failed to persist:', error)
+    }
   },
 
   deleteChat: async (chatId) => {
@@ -129,10 +324,16 @@ export const useAppStore = create((set, get) => ({
     const restMessages = { ...state.messagesByChatId }
     delete restMessages[chatId]
 
+    try {
+      await deleteChatApi(chatId)
+    } catch (error) {
+      console.error('deleteChat failed to persist:', error)
+    }
+
     if (!remainingChats.length) {
-      const chat = await createChat('New Chat 1')
+      const chat = await createChat('New Chat')
       set({
-        chats: [chat],
+        chats: [{ ...chat, title: 'New Chat', isUntitled: true }],
         activeChatId: chat.id,
         messagesByChatId: { [chat.id]: [] },
         sidebarOpen: false,
@@ -142,8 +343,7 @@ export const useAppStore = create((set, get) => ({
 
     set({
       chats: remainingChats,
-      activeChatId:
-        state.activeChatId === chatId ? remainingChats[0].id : state.activeChatId,
+      activeChatId: state.activeChatId === chatId ? remainingChats[0].id : state.activeChatId,
       messagesByChatId: restMessages,
       sidebarOpen: false,
     })
@@ -151,79 +351,147 @@ export const useAppStore = create((set, get) => ({
 
   sendPrompt: async (content) => {
     const { activeChatId } = get()
-    if (!activeChatId || !content.trim()) return
+    if (!activeChatId || !content.trim() || get().activeRequest) return
 
-    const placeholderId = `assistant-pending-${Date.now()}`
+    const prompt = content.trim()
+    const activeChat = get().chats.find((chat) => chat.id === activeChatId)
+
+    const requestId = ++requestSequence
+    const placeholder = createLoadingAssistantMessage(requestId)
 
     const userMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: content.trim(),
+      content: prompt,
       createdAt: new Date().toISOString(),
     }
 
     set((state) => ({
       messagesByChatId: {
         ...state.messagesByChatId,
-        [activeChatId]: [...(state.messagesByChatId[activeChatId] || []), userMessage],
+        [activeChatId]: [...(state.messagesByChatId[activeChatId] || []), userMessage, placeholder],
       },
+      activeRequest: { id: requestId, chatId: activeChatId, placeholderId: placeholder.id },
+      loading: true,
     }))
+
+    // Auto-title a fresh chat from its first message, same as before.
+    if (activeChat?.isUntitled) {
+      get().renameChat(activeChatId, buildUntitledChatTitle(prompt))
+    }
+
+    await streamAssistantResponse(set, get, activeChatId, requestId, prompt)
+  },
+
+  stopGeneration: () => {
+    const request = get().activeRequest
+    if (!request?.abortController) return
+    request.abortController.abort()
+    // streamAssistantResponse's catch(AbortError) branch handles the resulting state update.
+  },
+
+  setMessageFeedback: (chatId, messageId, value) => {
+    if (!chatId || !messageId) return
 
     set((state) => ({
       messagesByChatId: {
         ...state.messagesByChatId,
-        [activeChatId]: [
-          ...(state.messagesByChatId[activeChatId] || []),
-          {
-            id: placeholderId,
-            role: 'assistant',
-            content: '',
-            createdAt: new Date().toISOString(),
-            status: 'loading',
-          },
-        ],
+        [chatId]: (state.messagesByChatId[chatId] || []).map((message) => {
+          if (message.id !== messageId) return message
+          const nextFeedback = message.feedback === value ? null : value
+          return { ...message, feedback: nextFeedback }
+        }),
       },
     }))
+    // Feedback is intentionally client-side only for now (not sent to the
+    // backend) — there's no persistence endpoint for it yet.
+  },
 
-    try {
-      await sendMessageStream(activeChatId, content, (chunkData) => {
-        set((state) => {
-          const chatMessages = state.messagesByChatId[activeChatId] || []
-          return {
-            messagesByChatId: {
-              ...state.messagesByChatId,
-              [activeChatId]: chatMessages.map((message) => {
-                if (message.id === placeholderId) {
-                  if (chunkData.type === 'chunk') {
-                    // Turn off loading once we get the first chunk
-                    return { ...message, content: message.content + chunkData.text, status: 'streaming' }
-                  } else if (chunkData.type === 'done') {
-                    // Replace with the final formatted message
-                    return { ...chunkData.message, status: 'done' }
-                  } else if (chunkData.type === 'error') {
-                    return { ...chunkData.message, status: 'error' }
-                  }
-                }
-                return message
-              }),
-            },
-          }
-        })
-      })
-    } catch (e) {
-      console.error('Stream failed:', e)
-      // On failure, remove placeholder or mark error (simple fallback)
-      set((state) => ({
-        messagesByChatId: {
-          ...state.messagesByChatId,
-          [activeChatId]: (state.messagesByChatId[activeChatId] || []).map((message) =>
-            message.id === placeholderId 
-              ? { ...message, content: 'Error connecting to the stream.', status: 'error' } 
-              : message
-          ),
-        },
-      }))
-    }
+  regenerateMessage: async (chatId, messageId) => {
+    if (!chatId || !messageId || get().activeRequest) return
+
+    const state = get()
+    const messages = state.messagesByChatId[chatId] || []
+    const messageIndex = messages.findIndex((message) => message.id === messageId)
+    const message = messages[messageIndex]
+    if (!message || message.role !== 'assistant' || message.status === 'loading' || message.status === 'streaming') return
+    if (messageIndex !== messages.length - 1) return
+
+    const previousUserMessage = [...messages.slice(0, messageIndex)]
+      .reverse()
+      .find((entry) => entry.role === 'user')
+    if (!previousUserMessage) return
+
+    const requestId = ++requestSequence
+    const placeholder = createLoadingAssistantMessage(requestId)
+
+    set((currentState) => ({
+      messagesByChatId: {
+        ...currentState.messagesByChatId,
+        [chatId]: [...messages.slice(0, messageIndex), placeholder],
+      },
+      activeRequest: { id: requestId, chatId, placeholderId: placeholder.id },
+      chats: touchChat(currentState.chats, chatId),
+      loading: true,
+    }))
+
+    // Note: Global_Mind's /messages/stream endpoint always persists whatever
+    // prompt it's given as a new user turn server-side. There's no
+    // regenerate-without-resending endpoint, so this does create a second
+    // persisted copy of the question server-side even though the UI only
+    // shows one. Documented as a known limitation, not fixed here since it
+    // would require a backend change out of scope for this migration.
+    await streamAssistantResponse(set, get, chatId, requestId, previousUserMessage.content)
+  },
+
+  editMessage: async (chatId, messageId, newContent) => {
+    if (!chatId || !messageId || get().activeRequest) return
+
+    const nextContent = newContent.trim()
+    if (!nextContent) return
+
+    const state = get()
+    const messages = state.messagesByChatId[chatId] || []
+    const messageIndex = messages.findIndex((message) => message.id === messageId)
+    const message = messages[messageIndex]
+    if (!message || message.role !== 'user') return
+
+    const requestId = ++requestSequence
+    const placeholder = createLoadingAssistantMessage(requestId)
+    const updatedUserMessage = { ...message, content: nextContent, editedAt: new Date().toISOString() }
+
+    set((currentState) => ({
+      messagesByChatId: {
+        ...currentState.messagesByChatId,
+        [chatId]: [...messages.slice(0, messageIndex), updatedUserMessage, placeholder],
+      },
+      activeRequest: { id: requestId, chatId, placeholderId: placeholder.id },
+      chats: touchChat(currentState.chats, chatId),
+      loading: true,
+    }))
+
+    // Same caveat as regenerateMessage: the backend will persist this as a
+    // new user turn rather than truly replacing the original message.
+    await streamAssistantResponse(set, get, chatId, requestId, nextContent)
+  },
+
+  markMessageAsSeen: (chatId, messageId) => {
+    if (!chatId || !messageId) return
+
+    set((state) => ({
+      messagesByChatId: {
+        ...state.messagesByChatId,
+        [chatId]: (state.messagesByChatId[chatId] || []).map((message) =>
+          message.id === messageId ? { ...message, isNew: false } : message,
+        ),
+      },
+    }))
+  },
+
+  uploadDocument: async (file) => {
+    const uploaded = await uploadDocument(file)
+    await get().refreshDocuments()
+    return uploaded
   },
 
   refreshDocuments: async () => {
