@@ -38,26 +38,37 @@ export async function sendMessageStream(chatId, message, onChunk, signal) {
   const decoder = new TextDecoder()
   let buffer = ''
 
+  const dispatch = (line) => {
+    if (!line.startsWith('data: ')) return
+    try {
+      onChunk(JSON.parse(line.slice(6)))
+    } catch (e) {
+      console.error('Failed to parse SSE JSON:', e, line)
+    }
+  }
+
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
 
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
-    
+
     // Keep the last incomplete line in the buffer
     buffer = lines.pop() || ''
 
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6))
-          onChunk(data)
-        } catch (e) {
-          console.error('Failed to parse SSE JSON:', e, line)
-        }
-      }
+      dispatch(line)
     }
+  }
+
+  // Flush anything left in the buffer once the stream closes. The final SSE
+  // event (the `done` frame that carries the complete answer and replaces the
+  // streamed text) can arrive without a trailing newline; without this flush
+  // it would be dropped and the UI would freeze on the last partial chunk.
+  buffer += decoder.decode()
+  for (const line of buffer.split('\n')) {
+    dispatch(line)
   }
 }
 

@@ -73,6 +73,13 @@ class QueryPipeline:
 
         # Step: Intent Classification
         intent = await _classify_sql_intent(question, self._router)
+        # An exhaustive enumeration ("list every X across all documents") is
+        # inherently a document-wide scan. If the router sent it down the
+        # SQL-only path it would answer from one structured table and miss the
+        # documents entirely — so guarantee vector retrieval runs alongside.
+        if exhaustive and intent == "SQL":
+            logger.info("Exhaustive query classified SQL-only — upgrading to BOTH for document coverage")
+            intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
 
         retrieved = []
@@ -166,6 +173,11 @@ class QueryPipeline:
 
         # Step: Intent Classification
         intent = await _classify_sql_intent(question, self._router)
+        # See query(): an exhaustive enumeration must always scan documents,
+        # never answer from the SQL table alone.
+        if exhaustive and intent == "SQL":
+            logger.info("Exhaustive query classified SQL-only — upgrading to BOTH for document coverage")
+            intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
 
         retrieved = []
