@@ -59,6 +59,8 @@ async def query_documents(request: QueryRequest) -> dict:
             "chunks_after_rerank": result.chunks_after_rerank,
             "filters_applied": request.filters,
         }
-    except Exception as e:
+    except Exception:
+        # Log the full error server-side; return a generic message so internal
+        # details (paths, provider errors, keys in messages) don't leak.
         logger.exception("Query failed")
-        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
+        raise HTTPException(status_code=500, detail="Query failed. Please try again.")

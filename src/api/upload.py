@@ -13,36 +13,48 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from src.core.config import settings
+from src.core.paths import safe_basename
 from src.pipeline.ingestion import IngestionPipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _resolve_upload_path(filename: str | None) -> Path:
+    """Validate an untrusted upload filename and return a safe destination path.
+
+    Collapses the name to a basename inside ``upload_dir`` so a crafted filename
+    like ``"../../etc/cron.d/x"`` or ``"/etc/passwd"`` can't escape the uploads
+    directory and overwrite arbitrary files.
+    """
+    name = safe_basename(filename or "")
+    if name is None:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return settings.upload_dir / name
+
+
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)) -> dict:
     """Upload and ingest a single document into the RAG pipeline."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided")
-
-    upload_path = settings.upload_dir / file.filename
+    upload_path = _resolve_upload_path(file.filename)
     try:
         with open(upload_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    except Exception:
+        logger.exception("Failed to save uploaded file '%s'", upload_path.name)
+        raise HTTPException(status_code=500, detail="Failed to save uploaded file")
 
     try:
         pipeline = IngestionPipeline()
         result = await pipeline.ingest(upload_path)
         return {
             "status": "success",
-            "message": f"Ingested '{file.filename}' successfully",
+            "message": f"Ingested '{upload_path.name}' successfully",
             **result.to_dict(),
         }
-    except Exception as e:
-        logger.exception("Ingestion failed for '%s'", file.filename)
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+    except Exception:
+        logger.exception("Ingestion failed for '%s'", upload_path.name)
+        raise HTTPException(status_code=500, detail="Ingestion failed")
 
 
 @router.post("/upload/batch")
@@ -57,24 +69,27 @@ async def upload_documents_batch(files: list[UploadFile] = File(...)) -> dict:
     errors = []
 
     async def _process_file(file: UploadFile) -> None:
-        if not file.filename:
+        name = safe_basename(file.filename or "")
+        if name is None:
+            errors.append({"file": file.filename or "", "error": "Invalid filename"})
             return
-        
-        upload_path = settings.upload_dir / file.filename
+
+        upload_path = settings.upload_dir / name
         try:
             with open(upload_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
-        except Exception as e:
-            errors.append({"file": file.filename, "error": f"Failed to save: {e}"})
+        except Exception:
+            logger.exception("Failed to save uploaded file '%s'", name)
+            errors.append({"file": name, "error": "Failed to save file"})
             return
 
         async with semaphore:
             try:
                 res = await pipeline.ingest(upload_path)
                 results.append(res.to_dict())
-            except Exception as e:
-                logger.exception("Batch ingestion failed for '%s'", file.filename)
-                errors.append({"file": file.filename, "error": str(e)})
+            except Exception:
+                logger.exception("Batch ingestion failed for '%s'", name)
+                errors.append({"file": name, "error": "Ingestion failed"})
 
     await asyncio.gather(*[_process_file(f) for f in files])
 
@@ -90,15 +105,13 @@ async def upload_documents_batch(files: list[UploadFile] = File(...)) -> dict:
 @router.post("/upload/stream")
 async def upload_document_stream(file: UploadFile = File(...)):
     """Upload a document and receive real-time ingestion progress via SSE."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided")
-
-    upload_path = settings.upload_dir / file.filename
+    upload_path = _resolve_upload_path(file.filename)
     try:
         with open(upload_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    except Exception:
+        logger.exception("Failed to save uploaded file '%s'", upload_path.name)
+        raise HTTPException(status_code=500, detail="Failed to save uploaded file")
 
     pipeline = IngestionPipeline()
 
@@ -107,8 +120,14 @@ async def upload_document_stream(file: UploadFile = File(...)):
             async for event in pipeline.ingest_with_progress(upload_path):
                 # Format as Server-Sent Events (SSE)
                 yield f"data: {json.dumps(event)}\n\n"
-        except Exception as e:
-            error_event = {"stage": 0, "label": "complete", "status": "error", "error": str(e)}
+        except Exception:
+            logger.exception("Streaming ingestion failed for '%s'", upload_path.name)
+            error_event = {
+                "stage": 0,
+                "label": "complete",
+                "status": "error",
+                "error": "Ingestion failed",
+            }
             yield f"data: {json.dumps(error_event)}\n\n"
 
     return StreamingResponse(_event_generator(), media_type="text/event-stream")
