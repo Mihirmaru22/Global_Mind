@@ -82,6 +82,11 @@ export async function renameChat(chatId, title) {
   return response.data
 }
 
+export async function generateChatTitle(chatId) {
+  const response = await http.post(`/chats/${chatId}/title`)
+  return response.data
+}
+
 export async function deleteChat(chatId) {
   const response = await http.delete(`/chats/${chatId}`)
   return response.data

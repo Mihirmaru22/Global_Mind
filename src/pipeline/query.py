@@ -256,6 +256,14 @@ _LISTING_KEYWORDS = [
     "what documents do you", "what files do you", "documents uploaded",
     "files uploaded", "ingested files", "available documents", "available files",
     "what is in your", "what's in your", "knowledge base",
+    # "doc"/"docs" phrasings — the colloquial shorthand for the above. Without
+    # these, "what docs you have" falls through to RAG retrieval and only
+    # describes the handful of chunks that happened to match, contradicting the
+    # authoritative registry listing.
+    "what docs", "which docs", "list docs", "show docs", "docs do you",
+    "docs you have", "available docs", "docs uploaded", "ingested docs",
+    # Count-style questions are also answered from the registry, not text-to-SQL.
+    "how many documents", "how many docs", "how many files",
 ]
 
 

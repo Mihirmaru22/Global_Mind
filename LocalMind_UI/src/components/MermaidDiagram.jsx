@@ -60,6 +60,12 @@ function buildConfig(source) {
     config: {
       startOnLoad: false,
       securityLevel: 'strict',
+      // Without this, a failed parse (broken syntax, a still-streaming block, or
+      // a false-positive detection) makes mermaid inject a "Syntax error in
+      // text" bomb graphic into <body> — outside our React tree, so it never
+      // gets cleaned up and stays stuck at the bottom of the page. Suppressing
+      // it means render() simply rejects and we fall back to the raw source.
+      suppressErrorRendering: true,
       fontFamily: 'inherit',
       theme: 'base',
       themeVariables: {
@@ -115,6 +121,11 @@ export default function MermaidDiagram({ code }) {
       })
       .catch(() => {
         // Invalid or still-streaming syntax — fall back to the raw source.
+        // Belt-and-suspenders: remove any orphan node mermaid may have appended
+        // to <body> before throwing, so no stray error graphic leaks onto the
+        // page (suppressErrorRendering above should already prevent this).
+        document.getElementById(renderId)?.remove()
+        document.getElementById(`d${renderId}`)?.remove()
         if (cancelled) return
         setFailed(true)
       })
