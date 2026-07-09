@@ -122,6 +122,25 @@ class UIStateManager:
         all_messages[chat_id].append(message)
         self.save_all_messages(all_messages)
 
+    def set_message_feedback(
+        self, chat_id: str, message_id: str, feedback: str | None
+    ) -> bool:
+        """Persist thumbs up/down (or clear it) on a stored message.
+
+        Returns True if the message was found and updated. ``feedback`` of None
+        removes any existing rating (toggle-off).
+        """
+        all_messages = self.get_all_messages()
+        for message in all_messages.get(chat_id, []):
+            if message.get("id") == message_id:
+                if feedback is None:
+                    message.pop("feedback", None)
+                else:
+                    message["feedback"] = feedback
+                self.save_all_messages(all_messages)
+                return True
+        return False
+
     # --- Documents ---
 
     def get_documents(self) -> list[dict[str, Any]]:

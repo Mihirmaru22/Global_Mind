@@ -99,6 +99,10 @@ class SendMessage(BaseModel):
     # omitted, the saved setting or app default is used.
     provider: str | None = None
 
+class MessageFeedback(BaseModel):
+    # "up", "down", or None to clear the rating.
+    feedback: str | None = None
+
 
 @router.get("/overview")
 async def get_overview() -> dict[str, Any]:
@@ -255,6 +259,24 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
             yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/chats/{chat_id}/messages/{message_id}/feedback")
+async def set_message_feedback(
+    chat_id: str, message_id: str, body: MessageFeedback
+) -> dict[str, Any]:
+    """Persist a thumbs up/down rating on an assistant message.
+
+    Stored in messages.json alongside the message, so it survives reloads and is
+    inspectable server-side. ``feedback: null`` clears the rating.
+    """
+    if body.feedback not in (None, "up", "down"):
+        raise HTTPException(status_code=400, detail="feedback must be 'up', 'down', or null")
+
+    updated = state_manager.set_message_feedback(chat_id, message_id, body.feedback)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return {"status": "ok", "feedback": body.feedback}
 
 
 @router.post("/chats/{chat_id}/title")

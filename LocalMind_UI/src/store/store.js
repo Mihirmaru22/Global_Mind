@@ -3,6 +3,7 @@ import {
   createChat,
   deleteChat as deleteChatApi,
   generateChatTitle,
+  setMessageFeedbackApi,
   getChats,
   getDocuments,
   getMessages,
@@ -447,18 +448,22 @@ export const useAppStore = create((set, get) => ({
   setMessageFeedback: (chatId, messageId, value) => {
     if (!chatId || !messageId) return
 
+    let nextFeedback = null
     set((state) => ({
       messagesByChatId: {
         ...state.messagesByChatId,
         [chatId]: (state.messagesByChatId[chatId] || []).map((message) => {
           if (message.id !== messageId) return message
-          const nextFeedback = message.feedback === value ? null : value
+          nextFeedback = message.feedback === value ? null : value
           return { ...message, feedback: nextFeedback }
         }),
       },
     }))
-    // Feedback is intentionally client-side only for now (not sent to the
-    // backend) — there's no persistence endpoint for it yet.
+    // Persist server-side (fire-and-forget) so the rating survives a reload.
+    // The UI already updated optimistically above.
+    setMessageFeedbackApi(chatId, messageId, nextFeedback).catch((error) => {
+      console.warn('Failed to persist message feedback:', error)
+    })
   },
 
   regenerateMessage: async (chatId, messageId) => {
