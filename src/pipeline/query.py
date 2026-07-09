@@ -95,7 +95,7 @@ class QueryPipeline:
         retrieved = []
         sql_chunks = []
 
-        # Stage 12b — SQL Retrieval
+        # Stage 12b — SQL Retrieval (additive: precise figures from the live DB)
         if intent in ["SQL", "BOTH"]:
             logger.info("[Stage 12b] Executing Text-to-SQL")
             sql_chunks = await self._sql_retriever.retrieve(question)
@@ -104,41 +104,33 @@ class QueryPipeline:
             else:
                 logger.info("SQL query returned no results or failed.")
 
-        # Stage 12 — Vector Retrieval
-        # An "SQL"-only classification means there's no live-database table for
-        # this data (e.g. it was ingested as a document, like an uploaded CSV,
-        # rather than loaded into the live DB). Without this fallback, a query
-        # that SQL can't answer dead-ends immediately even when the same data
-        # sits in the vector store as document chunks.
-        need_vector = intent in ["VECTOR", "BOTH"]
-        sql_came_up_empty = intent == "SQL" and not sql_chunks
-        if sql_came_up_empty:
-            logger.info("SQL-only query returned no data — falling back to vector retrieval")
-            need_vector = True
+        # Stage 12 — Vector Retrieval (always runs)
+        # Document retrieval is never skipped. SQL augments answers with exact
+        # figures, but it must never *replace* document knowledge: the live DB
+        # has only the gpu_sales table, so a question whose answer lives solely
+        # in the documents ("cheapest iPhone") would otherwise be hijacked by
+        # whatever rows that table returns. Non-deterministic intent
+        # classification made this worse — regenerating the same question would
+        # flip between a correct document answer and a wrong SQL-only one.
+        # Retrieving documents unconditionally and letting the reranker pick the
+        # relevant chunks makes the outcome consistent and correct.
+        logger.info("[Stage 12] Retrieving vector chunks")
+        vector_chunks = await self._retriever.retrieve(
+            question,
+            top_k=settings.retrieval_top_k,
+            filters=filters,
+            exhaustive=exhaustive,
+        )
+        logger.info("Retrieved %d vector chunks", len(vector_chunks))
+        retrieved.extend(vector_chunks)
 
-        if need_vector:
-            logger.info("[Stage 12] Retrieving vector chunks")
-            vector_chunks = await self._retriever.retrieve(
-                question,
-                top_k=settings.retrieval_top_k,
-                filters=filters,
-                exhaustive=exhaustive,
-            )
-            logger.info("Retrieved %d vector chunks", len(vector_chunks))
-            retrieved.extend(vector_chunks)
-
-        # Merge SQL results into the context
+        # Merge SQL results into the context (prepended; the reranker re-scores
+        # everything by relevance, so an off-topic SQL result is demoted).
         if sql_chunks:
-            # Prepend SQL results so they get highest priority
             retrieved = sql_chunks + retrieved
 
         if not retrieved:
             fallback_msg = "No relevant documents found. Please upload documents first."
-            if sql_came_up_empty:
-                fallback_msg = (
-                    "I couldn't find that in the live data or the uploaded documents — "
-                    "try rephrasing the question."
-                )
 
             return QueryResult(
                 query=question,
@@ -212,37 +204,26 @@ class QueryPipeline:
         retrieved = []
         sql_chunks = []
 
-        # Stage 12b — SQL Retrieval
+        # Stage 12b — SQL Retrieval (additive)
         if intent in ["SQL", "BOTH"]:
             sql_chunks = await self._sql_retriever.retrieve(question)
 
-        # Stage 12 — Vector Retrieval
-        # See query(): fall back to document search when an SQL-only query
-        # finds nothing in the live DB — the data may live in an uploaded file.
-        need_vector = intent in ["VECTOR", "BOTH"]
-        sql_came_up_empty = intent == "SQL" and not sql_chunks
-        if sql_came_up_empty:
-            need_vector = True
-
-        if need_vector:
-            vector_chunks = await self._retriever.retrieve(
-                question,
-                top_k=settings.retrieval_top_k,
-                filters=filters,
-                exhaustive=exhaustive,
-            )
-            retrieved.extend(vector_chunks)
+        # Stage 12 — Vector Retrieval (always runs; see query() for rationale).
+        # Document context is never skipped so a document-only answer can't be
+        # hijacked by the gpu_sales table, and regenerating stays consistent.
+        vector_chunks = await self._retriever.retrieve(
+            question,
+            top_k=settings.retrieval_top_k,
+            filters=filters,
+            exhaustive=exhaustive,
+        )
+        retrieved.extend(vector_chunks)
 
         if sql_chunks:
             retrieved = sql_chunks + retrieved
 
         if not retrieved:
             fallback_msg = "No relevant documents found. Please upload documents first."
-            if sql_came_up_empty:
-                fallback_msg = (
-                    "I couldn't find that in the live data or the uploaded documents — "
-                    "try rephrasing the question."
-                )
 
             yield fallback_msg
             yield QueryResult(
