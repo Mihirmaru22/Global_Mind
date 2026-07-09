@@ -6,6 +6,24 @@ import Card from '../components/Card.jsx'
 import Loader from '../components/Loader.jsx'
 import { useAppStore } from '../store/store.js'
 
+function formatBytes(bytes) {
+  const value = Number(bytes)
+  if (!value || value < 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  return `${size < 10 && unit > 0 ? size.toFixed(1) : Math.round(size)} ${units[unit]}`
+}
+
+function fileExtension(name) {
+  const dot = (name || '').lastIndexOf('.')
+  return dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE'
+}
+
 export default function Documents() {
   const documents = useAppStore((state) => state.documents)
   const refreshDocuments = useAppStore((state) => state.refreshDocuments)
@@ -49,7 +67,8 @@ export default function Documents() {
             <div>
               <p className="doc-row__title">{doc.name}</p>
               <p className="doc-row__meta">
-                {doc.type} · {doc.size} · Updated {dayjs(doc.updatedAt).format('MMM D, HH:mm')}
+                {fileExtension(doc.name)} · {formatBytes(doc.sizeBytes)} · {doc.chunks ?? 0} chunks
+                {doc.ingestedAt ? ` · Ingested ${dayjs(doc.ingestedAt).format('MMM D, HH:mm')}` : ''}
               </p>
             </div>
             <Button variant="secondary">

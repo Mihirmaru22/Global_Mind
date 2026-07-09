@@ -14,7 +14,6 @@ import { createPortal } from 'react-dom'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
-import { uploadDocument } from '../services/api.js'
 import Loader from './Loader.jsx'
 
 const navItems = [
@@ -33,6 +32,7 @@ export default function Sidebar() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
+  const uploadDocument = useAppStore((state) => state.uploadDocument)
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
   const [openMenuId, setOpenMenuId] = useState(null)
