@@ -105,7 +105,18 @@ class QueryPipeline:
                 logger.info("SQL query returned no results or failed.")
 
         # Stage 12 — Vector Retrieval
-        if intent in ["VECTOR", "BOTH"]:
+        # An "SQL"-only classification means there's no live-database table for
+        # this data (e.g. it was ingested as a document, like an uploaded CSV,
+        # rather than loaded into the live DB). Without this fallback, a query
+        # that SQL can't answer dead-ends immediately even when the same data
+        # sits in the vector store as document chunks.
+        need_vector = intent in ["VECTOR", "BOTH"]
+        sql_came_up_empty = intent == "SQL" and not sql_chunks
+        if sql_came_up_empty:
+            logger.info("SQL-only query returned no data — falling back to vector retrieval")
+            need_vector = True
+
+        if need_vector:
             logger.info("[Stage 12] Retrieving vector chunks")
             vector_chunks = await self._retriever.retrieve(
                 question,
@@ -123,9 +134,12 @@ class QueryPipeline:
 
         if not retrieved:
             fallback_msg = "No relevant documents found. Please upload documents first."
-            if intent == "SQL":
-                fallback_msg = "I couldn't retrieve that from the live data — try rephrasing the question."
-                
+            if sql_came_up_empty:
+                fallback_msg = (
+                    "I couldn't find that in the live data or the uploaded documents — "
+                    "try rephrasing the question."
+                )
+
             return QueryResult(
                 query=question,
                 answer=fallback_msg,
@@ -203,7 +217,14 @@ class QueryPipeline:
             sql_chunks = await self._sql_retriever.retrieve(question)
 
         # Stage 12 — Vector Retrieval
-        if intent in ["VECTOR", "BOTH"]:
+        # See query(): fall back to document search when an SQL-only query
+        # finds nothing in the live DB — the data may live in an uploaded file.
+        need_vector = intent in ["VECTOR", "BOTH"]
+        sql_came_up_empty = intent == "SQL" and not sql_chunks
+        if sql_came_up_empty:
+            need_vector = True
+
+        if need_vector:
             vector_chunks = await self._retriever.retrieve(
                 question,
                 top_k=settings.retrieval_top_k,
@@ -217,8 +238,11 @@ class QueryPipeline:
 
         if not retrieved:
             fallback_msg = "No relevant documents found. Please upload documents first."
-            if intent == "SQL":
-                fallback_msg = "I couldn't retrieve that from the live data — try rephrasing the question."
+            if sql_came_up_empty:
+                fallback_msg = (
+                    "I couldn't find that in the live data or the uploaded documents — "
+                    "try rephrasing the question."
+                )
 
             yield fallback_msg
             yield QueryResult(
