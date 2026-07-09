@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import {
   createChat,
   deleteChat as deleteChatApi,
+  generateChatTitle,
   getChats,
   getDocuments,
   getMessages,
@@ -336,6 +337,34 @@ export const useAppStore = create((set, get) => ({
     }
   },
 
+  finalizeChatTitle: async (chatId) => {
+    const chat = get().chats.find((entry) => entry.id === chatId)
+    // Only auto-title once, and never override a name the user set manually.
+    if (!chat || !chat.isUntitled) return
+
+    // Clear the flag up front so concurrent completions don't double-fire.
+    set((state) => ({
+      chats: state.chats.map((entry) =>
+        entry.id === chatId ? { ...entry, isUntitled: false } : entry,
+      ),
+    }))
+
+    try {
+      const { title } = await generateChatTitle(chatId)
+      const clean = (title || '').trim()
+      if (clean) {
+        set((state) => ({
+          chats: state.chats.map((entry) =>
+            entry.id === chatId ? { ...entry, title: clean } : entry,
+          ),
+        }))
+      }
+    } catch (error) {
+      // Keep the optimistic placeholder title on failure.
+      console.warn('Chat title generation failed:', error)
+    }
+  },
+
   deleteChat: async (chatId) => {
     if (!chatId) return
 
@@ -395,12 +424,20 @@ export const useAppStore = create((set, get) => ({
       loading: true,
     }))
 
-    // Auto-title a fresh chat from its first message, same as before.
+    // Optimistically show a trimmed placeholder so the sidebar isn't stuck on
+    // "New Chat" during the response. isUntitled stays true so the real
+    // topic-aware title (generated from the first exchange) replaces it once
+    // the answer lands — see finalizeChatTitle.
     if (activeChat?.isUntitled) {
-      get().renameChat(activeChatId, buildUntitledChatTitle(prompt))
+      set((state) => ({
+        chats: state.chats.map((chat) =>
+          chat.id === activeChatId ? { ...chat, title: buildUntitledChatTitle(prompt) } : chat,
+        ),
+      }))
     }
 
     await streamAssistantResponse(set, get, activeChatId, requestId, prompt)
+    get().finalizeChatTitle(activeChatId)
   },
 
   stopGeneration: () => {

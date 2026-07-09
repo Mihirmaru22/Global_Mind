@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 import uuid
 import json
 from typing import Any
@@ -30,6 +31,44 @@ _PROVIDER_LABELS = {
     "nvidia_nim": "NVIDIA NIM",
 }
 _PROVIDER_ORDER = ["openrouter", "gemini", "groq", "nvidia_nim"]
+
+
+_TITLE_PROMPT = """You write short, clear titles for chat conversations.
+
+Given the first exchange below, reply with a concise title of 3 to 6 words that
+captures the main topic. Use Title Case. Do NOT use quotes, a trailing period,
+or the word "chat". If there is no real topic (e.g. only a greeting), reply with
+exactly: New Chat
+
+Conversation:
+{conversation}
+
+Title:"""
+
+
+def _clean_title(raw: str) -> str:
+    """Normalize an LLM title response into a clean, bounded title string."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    # Take the first non-empty line only.
+    text = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    # Drop a leading "Title:" / "Chat title -" the model may echo back.
+    text = re.sub(r"^(chat\s+)?title\s*[:\-]\s*", "", text, flags=re.IGNORECASE)
+    # Strip surrounding quotes and trailing sentence punctuation.
+    text = text.strip().strip("\"'“”‘’").strip()
+    text = text.rstrip(".!?,;:").strip()
+    if len(text) > 60:
+        text = text[:57].rstrip() + "..."
+    return text
+
+
+def _fallback_title(prompt: str) -> str:
+    """Deterministic fallback when LLM titling is unavailable: trim the prompt."""
+    trimmed = (prompt or "").strip()
+    if len(trimmed) <= 48:
+        return trimmed or "New Chat"
+    return trimmed[:45].rstrip() + "..."
 
 
 def _resolve_provider(requested: str | None) -> str | None:
@@ -216,6 +255,45 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
             yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/chats/{chat_id}/title")
+async def generate_chat_title(chat_id: str) -> dict[str, Any]:
+    """Generate a concise, topic-aware title from a chat's first exchange.
+
+    Uses a fast, cheap model (fast_support route) so it never adds meaningful
+    latency. Persists the result and returns it. Falls back to a trimmed first
+    message if the model is unavailable or returns nothing usable.
+    """
+    messages = state_manager.get_messages(chat_id)
+    first_user = next((m for m in messages if m.get("role") == "user"), None)
+    if not first_user or not (first_user.get("content") or "").strip():
+        return {"title": None}
+
+    first_assistant = next((m for m in messages if m.get("role") == "assistant"), None)
+
+    conversation = f"User: {first_user['content'][:600]}"
+    if first_assistant and (first_assistant.get("content") or "").strip():
+        conversation += f"\nAssistant: {first_assistant['content'][:600]}"
+
+    title = ""
+    try:
+        provider_router = ProviderRouter()
+        raw = await provider_router.chat(
+            "fast_support",
+            messages=[{"role": "user", "content": _TITLE_PROMPT.format(conversation=conversation)}],
+            temperature=0.3,
+            max_tokens=20,
+        )
+        title = _clean_title(raw)
+    except Exception:
+        logger.warning("Title generation LLM call failed — falling back to trimmed prompt")
+
+    if not title or title.lower() == "new chat":
+        title = _fallback_title(first_user["content"])
+
+    state_manager.update_chat(chat_id, {"title": title})
+    return {"title": title}
 
 
 @router.get("/documents")
