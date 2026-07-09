@@ -1293,6 +1293,47 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   justify-items: end;
 }
 
+/* Version pager for regenerated answers — always visible (not hover-gated). */
+.message__versions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--text-muted);
+}
+
+.message__version-count {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.4em;
+  text-align: center;
+}
+
+.message__version-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.message__version-nav:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-primary);
+}
+
+.message__version-nav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .message__actions {
   display: flex;
   align-items: center;

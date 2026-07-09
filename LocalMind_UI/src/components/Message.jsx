@@ -2,6 +2,8 @@ import { motion } from 'framer-motion'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   PencilLine,
   RefreshCw,
@@ -137,6 +139,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   const markMessageAsSeen = useAppStore((state) => state.markMessageAsSeen)
   const setMessageFeedback = useAppStore((state) => state.setMessageFeedback)
   const regenerateMessage = useAppStore((state) => state.regenerateMessage)
+  const setMessageVersion = useAppStore((state) => state.setMessageVersion)
   const editMessage = useAppStore((state) => state.editMessage)
   const loading = useAppStore((state) => state.loading)
   const isAssistant = message.role === 'assistant'
@@ -161,6 +164,9 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   const feedback = message.feedback || null
   const canRegenerate = isAssistant && !isLoading && !isStreaming && isLast
   const canEdit = !isAssistant && !loading
+  const versions = message.versions || []
+  const activeVersion = message.activeVersion ?? Math.max(0, versions.length - 1)
+  const hasVersions = versions.length > 1 && !isLoading && !isStreaming
 
   useEffect(() => {
     if (!isEditing) {
@@ -252,6 +258,31 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
             </ReactMarkdown>
             {isTyping ? <span className="typing-cursor" aria-hidden="true" /> : null}
           </div>
+          {hasVersions ? (
+            <div className="message__versions" role="group" aria-label="Answer versions">
+              <button
+                type="button"
+                className="message__version-nav"
+                onClick={() => setMessageVersion(chatId, message.id, activeVersion - 1)}
+                disabled={activeVersion <= 0}
+                aria-label="Previous version"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span className="message__version-count" aria-live="polite">
+                {activeVersion + 1}/{versions.length}
+              </span>
+              <button
+                type="button"
+                className="message__version-nav"
+                onClick={() => setMessageVersion(chatId, message.id, activeVersion + 1)}
+                disabled={activeVersion >= versions.length - 1}
+                aria-label="Next version"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          ) : null}
           <div className="message__actions" aria-label="Assistant actions">
             <button
               type="button"

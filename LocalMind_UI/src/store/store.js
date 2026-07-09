@@ -72,6 +72,15 @@ function createLoadingAssistantMessage(requestId) {
   }
 }
 
+// A single regenerated answer, archived so the user can page between versions.
+function versionSnapshot(source) {
+  return {
+    content: source.content || '',
+    citations: source.citations || [],
+    modelUsed: source.modelUsed,
+  }
+}
+
 /**
  * Drives one assistant response via the real SSE stream, updating the
  * placeholder message in place as chunks arrive. This is what gives the
@@ -121,9 +130,31 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
                   return { ...message, content: message.content + chunkData.text, status: 'streaming' }
                 }
                 if (chunkData.type === 'done') {
-                  return { ...chunkData.message, status: 'done' }
+                  const snapshot = versionSnapshot(chunkData.message)
+                  if (request.mode === 'regenerate') {
+                    // Append the new answer as a version on the SAME message so
+                    // the user can page back to earlier ones.
+                    const versions = [...(message.versions || []), snapshot]
+                    return {
+                      ...message,
+                      content: snapshot.content,
+                      citations: snapshot.citations,
+                      modelUsed: snapshot.modelUsed,
+                      versions,
+                      activeVersion: versions.length - 1,
+                      status: 'done',
+                    }
+                  }
+                  return { ...chunkData.message, status: 'done', versions: [snapshot], activeVersion: 0 }
                 }
                 if (chunkData.type === 'error') {
+                  if (request.mode === 'regenerate') {
+                    // Drop the failed attempt; restore the last good version.
+                    const versions = message.versions || []
+                    const active = message.activeVersion ?? Math.max(0, versions.length - 1)
+                    const restore = versions[active] || { content: message.content, citations: message.citations }
+                    return { ...message, content: restore.content, citations: restore.citations || [], status: 'done' }
+                  }
                   return { ...chunkData.message, status: 'error' }
                 }
                 return message
@@ -152,11 +183,16 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
         return {
           messagesByChatId: {
             ...state.messagesByChatId,
-            [chatId]: chatMessages.map((message) =>
-              request && message.id === request.placeholderId
-                ? { ...message, status: 'done' }
-                : message,
-            ),
+            [chatId]: chatMessages.map((message) => {
+              if (!request || message.id !== request.placeholderId) return message
+              if (request.mode === 'regenerate') {
+                // Keep the aborted partial as a version so the switcher and the
+                // displayed content stay in sync.
+                const versions = [...(message.versions || []), versionSnapshot(message)]
+                return { ...message, versions, activeVersion: versions.length - 1, status: 'done' }
+              }
+              return { ...message, status: 'done' }
+            }),
           },
           activeRequest: null,
           loading: false,
@@ -174,14 +210,27 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
       set((state) => {
         const request = state.activeRequest
         const chatMessages = state.messagesByChatId[chatId] || []
+        const snapshot = versionSnapshot(assistantMessage)
         return {
           messagesByChatId: {
             ...state.messagesByChatId,
-            [chatId]: chatMessages.map((message) =>
-              request && message.id === request.placeholderId
-                ? { ...assistantMessage, status: 'done', isNew: true }
-                : message,
-            ),
+            [chatId]: chatMessages.map((message) => {
+              if (!request || message.id !== request.placeholderId) return message
+              if (request.mode === 'regenerate') {
+                const versions = [...(message.versions || []), snapshot]
+                return {
+                  ...message,
+                  content: snapshot.content,
+                  citations: snapshot.citations,
+                  modelUsed: snapshot.modelUsed,
+                  versions,
+                  activeVersion: versions.length - 1,
+                  status: 'done',
+                  isNew: true,
+                }
+              }
+              return { ...assistantMessage, status: 'done', isNew: true, versions: [snapshot], activeVersion: 0 }
+            }),
           },
           chats: touchChat(state.chats, chatId),
           activeRequest: null,
@@ -482,25 +531,51 @@ export const useAppStore = create((set, get) => ({
     if (!previousUserMessage) return
 
     const requestId = ++requestSequence
-    const placeholder = createLoadingAssistantMessage(requestId)
 
+    // Stream the new attempt into the SAME message instead of replacing it:
+    // seed the version archive with the current answer (if not already
+    // versioned), then clear the display so the regenerated tokens stream in.
+    // The done handler appends the result as a new version — see
+    // streamAssistantResponse — so the user can page between them.
     set((currentState) => ({
       messagesByChatId: {
         ...currentState.messagesByChatId,
-        [chatId]: [...messages.slice(0, messageIndex), placeholder],
+        [chatId]: (currentState.messagesByChatId[chatId] || []).map((m) => {
+          if (m.id !== messageId) return m
+          const versions = m.versions?.length ? m.versions : [versionSnapshot(m)]
+          return { ...m, versions, content: '', status: 'loading' }
+        }),
       },
-      activeRequest: { id: requestId, chatId, placeholderId: placeholder.id },
+      activeRequest: { id: requestId, chatId, placeholderId: messageId, mode: 'regenerate' },
       chats: touchChat(currentState.chats, chatId),
       loading: true,
     }))
 
-    // Note: Global_Mind's /messages/stream endpoint always persists whatever
-    // prompt it's given as a new user turn server-side. There's no
-    // regenerate-without-resending endpoint, so this does create a second
-    // persisted copy of the question server-side even though the UI only
-    // shows one. Documented as a known limitation, not fixed here since it
-    // would require a backend change out of scope for this migration.
+    // Note: the /messages/stream endpoint still persists each regenerated
+    // answer as a new turn server-side, so the version history is in-session
+    // only — a reload collapses it back to separate messages.
     await streamAssistantResponse(set, get, chatId, requestId, previousUserMessage.content)
+  },
+
+  setMessageVersion: (chatId, messageId, index) => {
+    if (!chatId || !messageId) return
+    set((state) => ({
+      messagesByChatId: {
+        ...state.messagesByChatId,
+        [chatId]: (state.messagesByChatId[chatId] || []).map((message) => {
+          if (message.id !== messageId || !message.versions?.length) return message
+          const clamped = Math.max(0, Math.min(index, message.versions.length - 1))
+          const version = message.versions[clamped]
+          return {
+            ...message,
+            activeVersion: clamped,
+            content: version.content,
+            citations: version.citations || [],
+            modelUsed: version.modelUsed,
+          }
+        }),
+      },
+    }))
   },
 
   editMessage: async (chatId, messageId, newContent) => {
