@@ -26,7 +26,7 @@ The central nervous system. Uses `pydantic_settings` to load the `.env` file. It
 - `ocr_confidence_threshold`: Determines when to fallback to intensive OCR.
 
 ### `src/core/state.py` (Database Replacement)
-We use a JSON-based Data Access Object (DAO) pattern. The `UIStateManager` reads/writes entirely to the `data/` directory (`chats.json`, `messages.json`, `documents.json`). To ensure concurrency safety across asynchronous API calls, it implements file-level advisory locking via `fcntl.flock`. This ensures the app is highly portable, safe for parallel access, and has zero database setup costs.
+We use a JSON-based Data Access Object (DAO) pattern. The `UIStateManager` reads/writes entirely to the `data/` directory (`chats.json`, `messages.json`, `documents.json`). To ensure concurrency safety across asynchronous API calls, it implements file-level advisory locking via `portalocker` (cross-platform: Linux, macOS, and Windows). This ensures the app is highly portable, safe for parallel access, and has zero database setup costs.
 
 ### `src/core/ingestion_registry.py` (Deduplication State)
 Provides stateful tracking of ingested documents via SHA-256 hashing (stored in `data/ingested_files.json`). Prevents redundant API calls on duplicate uploads and orchestrates the deletion of stale vector chunks when a document is modified.

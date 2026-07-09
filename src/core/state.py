@@ -4,20 +4,22 @@ Provides a lightweight way to store chat history, document records, and settings
 in the data/ directory, avoiding the need for a full SQL database for this
 local, zero-cost RAG architecture.
 
-Concurrency safety: all writes use an advisory file lock (fcntl on Unix)
-to prevent corruption when multiple requests modify state simultaneously.
+Concurrency safety: all writes use a cross-platform advisory file lock
+(see file_lock) to prevent corruption when multiple requests modify state
+simultaneously.
 """
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from src.core.config import DATA_DIR, settings
+from src.core.file_lock import LockMode, locked
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +39,8 @@ class UIStateManager:
         if path.exists():
             try:
                 with open(path, encoding="utf-8") as f:
-                    fcntl.flock(f, fcntl.LOCK_SH)  # Shared (read) lock
-                    try:
+                    with locked(f, LockMode.SHARED):
                         return json.load(f)
-                    finally:
-                        fcntl.flock(f, fcntl.LOCK_UN)
             except Exception as e:
                 logger.error("Failed to load %s: %s", path.name, e)
         return default
@@ -60,11 +59,13 @@ class UIStateManager:
             )
             try:
                 with open(fd, "w", encoding="utf-8") as f:
-                    fcntl.flock(f, fcntl.LOCK_EX)  # Exclusive (write) lock
-                    f.write(content)
-                    f.flush()
-                    fcntl.flock(f, fcntl.LOCK_UN)
-                Path(tmp_path).rename(path)  # Atomic on same filesystem
+                    with locked(f, LockMode.EXCLUSIVE):
+                        f.write(content)
+                        f.flush()
+                # os.replace is atomic on the same filesystem on POSIX *and*
+                # Windows, unlike Path.rename which fails on Windows when the
+                # destination already exists.
+                os.replace(tmp_path, path)
             except Exception:
                 Path(tmp_path).unlink(missing_ok=True)
                 raise

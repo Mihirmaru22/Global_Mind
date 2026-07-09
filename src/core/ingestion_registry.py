@@ -9,15 +9,17 @@ On re-upload:
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from src.core.file_lock import LockMode, locked
 
 from src.core.config import DATA_DIR
 
@@ -46,7 +48,7 @@ class RegistryCheckResult:
 class IngestionRegistry:
     """Manages a JSON-based registry of ingested files keyed by SHA-256 hash.
 
-    Thread-safe via fcntl advisory file locking (same pattern as state.py).
+    Thread-safe via cross-platform advisory file locking (same pattern as state.py).
     """
 
     def __init__(self, registry_path: Path = _REGISTRY_FILE) -> None:
@@ -202,11 +204,8 @@ class IngestionRegistry:
             return {}
         try:
             with open(self._path, encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_SH)
-                try:
+                with locked(f, LockMode.SHARED):
                     return json.load(f)
-                finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
         except Exception as e:
             logger.error("Registry: failed to load %s: %s", self._path, e)
             return {}
@@ -220,11 +219,11 @@ class IngestionRegistry:
             )
             try:
                 with open(fd, "w", encoding="utf-8") as f:
-                    fcntl.flock(f, fcntl.LOCK_EX)
-                    f.write(content)
-                    f.flush()
-                    fcntl.flock(f, fcntl.LOCK_UN)
-                Path(tmp_path).rename(self._path)
+                    with locked(f, LockMode.EXCLUSIVE):
+                        f.write(content)
+                        f.flush()
+                # Atomic on POSIX and Windows (unlike Path.rename on Windows).
+                os.replace(tmp_path, self._path)
             except Exception:
                 Path(tmp_path).unlink(missing_ok=True)
                 raise
