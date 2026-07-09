@@ -20,9 +20,12 @@ function cssVar(name, fallback) {
 }
 
 function isDarkTheme() {
-  const attr = document.documentElement.getAttribute('data-theme')
-  if (attr === 'light') return false
-  if (attr === 'dark') return true
+  // Layout sets data-theme-mode to exactly "dark"/"light" for every theme,
+  // whereas data-theme holds the specific theme name (e.g. "academic-dark"),
+  // which wouldn't match a bare "dark"/"light" check for 4 of the 6 themes.
+  const mode = document.documentElement.getAttribute('data-theme-mode')
+  if (mode === 'light') return false
+  if (mode === 'dark') return true
   return Boolean(window.matchMedia?.('(prefers-color-scheme: dark)')?.matches)
 }
 
