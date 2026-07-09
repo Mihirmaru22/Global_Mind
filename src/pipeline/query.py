@@ -34,9 +34,12 @@ class QueryPipeline:
         router: ProviderRouter | None = None,
         embedding_service: EmbeddingService | None = None,
         vector_store: QdrantStore | None = None,
+        preferred_provider: str | None = None,
     ) -> None:
         self._rate_limiter = RateLimiter()
-        self._router = router or ProviderRouter()
+        # A single router drives retrieval, reranking, and generation, so the
+        # soft pin applies uniformly across the whole query.
+        self._router = router or ProviderRouter(preferred_provider=preferred_provider)
         self._embeddings = embedding_service or EmbeddingService(self._rate_limiter)
         self._store = vector_store or QdrantStore()
         self._retriever = Retriever(self._store, self._embeddings)

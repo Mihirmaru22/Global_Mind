@@ -12,12 +12,40 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from src.core.config import settings
 from src.core.provider_client import ProviderRouter
 from src.core.state import state_manager
 from src.pipeline.query import QueryPipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Human-readable labels + display order for the provider picker. OpenRouter
+# leads because it's the default soft pin.
+_PROVIDER_LABELS = {
+    "openrouter": "OpenRouter",
+    "gemini": "Gemini",
+    "groq": "Groq",
+    "nvidia_nim": "NVIDIA NIM",
+}
+_PROVIDER_ORDER = ["openrouter", "gemini", "groq", "nvidia_nim"]
+
+
+def _resolve_provider(requested: str | None) -> str | None:
+    """Resolve the effective soft-pin provider for a request.
+
+    Precedence: explicit request value → saved UI setting → app default.
+    Returns None (no pin, "auto" routing) when the resolved value is "auto".
+    """
+    candidate = requested
+    if candidate is None:
+        candidate = state_manager.get_settings().get("provider")
+    if candidate is None:
+        candidate = settings.default_provider
+
+    normalized = (candidate or "").strip().lower()
+    return normalized if normalized and normalized != "auto" else None
 
 
 class ChatCreate(BaseModel):
@@ -28,6 +56,9 @@ class ChatUpdate(BaseModel):
 
 class SendMessage(BaseModel):
     message: str
+    # Optional soft-pin provider ("auto", "openrouter", "gemini", ...). When
+    # omitted, the saved setting or app default is used.
+    provider: str | None = None
 
 
 @router.get("/overview")
@@ -103,10 +134,10 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
     try:
         # Fresh pipeline per request — avoids accumulated RateLimiter backoff
         # bleeding across unrelated queries and biasing provider selection.
-        pipeline = QueryPipeline()
+        pipeline = QueryPipeline(preferred_provider=_resolve_provider(msg.provider))
         result = await pipeline.query(msg.message)
 
-        
+
         # Save the assistant's message
         assistant_message = {
             "id": f"msg-a-{uuid.uuid4().hex[:8]}",
@@ -115,6 +146,7 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
             "createdAt": datetime.datetime.now(datetime.UTC).isoformat(),
             "chatId": chat_id,
             "citations": [c.model_dump() for c in result.citations],
+            "modelUsed": result.model_used,
         }
         state_manager.add_message(chat_id, assistant_message)
         
@@ -149,8 +181,8 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
     }
     state_manager.add_message(chat_id, user_message)
 
-    pipeline = QueryPipeline()
-    
+    pipeline = QueryPipeline(preferred_provider=_resolve_provider(msg.provider))
+
     async def event_generator():
         try:
             async for chunk in pipeline.query_stream(msg.message):
@@ -165,6 +197,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
                         "createdAt": datetime.datetime.now(datetime.UTC).isoformat(),
                         "chatId": chat_id,
                         "citations": [c.model_dump() for c in chunk.citations],
+                        "modelUsed": chunk.model_used,
                     }
                     state_manager.add_message(chat_id, assistant_message)
                     state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})
@@ -214,6 +247,32 @@ async def get_documents() -> list[dict[str, Any]]:
     # Newest first
     documents.sort(key=lambda d: d.get("ingestedAt", ""), reverse=True)
     return documents
+
+
+@router.get("/providers")
+async def get_providers() -> dict[str, Any]:
+    """List selectable model providers for the settings picker.
+
+    Only providers with a configured API key are offered, plus an always-present
+    "Auto" option. OpenRouter leads the list and is the default soft pin; if it
+    isn't configured, the effective default degrades to "auto".
+    """
+    provider_router = ProviderRouter()
+    available = {
+        name for name, provider in provider_router._providers.items() if provider.is_available
+    }
+    ordered = [n for n in _PROVIDER_ORDER if n in available] + [
+        n for n in sorted(available) if n not in _PROVIDER_ORDER
+    ]
+
+    options = [{"id": "auto", "label": "Auto (recommended)"}]
+    options += [{"id": n, "label": _PROVIDER_LABELS.get(n, n)} for n in ordered]
+
+    default = (settings.default_provider or "auto").strip().lower()
+    if default != "auto" and default not in available:
+        default = "auto"
+
+    return {"providers": options, "default": default}
 
 
 @router.get("/settings")

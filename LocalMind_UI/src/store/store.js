@@ -6,6 +6,7 @@ import {
   getDocuments,
   getMessages,
   getOverview,
+  getProviders,
   getSettings,
   renameChat as renameChatApi,
   saveSettings,
@@ -95,6 +96,10 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
     return !request || request.id !== requestId
   }
 
+  // Soft-pin provider for this request — the backend falls back to the rest of
+  // each task's chain when the pinned provider is exhausted or down.
+  const provider = get().settings?.provider
+
   try {
     await sendMessageStream(
       chatId,
@@ -126,6 +131,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
         })
       },
       controller.signal,
+      provider,
     )
 
     if (isStale()) return
@@ -161,7 +167,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
     console.warn('Streaming request failed, falling back to a non-streaming request:', error)
 
     try {
-      const assistantMessage = await sendMessage(chatId, prompt)
+      const assistantMessage = await sendMessage(chatId, prompt, provider)
       if (isStale()) return
       set((state) => {
         const request = state.activeRequest
@@ -213,6 +219,7 @@ export const useAppStore = create((set, get) => ({
   documents: [],
   overview: null,
   settings: null,
+  providers: [],
   loading: false,
   sidebarOpen: false,
   sidebarCollapsed: readStoredBoolean('localmind-sidebar-collapsed', false),
@@ -222,12 +229,16 @@ export const useAppStore = create((set, get) => ({
   initApp: async () => {
     set({ loading: true })
     try {
-      const [overview, chats, settings, documents] = await Promise.all([
+      const [overview, chats, settings, documents, providerInfo] = await Promise.all([
         getOverview(),
         getChats(),
         getSettings(),
         getDocuments(),
+        getProviders().catch(() => ({ providers: [], default: 'auto' })),
       ])
+
+      const providerOptions = normalizeList(providerInfo?.providers, [])
+      const defaultProvider = providerInfo?.default || 'auto'
 
       const mergedSettings = {
         endpoint: '/api',
@@ -238,6 +249,7 @@ export const useAppStore = create((set, get) => ({
         streamResponses: true,
         autoSync: true,
         theme: 'dark',
+        provider: defaultProvider,
         ...settings,
       }
 
@@ -248,6 +260,13 @@ export const useAppStore = create((set, get) => ({
         }
       } catch {
         // Ignore storage issues and fall back to demo defaults.
+      }
+
+      // Guard against a stale saved provider that's no longer offered (e.g. its
+      // API key was removed) — fall back to the server's default.
+      const offered = new Set(providerOptions.map((p) => p.id))
+      if (offered.size && !offered.has(mergedSettings.provider)) {
+        mergedSettings.provider = defaultProvider
       }
 
       const normalizedChats = normalizeList(chats, demoChats)
@@ -261,6 +280,7 @@ export const useAppStore = create((set, get) => ({
         activeChatId,
         messagesByChatId: { [activeChatId]: messages || [] },
         settings: mergedSettings,
+        providers: providerOptions,
         documents: normalizedDocuments,
       })
     } finally {

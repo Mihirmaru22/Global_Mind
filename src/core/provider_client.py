@@ -396,6 +396,18 @@ class TaskRoute:
     options: list[ProviderOption] = field(default_factory=list)
 
 
+# Tasks that require a vision-capable model. When a user pins a provider that
+# isn't already in one of these routes (e.g. OpenRouter), we must select a
+# vision model, not a text model, or the call will fail.
+_VISION_TASKS = frozenset({
+    "ocr_vision",
+    "layout_analysis",
+    "table_extraction",
+    "chart_analysis",
+    "image_understanding",
+})
+
+
 # Default routing — the "Frankenstein pipeline" from Section 7 of the arch doc.
 DEFAULT_ROUTES: dict[str, TaskRoute] = {
     "semantic_classification": TaskRoute([
@@ -462,9 +474,18 @@ class ProviderRouter:
         result = await router.vision("chart_analysis", image_data=img, prompt="Describe this chart")
     """
 
-    def __init__(self, routes: dict[str, TaskRoute] | None = None) -> None:
+    def __init__(
+        self,
+        routes: dict[str, TaskRoute] | None = None,
+        preferred_provider: str | None = None,
+    ) -> None:
         self._rate_limiter = RateLimiter()
         self._routes = routes or self._load_yaml_routes() or DEFAULT_ROUTES
+        # A soft pin: the caller's preferred provider is promoted to the front
+        # of every task chain, but the rest of the chain stays intact as
+        # fallback. "auto" (or empty) means no pin — use the routes as authored.
+        pref = (preferred_provider or "").strip().lower()
+        self._preferred_provider: str | None = pref if pref and pref != "auto" else None
         self._providers: dict[str, LLMProvider] = {}
         self._init_providers()
 
@@ -532,8 +553,57 @@ class ProviderRouter:
             )
 
     def _get_route(self, task: str) -> TaskRoute:
-        """Get the fallback chain for a task, falling back to general_qa."""
-        return self._routes.get(task, self._routes.get("general_qa", TaskRoute()))
+        """Get the fallback chain for a task, falling back to general_qa.
+
+        Applies the soft provider pin (if any) so the preferred provider is
+        tried first while the rest of the chain remains as fallback.
+        """
+        base = self._routes.get(task, self._routes.get("general_qa", TaskRoute()))
+        return self._apply_preference(base, task)
+
+    def _apply_preference(self, route: TaskRoute, task: str) -> TaskRoute:
+        """Promote the pinned provider to the front of a task's fallback chain.
+
+        Soft-pin semantics:
+          * If the pinned provider already appears in the route, its option(s)
+            move to the front and everything else stays as fallback.
+          * If it doesn't appear but is OpenRouter (an aggregator with no fixed
+            per-task model), inject a configurable OpenRouter model — a vision
+            model for vision tasks, a text model otherwise.
+          * If it can't serve this task at all, leave the route untouched so the
+            task still succeeds via its normal chain.
+        """
+        pref = self._preferred_provider
+        if not pref:
+            return route
+
+        options = list(route.options)
+        existing = [o for o in options if o.provider_name == pref]
+        others = [o for o in options if o.provider_name != pref]
+
+        if existing:
+            promoted = existing
+        elif pref == "openrouter":
+            model = (
+                settings.openrouter_vision_model
+                if task in _VISION_TASKS
+                else settings.openrouter_text_model
+            )
+            if not model:
+                return route
+            promoted = [ProviderOption("openrouter", model)]
+        else:
+            # Pinned provider has no model for this task — keep the original
+            # chain rather than break the task.
+            return route
+
+        # Renumber so promoted options sort ahead of the fallback chain while
+        # each group keeps its relative order.
+        merged = [
+            ProviderOption(opt.provider_name, opt.model, priority=i)
+            for i, opt in enumerate(promoted + others)
+        ]
+        return TaskRoute(merged)
 
     async def chat(
         self,
