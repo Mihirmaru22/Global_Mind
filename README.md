@@ -64,7 +64,7 @@ globle_mind/
 │   └── providers.yaml         # Dynamic LLM routing rules & fallback chains
 ├── data/                      # Local JSON state (Zero SQL required!)
 │   ├── ingested_files.json    # Deduplication registry (SHA-256 state)
-│   └── chats.json             # UI chat history (fcntl locked)
+│   └── chats.json             # UI chat history (portalocker locked)
 ├── frontend/                  # Compiled React UI (Served directly by FastAPI)
 ├── src/                       # Core Python Backend
 │   ├── api/                   # FastAPI Endpoints
