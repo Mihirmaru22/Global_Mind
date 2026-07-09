@@ -1261,6 +1261,12 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   margin: 0 auto;
 }
 
+/* xy-charts keep their natural (category-driven) width and scroll horizontally,
+   so many-category axes stay readable instead of being squashed to fit. */
+.mermaid-diagram--wide svg {
+  max-width: none;
+}
+
 /* Shown while a diagram is still streaming in or if its syntax is invalid */
 .mermaid-fallback {
   overflow-x: auto;
@@ -1808,6 +1814,58 @@ html[data-scrolling='true'] .theme-grid {
 .theme-card--active {
   border-color: var(--accent-strong);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* --- Model provider picker (soft-pin selector) --- */
+.provider-row {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-row__head {
+  display: grid;
+  gap: 6px;
+}
+
+.provider-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.provider-chip:hover {
+  border-color: var(--panel-border-strong);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.provider-chip--active {
+  border-color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.provider-chip__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-strong);
 }
 
 .theme-preview {

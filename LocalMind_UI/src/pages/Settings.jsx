@@ -1,4 +1,4 @@
-import { Check, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { Check, Server, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '../store/store.js'
 
@@ -56,9 +56,15 @@ const themeOptions = [
 const contextOptions = ['2048 tokens', '4096 tokens', '8192 tokens']
 const topPOptions = ['0.7', '0.8', '0.9 (Standard)', '1.0']
 
+const fallbackProviders = [
+  { id: 'auto', label: 'Auto (recommended)' },
+  { id: 'openrouter', label: 'OpenRouter' },
+]
+
 export default function Settings() {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
+  const providers = useAppStore((state) => state.providers)
 
   const current = settings || {
     endpoint: '/api',
@@ -69,7 +75,11 @@ export default function Settings() {
     streamResponses: true,
     autoSync: true,
     theme: 'dark',
+    provider: 'openrouter',
   }
+
+  const providerOptions = providers?.length ? providers : fallbackProviders
+  const activeProvider = current.provider || 'auto'
 
   const setSetting = (patch) => {
     updateSettings(patch)
@@ -97,6 +107,40 @@ export default function Settings() {
             <h3 className="settings-panel__title">Model Configuration</h3>
           </div>
           <span className="settings-panel__rule" />
+        </div>
+
+        <div className="setting-row provider-row">
+          <div className="provider-row__head">
+            <div className="settings-panel__title-wrap">
+              <Server size={15} />
+              <label>Model Provider</label>
+            </div>
+            <p className="setting-help">
+              Preferred provider for answering. It's a soft preference — if it's
+              rate-limited or down, the pipeline automatically falls back to the
+              others. <strong>Auto</strong> uses the best provider per task.
+            </p>
+          </div>
+          <div className="provider-grid">
+            {providerOptions.map((option) => {
+              const active = activeProvider === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`provider-chip ${active ? 'provider-chip--active' : ''}`}
+                  onClick={() => setSetting({ provider: option.id })}
+                >
+                  <span className="provider-chip__label">{option.label}</span>
+                  {active ? (
+                    <span className="provider-chip__check">
+                      <Check size={12} />
+                    </span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         <div className="slider-row">

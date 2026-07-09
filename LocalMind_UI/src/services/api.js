@@ -15,18 +15,18 @@ export async function getMessages(chatId) {
   return response.data
 }
 
-export async function sendMessage(chatId, message) {
-  const response = await http.post(`/chats/${chatId}/messages`, { message })
+export async function sendMessage(chatId, message, provider) {
+  const response = await http.post(`/chats/${chatId}/messages`, { message, provider })
   return response.data
 }
 
-export async function sendMessageStream(chatId, message, onChunk, signal) {
+export async function sendMessageStream(chatId, message, onChunk, signal, provider) {
   const response = await fetch(`${http.defaults.baseURL}/chats/${chatId}/messages/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, provider }),
     signal,
   })
 
@@ -113,5 +113,10 @@ export async function saveSettings(payload) {
 
 export async function getSettings() {
   const response = await http.get('/settings')
+  return response.data
+}
+
+export async function getProviders() {
+  const response = await http.get('/providers')
   return response.data
 }

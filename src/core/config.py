@@ -30,6 +30,18 @@ class Settings(BaseSettings):
     qdrant_api_key: str = ""
     openrouter_api_key: str = ""
 
+    # --- Provider selection ---
+    # Default soft pin applied when the request doesn't specify one. The chosen
+    # provider is preferred for every task, but the pipeline still falls back to
+    # the rest of each task's chain when it's rate-limited or down. "auto"
+    # disables the pin and uses the task-optimized routes as authored.
+    default_provider: str = "openrouter"
+    # OpenRouter is an aggregator with no fixed per-task model, so a pin needs an
+    # explicit model. Free-tier IDs are fine for the MVP/demo; swap for paid
+    # production models via env without touching code.
+    openrouter_text_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    openrouter_vision_model: str = "meta-llama/llama-3.2-11b-vision-instruct:free"
+
     # --- Live data / Text-to-SQL ---
     # "sqlite" (default, uses the local live_data.db file) or "mysql".
     db_engine: str = "sqlite"

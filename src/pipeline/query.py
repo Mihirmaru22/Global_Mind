@@ -19,6 +19,7 @@ from src.stages.s12_s13_s14_retrieval import (
     Retriever,
     _enforce_document_diversity,
     _is_exhaustive_query,
+    _is_visualization_query,
 )
 from src.stages.s12b_sql_retrieval import SQLRetriever
 
@@ -33,9 +34,12 @@ class QueryPipeline:
         router: ProviderRouter | None = None,
         embedding_service: EmbeddingService | None = None,
         vector_store: QdrantStore | None = None,
+        preferred_provider: str | None = None,
     ) -> None:
         self._rate_limiter = RateLimiter()
-        self._router = router or ProviderRouter()
+        # A single router drives retrieval, reranking, and generation, so the
+        # soft pin applies uniformly across the whole query.
+        self._router = router or ProviderRouter(preferred_provider=preferred_provider)
         self._embeddings = embedding_service or EmbeddingService(self._rate_limiter)
         self._store = vector_store or QdrantStore()
         self._retriever = Retriever(self._store, self._embeddings)
@@ -79,6 +83,12 @@ class QueryPipeline:
         # documents entirely — so guarantee vector retrieval runs alongside.
         if exhaustive and intent == "SQL":
             logger.info("Exhaustive query classified SQL-only — upgrading to BOTH for document coverage")
+            intent = "BOTH"
+        # A visualization request ("bar chart of total units") often trips a
+        # metric keyword like "total" and gets routed to SQL-only, but the
+        # values to chart may live in the documents. Keep both sources in play.
+        elif _is_visualization_query(question) and intent == "SQL":
+            logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
             intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
 
@@ -177,6 +187,11 @@ class QueryPipeline:
         # never answer from the SQL table alone.
         if exhaustive and intent == "SQL":
             logger.info("Exhaustive query classified SQL-only — upgrading to BOTH for document coverage")
+            intent = "BOTH"
+        # See query(): a chart request must keep document retrieval in play even
+        # when a metric keyword routed it to SQL.
+        elif _is_visualization_query(question) and intent == "SQL":
+            logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
             intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
 

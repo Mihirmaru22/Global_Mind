@@ -320,6 +320,25 @@ def _is_exhaustive_query(query: str) -> bool:
     return any(kw in q for kw in _EXHAUSTIVE_KEYWORDS)
 
 
+_VISUALIZATION_KEYWORDS = [
+    "chart", "graph", "plot", "diagram", "visualize", "visualise",
+    "visualization", "visualisation", "bar chart", "line chart", "pie chart",
+    "scatter", "histogram", "flowchart", "timeline", "trend", "breakdown",
+    "distribution", "draw", "sketch",
+]
+
+
+def _is_visualization_query(query: str) -> bool:
+    """Return True if the query asks for a chart / graph / diagram.
+
+    Used to keep document retrieval in play even when a metric keyword like
+    "total" would otherwise route the request to the SQL table alone — a
+    chart may need to draw on values that live in the uploaded documents.
+    """
+    q = query.lower()
+    return any(kw in q for kw in _VISUALIZATION_KEYWORDS)
+
+
 def _enforce_document_diversity(
     chunks: list[RetrievedChunk],
     target_k: int,
@@ -398,12 +417,38 @@ _VISUALIZATION_GUIDANCE = """
 Formatting and visualization:
 - Present tabular or comparison data as a GitHub-flavored Markdown table.
 - When the user asks for a chart, graph, or diagram — or when one would communicate the answer more clearly — render it as a fenced ```mermaid code block. The app renders Mermaid natively, so DO NOT claim you lack tools to create visualizations.
-  - Proportions / share of a whole → `pie`
-  - Comparing values across categories, or trends → `xychart-beta` (bar or line)
-  - Processes, flows, hierarchies → `flowchart`
-  - Steps over time → `timeline`; interactions → `sequenceDiagram`
-- Only chart numbers that actually appear in the context. If the exact values needed for a chart are missing, say which values are missing and chart whatever related data IS available (e.g. benchmark scores, context-window sizes) rather than refusing outright.
-- Keep Mermaid syntax valid and self-contained; put every data point on its own line."""
+- Only chart numbers that actually appear in the context. If the exact values needed for a chart are missing, say which values are missing and chart whatever related data IS available rather than refusing outright.
+
+You MUST use valid Mermaid syntax. Copy the structure of these exact templates — do not invent syntax from other charting tools (no `type`, no `timeUnit`, no `range [...]`, no `plot`, no `{ }` blocks, no `[["date", value]]` pairs — those are NOT Mermaid and will fail to render):
+
+Bar or line chart (comparing values across categories, or a trend). The x-axis is a plain list of category labels; each series is a flat list of numbers, one per label, in the same order:
+```mermaid
+xychart-beta
+    title "Total Units Sold by Month"
+    x-axis [Jan, Feb, Mar, Apr, May]
+    y-axis "Units Sold" 0 --> 120
+    line [8, 34, 30, 45, 90]
+```
+(Use `bar [ ... ]` instead of `line [ ... ]` for a bar chart. If dates are involved, bucket them into a handful of labelled categories like months or quarters — Mermaid has no time axis.)
+
+Proportions / share of a whole:
+```mermaid
+pie showData
+    title Market Share
+    "NVIDIA" : 80
+    "AMD" : 15
+    "Intel" : 5
+```
+
+Process, flow, or hierarchy:
+```mermaid
+flowchart TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Do this]
+    B -->|No| D[Do that]
+```
+
+Keep every data point on its own line and make sure the number of y-values matches the number of x-axis labels."""
 
 
 def _build_system_prompt(task: str) -> str:
@@ -460,12 +505,24 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
     """
     import re
 
-    # A single chunk-id token, e.g. "418c66529513d93e_chunk_0043"
-    _CHUNK_ID = r"[a-f0-9]+_chunk_\d+"
-    # A bracket containing one or more comma-separated chunk-ids (and whitespace)
-    _CITATION_BRACKET = re.compile(rf"\[\s*{_CHUNK_ID}(?:\s*,\s*{_CHUNK_ID})*\s*\]")
-
     chunk_by_id = {c.chunk.chunk_id: c for c in chunks}
+
+    # Build the citation-bracket matcher from the *actual* retrieved chunk ids,
+    # so we catch every id shape the pipeline emits — hex "..._chunk_0043" from
+    # documents AND synthetic ids like "live_sql_001" from the SQL stage —
+    # without touching real prose brackets such as [1] or Markdown links.
+    if chunk_by_id:
+        _ID_ALT = "|".join(
+            re.escape(cid) for cid in sorted(chunk_by_id, key=len, reverse=True)
+        )
+        _CITATION_BRACKET = re.compile(rf"\[\s*(?:{_ID_ALT})(?:\s*,\s*(?:{_ID_ALT}))*\s*\]")
+    else:
+        _CITATION_BRACKET = None
+
+    # Shapes of internal ids, used only as a safety net to strip brackets for
+    # chunks the model invented (cited but never retrieved), so raw ids never
+    # reach the user regardless of source.
+    _INTERNAL_ID = r"(?:[a-f0-9]+_chunk_\d+|live_[a-z0-9]+_\d+)"
 
     citations: list[Citation] = []
     sources_text: list[str] = []
@@ -502,11 +559,14 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
         # If none resolved, drop the bracket entirely (no raw IDs leak through)
         return "".join(f"[{fn}]" for fn in footnotes)
 
-    clean_answer = _CITATION_BRACKET.sub(_replace_bracket, answer)
+    clean_answer = _CITATION_BRACKET.sub(_replace_bracket, answer) if _CITATION_BRACKET else answer
 
-    # Safety net: strip any stray single chunk-id bracket the pattern above
-    # somehow missed, so internal IDs are never shown to the user.
-    clean_answer = re.sub(rf"\[\s*{_CHUNK_ID}\s*\]", "", clean_answer)
+    # Safety net: strip any stray internal-id bracket the pattern above missed
+    # (e.g. an id the model invented for a chunk that wasn't retrieved), so raw
+    # ids are never shown to the user — hex chunk ids and live_sql_* alike.
+    clean_answer = re.sub(
+        rf"\[\s*{_INTERNAL_ID}(?:\s*,\s*{_INTERNAL_ID})*\s*\]", "", clean_answer
+    )
 
     if sources_text:
         clean_answer += "\n\n**References**\n\n" + "\n".join(sources_text)
