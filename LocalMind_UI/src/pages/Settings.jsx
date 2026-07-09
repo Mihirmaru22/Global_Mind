@@ -53,9 +53,6 @@ const themeOptions = [
   },
 ]
 
-const contextOptions = ['2048 tokens', '4096 tokens', '8192 tokens']
-const topPOptions = ['0.7', '0.8', '0.9 (Standard)', '1.0']
-
 const fallbackProviders = [
   { id: 'auto', label: 'Auto (recommended)' },
   { id: 'openrouter', label: 'OpenRouter' },
@@ -69,9 +66,6 @@ export default function Settings() {
   const current = settings || {
     endpoint: '/api',
     model: 'Mistral 7B Instruct',
-    temperature: 0.4,
-    topP: '0.9',
-    contextLength: '4096',
     streamResponses: true,
     autoSync: true,
     theme: 'dark',
@@ -140,60 +134,6 @@ export default function Settings() {
                 </button>
               )
             })}
-          </div>
-        </div>
-
-        <div className="slider-row">
-          <div>
-            <label htmlFor="temperature">Temperature</label>
-            <p className="setting-help">
-              Higher values make output more creative, lower values more focused.
-            </p>
-          </div>
-          <div className="value-chip">{Number(current.temperature).toFixed(1)}</div>
-        </div>
-        <input
-          id="temperature"
-          className="range-input"
-          type="range"
-          min="0"
-          max="1"
-          step="0.1"
-          value={current.temperature}
-          onChange={(event) => setSetting({ temperature: Number(event.target.value) })}
-        />
-
-        <div className="settings-grid">
-          <div className="setting-row">
-            <label htmlFor="topP">Top-P Sampling</label>
-            <select
-              id="topP"
-              className="select-input"
-              value={current.topP}
-              onChange={(event) => setSetting({ topP: event.target.value })}
-            >
-              {topPOptions.map((option) => (
-                <option key={option} value={option.split(' ')[0]}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="setting-row">
-            <label htmlFor="contextLength">Context Length</label>
-            <select
-              id="contextLength"
-              className="select-input"
-              value={current.contextLength}
-              onChange={(event) => setSetting({ contextLength: event.target.value })}
-            >
-              {contextOptions.map((option) => (
-                <option key={option} value={option.replace(' tokens', '')}>
-                  {option}
-                </option>
-              ))}
-            </select>
           </div>
         </div>
       </motion.section>

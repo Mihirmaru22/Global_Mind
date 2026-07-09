@@ -244,9 +244,6 @@ export const useAppStore = create((set, get) => ({
       const mergedSettings = {
         endpoint: '/api',
         model: 'Mistral 7B Instruct',
-        temperature: 0.4,
-        topP: '0.9',
-        contextLength: '4096',
         streamResponses: true,
         autoSync: true,
         theme: 'dark',
