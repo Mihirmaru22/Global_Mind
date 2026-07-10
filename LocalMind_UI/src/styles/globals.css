@@ -1488,6 +1488,10 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   }
 }
 
+.spin {
+  animation: ingest-spin 0.9s linear infinite;
+}
+
 .ingest-step__detail {
   font-size: 0.74rem;
   color: var(--text-muted);

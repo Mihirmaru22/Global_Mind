@@ -1,4 +1,5 @@
 import {
+  Loader2,
   MessageSquareText,
   MoreVertical,
   PlusCircle,
@@ -14,7 +15,6 @@ import { createPortal } from 'react-dom'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
-import Loader from './Loader.jsx'
 
 const navItems = [
   { to: '/chat', label: 'Chat', icon: MessageSquareText },
@@ -187,7 +187,7 @@ export default function Sidebar() {
             className="new-chat-action"
             style={{ margin: 0, flex: 1, padding: '10px 8px' }}
           >
-            {isUploading ? <Loader size={18} /> : <Upload size={18} />}
+            {isUploading ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}
             <span>{isUploading ? 'Ingesting...' : 'Upload'}</span>
           </button>
           <input
