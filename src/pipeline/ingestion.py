@@ -204,13 +204,18 @@ class IngestionPipeline:
             return
 
         # ── Stage 4: OCR ─────────────────────────────────────────────────────
+        # Stages 4–7 depend on OCR/vision providers that routinely 429 on free
+        # tiers. A failure here must NOT abort the whole document — degrade
+        # gracefully and keep the text already parsed in Stage 3, so the doc
+        # still gets chunked, embedded, and stored.
         yield _event(4, "running")
         try:
             document = await run_ocr(document, self._router)
             yield _event(4, "done")
         except Exception as e:
+            logger.warning("Stage 4 (OCR) failed for '%s': %s — continuing without it", path.name, e)
+            document.warnings.append(f"OCR skipped: {e}")
             yield _event(4, "error", error=str(e))
-            return
 
         # ── Stage 5: Layout Analysis ─────────────────────────────────────────
         yield _event(5, "running")
@@ -218,8 +223,9 @@ class IngestionPipeline:
             document = await analyze_layout(document, self._router)
             yield _event(5, "done")
         except Exception as e:
+            logger.warning("Stage 5 (layout) failed for '%s': %s — continuing", path.name, e)
+            document.warnings.append(f"Layout analysis skipped: {e}")
             yield _event(5, "error", error=str(e))
-            return
 
         # ── Stage 6: Table Extraction ────────────────────────────────────────
         yield _event(6, "running")
@@ -228,8 +234,9 @@ class IngestionPipeline:
             table_count = sum(len(p.tables) for p in document.pages)
             yield _event(6, "done", detail=f"{table_count} tables")
         except Exception as e:
+            logger.warning("Stage 6 (tables) failed for '%s': %s — continuing", path.name, e)
+            document.warnings.append(f"Table extraction skipped: {e}")
             yield _event(6, "error", error=str(e))
-            return
 
         # ── Stage 7: Visual Analysis ─────────────────────────────────────────
         yield _event(7, "running")
@@ -237,8 +244,9 @@ class IngestionPipeline:
             document = await analyze_visuals(document, self._router)
             yield _event(7, "done")
         except Exception as e:
+            logger.warning("Stage 7 (visuals) failed for '%s': %s — continuing", path.name, e)
+            document.warnings.append(f"Visual analysis skipped: {e}")
             yield _event(7, "error", error=str(e))
-            return
 
         # ── Stage 8: Chunking ────────────────────────────────────────────────
         yield _event(8, "running")
@@ -333,21 +341,21 @@ class IngestionPipeline:
                     break
         document.document_type = await classify_semantic(text_sample, detection, self._router)
 
-        # Stage 4 — OCR (only on scanned pages)
-        logger.info("[Stage 4] OCR")
-        document = await run_ocr(document, self._router)
-
-        # Stage 5 — Layout Analysis
-        logger.info("[Stage 5] Layout analysis")
-        document = await analyze_layout(document, self._router)
-
-        # Stage 6 — Table Extraction
-        logger.info("[Stage 6] Table extraction")
-        document = await extract_tables(document, self._router)
-
-        # Stages 7-8 — Visual Analysis
-        logger.info("[Stages 7-8] Visual analysis")
-        document = await analyze_visuals(document, self._router)
+        # Stages 4–7 — OCR/layout/tables/visuals. Provider-dependent and
+        # failure-prone on free tiers, so each is non-fatal: on error we keep
+        # the document as parsed and move on rather than dropping the upload.
+        for stage_num, stage_name, stage_fn in (
+            (4, "OCR", run_ocr),
+            (5, "Layout analysis", analyze_layout),
+            (6, "Table extraction", extract_tables),
+            (7, "Visual analysis", analyze_visuals),
+        ):
+            logger.info("[Stage %d] %s", stage_num, stage_name)
+            try:
+                document = await stage_fn(document, self._router)
+            except Exception as e:
+                logger.warning("[Stage %d] %s failed: %s — continuing", stage_num, stage_name, e)
+                document.warnings.append(f"{stage_name} skipped: {e}")
 
         # Stage 9 — Chunking
         logger.info("[Stage 9] Chunking")

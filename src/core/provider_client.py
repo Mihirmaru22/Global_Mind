@@ -486,6 +486,10 @@ class ProviderRouter:
         # fallback. "auto" (or empty) means no pin — use the routes as authored.
         pref = (preferred_provider or "").strip().lower()
         self._preferred_provider: str | None = pref if pref and pref != "auto" else None
+        # The provider/model that served the most recent successful call, e.g.
+        # "gemini/gemini-2.5-flash". Callers read this to report which model
+        # actually answered (after fallback), instead of the task name.
+        self.last_used: str = ""
         self._providers: dict[str, LLMProvider] = {}
         self._init_providers()
 
@@ -631,6 +635,7 @@ class ProviderRouter:
                     max_tokens=max_tokens,
                     response_format=response_format,
                 )
+                self.last_used = f"{option.provider_name}/{option.model}"
                 logger.debug(
                     "Task '%s' completed via %s/%s", task, option.provider_name, option.model
                 )
@@ -662,6 +667,7 @@ class ProviderRouter:
             if provider is None or not provider.is_available:
                 continue
 
+            emitted = False
             try:
                 # We yield from the provider's generator
                 async for chunk in provider.chat_stream(
@@ -670,8 +676,10 @@ class ProviderRouter:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 ):
+                    emitted = True
                     yield chunk
-                
+
+                self.last_used = f"{option.provider_name}/{option.model}"
                 logger.debug(
                     "Task stream '%s' completed via %s/%s", task, option.provider_name, option.model
                 )
@@ -680,6 +688,16 @@ class ProviderRouter:
                 error_msg = f"{option.provider_name}/{option.model}: {e}"
                 errors.append(error_msg)
                 logger.warning("Provider stream failed for task '%s': %s", task, error_msg)
+                # Once we've streamed partial text to the caller, falling back to
+                # another provider would append a second, duplicate answer on top
+                # of the first — garbled output. Fail hard instead; only fall
+                # back when nothing has been emitted yet.
+                if emitted:
+                    logger.error(
+                        "Stream for task '%s' failed after emitting output — not falling back to avoid duplication",
+                        task,
+                    )
+                    raise
                 continue
 
         raise RuntimeError(
@@ -714,6 +732,7 @@ class ProviderRouter:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+                self.last_used = f"{option.provider_name}/{option.model}"
                 logger.debug(
                     "Vision task '%s' completed via %s/%s",
                     task,

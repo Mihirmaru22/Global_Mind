@@ -110,10 +110,15 @@ class Reranker:
             try:
                 return await self._rerank_jina(query, chunks, top_k)
             except Exception as e:
-                logger.warning("Jina reranking failed: %s — using retrieval scores", e)
+                logger.warning("Jina reranking failed: %s — using lexical fallback", e)
 
-        # Fallback: just return top-k by retrieval score
-        return sorted(chunks, key=lambda r: r.score, reverse=True)[:top_k]
+        # Fallback (no Jina / Jina down): rank by lexical relevance to the query,
+        # NOT raw retrieval score. Retrieval scores aren't comparable across
+        # sources — a SQL result is hard-coded to score 1.0, so a plain
+        # score-sort would always float an off-topic SQL row above the truly
+        # relevant document chunks (e.g. GPU rows dominating a "cheapest iPhone"
+        # answer). Query-term overlap demotes chunks that don't match the words.
+        return _lexical_rerank(query, chunks, top_k)
 
     async def _rerank_jina(
         self, query: str, chunks: list[RetrievedChunk], top_k: int
@@ -150,6 +155,45 @@ class Reranker:
             reranked.append(reranked_chunk)
 
         return reranked
+
+
+_LEXICAL_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are",
+    "was", "were", "be", "what", "which", "who", "how", "many", "much", "do",
+    "does", "did", "with", "by", "at", "as", "from", "that", "this", "it",
+    "its", "compare", "make", "table", "chart", "show", "me", "give",
+})
+
+
+def _lexical_terms(text: str) -> set[str]:
+    """Lowercase content words (length ≥ 3, non-stopword) for overlap scoring."""
+    import re
+    return {
+        w for w in re.findall(r"[a-z0-9]+", text.lower())
+        if len(w) >= 3 and w not in _LEXICAL_STOPWORDS
+    }
+
+
+def _lexical_rerank(
+    query: str, chunks: list[RetrievedChunk], top_k: int
+) -> list[RetrievedChunk]:
+    """Relevance-rank chunks by query-term overlap (Jina-less fallback).
+
+    Score = fraction of the query's content words that appear in the chunk,
+    with the original retrieval score as a tiny tiebreaker. A chunk that shares
+    no query terms (e.g. GPU-sales rows for an iPhone question) sinks to the
+    bottom regardless of its raw retrieval score.
+    """
+    q_terms = _lexical_terms(query)
+    if not q_terms:
+        # Nothing to match on — preserve retrieval order.
+        return sorted(chunks, key=lambda r: r.score, reverse=True)[:top_k]
+
+    def _relevance(r: RetrievedChunk) -> tuple[float, float]:
+        overlap = len(q_terms & _lexical_terms(r.chunk.content)) / len(q_terms)
+        return (overlap, r.score)
+
+    return sorted(chunks, key=_relevance, reverse=True)[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +265,10 @@ If the context doesn't contain enough information to answer, say so explicitly."
             query=query,
             answer=clean_answer,
             citations=citations,
-            model_used=task,
+            # The actual provider/model that answered (after any fallback), not
+            # the task label — so provider selection and the "answered using"
+            # trace show real information.
+            model_used=self._router.last_used or task,
             reasoning_task=task,
             chunks_retrieved=len(chunks),
             chunks_after_rerank=len(chunks),
@@ -289,7 +336,9 @@ If the context doesn't contain enough information to answer, say so explicitly."
             query=query,
             answer=clean_answer,
             citations=citations,
-            model_used=task,
+            # Real provider/model that streamed the answer (set by the router
+            # when the stream completed), not the task label.
+            model_used=self._router.last_used or task,
             reasoning_task=task,
             chunks_retrieved=len(chunks),
             chunks_after_rerank=len(chunks),
