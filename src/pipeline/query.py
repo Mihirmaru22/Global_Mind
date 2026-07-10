@@ -6,6 +6,8 @@ Takes a question, retrieves relevant chunks, reranks, and generates an answer.
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
@@ -223,9 +225,13 @@ class QueryPipeline:
         if intent in ["SQL", "BOTH"]:
             sql_chunks = await self._sql_retriever.retrieve(question)
             if sql_chunks:
-                yield _think("Queried the live database", "returned matching rows")
+                # Surface the actual generated SQL, not a canned phrase — every
+                # question produces a different query.
+                sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
+                sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
+                yield _think("Queried the live database", sql_detail)
             else:
-                yield _think("Queried the live database", "no rows — using documents instead")
+                yield _think("Queried the live database", "no matching rows — checking documents instead")
 
         # Stage 12 — Vector Retrieval (always runs; see query() for rationale).
         # Document context is never skipped so a document-only answer can't be
@@ -237,7 +243,18 @@ class QueryPipeline:
             exhaustive=exhaustive,
         )
         retrieved.extend(vector_chunks)
-        yield _think("Searched the documents", f"found {len(vector_chunks)} relevant passage(s)")
+        # Name the actual source files this question matched against, so two
+        # different questions never show the same trace.
+        doc_names = list(dict.fromkeys(
+            Path(c.source_file).name for c in vector_chunks if c.source_file
+        ))
+        if doc_names:
+            shown = ", ".join(doc_names[:3])
+            more = f" +{len(doc_names) - 3} more" if len(doc_names) > 3 else ""
+            doc_detail = f"{len(vector_chunks)} passage(s) in {shown}{more}"
+        else:
+            doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
+        yield _think("Searched the documents", doc_detail)
 
         if sql_chunks:
             retrieved = sql_chunks + retrieved
@@ -263,14 +280,19 @@ class QueryPipeline:
                 question, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-        yield _think("Ranked the most relevant sources", f"kept the top {len(reranked)}")
+        top_source = Path(reranked[0].source_file).name if reranked and reranked[0].source_file else None
+        rank_detail = f"kept the {len(reranked)} best — top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
+        yield _think("Ranked the most relevant sources", rank_detail)
         yield _think("Writing the answer")
 
         # Stage 14 — Generation. generate_stream yields answer text chunks and,
-        # finally, the QueryResult — attach the collected thinking to it so the
-        # trace is saved with the message.
+        # finally, the QueryResult — attach the collected thinking to it and
+        # note which provider/model actually answered, so the trace closes out
+        # with a real, per-question detail rather than a static label.
         async for chunk in self._generator.generate_stream(question, reranked):
             if isinstance(chunk, QueryResult):
+                if chunk.model_used:
+                    thinking.append(ThinkingStep(label="Answered using", detail=chunk.model_used))
                 chunk.thinking = thinking
             yield chunk
 

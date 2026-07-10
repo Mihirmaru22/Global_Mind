@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Check,
   ChevronLeft,
@@ -65,19 +65,6 @@ const markdownComponents = {
   },
 }
 
-/* eslint-disable react-hooks/set-state-in-effect */
-const ragStages = [
-  'searching documents...',
-  'retrieving context...',
-  'gathering information...',
-  'analyzing findings...',
-  'reasoning through data...',
-  'connecting insights...',
-  'generating response...',
-  'crafting answer...',
-  'finalizing response...',
-]
-
 function useTypewriterText(text, enabled) {
   const [displayedText, setDisplayedText] = useState(enabled ? '' : text)
 
@@ -116,27 +103,6 @@ function useTypewriterText(text, enabled) {
   return displayedText
 }
 
-function useRagStage(isLoading) {
-  const [stageIndex, setStageIndex] = useState(0)
-
-  useEffect(() => {
-    if (!isLoading) {
-      // This hook intentionally syncs local animation state with loading status.
-      setStageIndex(0)
-      return undefined
-    }
-
-    setStageIndex(0)
-    const interval = window.setInterval(() => {
-      setStageIndex((current) => (current + 1) % ragStages.length)
-    }, 800)
-
-    return () => window.clearInterval(interval)
-  }, [isLoading])
-
-  return useMemo(() => ragStages[stageIndex], [stageIndex])
-}
-
 export default function Message({ message, index = 0, chatId, isLast = false }) {
   const markMessageAsSeen = useAppStore((state) => state.markMessageAsSeen)
   const setMessageFeedback = useAppStore((state) => state.setMessageFeedback)
@@ -152,7 +118,6 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   const [draft, setDraft] = useState(message.content || '')
   const editRef = useRef(null)
   const copyTimerRef = useRef(null)
-  const stageLabel = useRagStage(isLoading)
   const typedContent = useTypewriterText(
     message.content || '',
     isAssistant && !isLoading && !!message.isNew,
@@ -256,13 +221,13 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
         <div className="message__assistant message__assistant--loading" aria-live="polite">
           {message.thinking?.length ? (
             <ThinkingTrace steps={message.thinking} streaming />
-          ) : null}
-          <span className="message__typing">
-            <span className="loader__dot" />
-            <span className="loader__dot" />
-            <span className="loader__dot" />
-            <span className="message__typing-label">{stageLabel}</span>
-          </span>
+          ) : (
+            <span className="message__typing">
+              <span className="loader__dot" />
+              <span className="loader__dot" />
+              <span className="loader__dot" />
+            </span>
+          )}
         </div>
       ) : isAssistant ? (
         <div className="message__content">
