@@ -1,8 +1,11 @@
-import { Download, Menu, PanelLeftOpen } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Download, FileText, Loader2, Menu, PanelLeftOpen, Sparkles } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
+import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
 import Button from './Button.jsx'
-import { exportChatPdf } from '../utils/exportChatPdf.js'
+import { generateChatDocument } from '../services/api.js'
+import { exportChatTranscript, exportProfessionalDocument } from '../utils/pdfExport.js'
 
 const titleMap = {
   '/': 'Chat',
@@ -21,15 +24,53 @@ export default function Header() {
   const chats = useAppStore((state) => state.chats)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
   const title = titleMap[location.pathname] || 'Local Mind'
-  const hideTitle = location.pathname === '/' || location.pathname === '/chat' || location.pathname === '/settings'
+  const hideTitle =
+    location.pathname === '/' || location.pathname === '/chat' || location.pathname === '/settings'
   const activeChat = chats.find((chat) => chat.id === activeChatId)
   const messages = messagesByChatId[activeChatId] || []
-  const exportableMessages = messages.filter((message) => message.status !== 'loading')
+  const exportableMessages = messages.filter(
+    (message) => message.status !== 'loading' && message.kind !== 'ingestion',
+  )
   const canExport = Boolean(activeChat) && exportableMessages.length > 0
 
-  const handleExport = () => {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const menuRef = useRef(null)
+
+  useEffect(() => {
+    if (!menuOpen) return undefined
+    const onClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+    }
+    window.addEventListener('mousedown', onClick)
+    return () => window.removeEventListener('mousedown', onClick)
+  }, [menuOpen])
+
+  const handleTranscript = async () => {
+    setMenuOpen(false)
     if (!canExport) return
-    exportChatPdf(activeChat, exportableMessages)
+    try {
+      await exportChatTranscript(activeChat, exportableMessages)
+    } catch (error) {
+      console.error(error)
+      toast.error('Could not export the transcript.')
+    }
+  }
+
+  const handleProfessional = async () => {
+    setMenuOpen(false)
+    if (!canExport || busy) return
+    setBusy(true)
+    toast.info('Building your professional document…')
+    try {
+      const { markdown, title: docTitle } = await generateChatDocument(activeChatId)
+      await exportProfessionalDocument({ title: docTitle, markdown })
+    } catch (error) {
+      console.error(error)
+      toast.error('Could not generate the document. Please try again.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -57,16 +98,37 @@ export default function Header() {
         {hideTitle ? null : <h1 className="header__title">{title}</h1>}
       </div>
 
-      <div className="header__actions">
+      <div className="header__actions" ref={menuRef}>
         <button
           className="icon-button"
           type="button"
-          aria-label="Export chat as PDF"
-          onClick={handleExport}
-          disabled={!canExport}
+          aria-label="Export as PDF"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((v) => !v)}
+          disabled={!canExport || busy}
         >
-          <Download size={18} />
+          {busy ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
         </button>
+
+        {menuOpen ? (
+          <div className="export-menu" role="menu">
+            <button type="button" className="export-menu__item" role="menuitem" onClick={handleTranscript}>
+              <FileText size={16} />
+              <span>
+                <strong>Chat transcript</strong>
+                <em>The conversation, formatted with charts</em>
+              </span>
+            </button>
+            <button type="button" className="export-menu__item" role="menuitem" onClick={handleProfessional}>
+              <Sparkles size={16} />
+              <span>
+                <strong>Professional document</strong>
+                <em>A polished report generated from this chat, charts added</em>
+              </span>
+            </button>
+          </div>
+        ) : null}
       </div>
     </header>
   )

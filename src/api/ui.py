@@ -34,6 +34,28 @@ _PROVIDER_LABELS = {
 _PROVIDER_ORDER = ["openrouter", "gemini", "groq", "nvidia_nim"]
 
 
+_DOCUMENT_PROMPT = """You are a professional report writer. Convert the following conversation between a user and an AI assistant into a polished, standalone professional document in Markdown.
+
+Requirements:
+- Begin with a single H1 title (`# Title`) and a one-paragraph executive summary.
+- Organize the content into logical sections with `##` headings; use `###` for sub-points.
+- Write in clear, professional prose. Do NOT reproduce the chat turns verbatim and do NOT refer to "the user" or "the assistant".
+- Preserve every fact, figure, and inline citation marker (like [1], [2]) exactly as they appear.
+- Where the conversation contains quantitative data (comparisons, rankings, distributions, trends, totals), ADD a fitting chart as a fenced ```mermaid code block:
+  - Bar/line data → `xychart-beta`
+  - Proportions/shares → `pie`
+  Only add a chart when the underlying numbers are actually present in the conversation. Never invent data. If nothing is chartable, add no charts.
+- If the conversation already includes charts, keep and refine them.
+- If a References/Sources list is present, keep it at the end.
+
+Output ONLY the Markdown document — no preamble, no code fences around the whole thing.
+
+Conversation:
+---
+{conversation}
+---"""
+
+
 _TITLE_PROMPT = """You write short, clear titles for chat conversations.
 
 Given the first exchange below, reply with a concise title of 3 to 6 words that
@@ -317,6 +339,55 @@ async def set_message_feedback(
     if not updated:
         raise HTTPException(status_code=404, detail="Message not found")
     return {"status": "ok", "feedback": body.feedback}
+
+
+@router.post("/chats/{chat_id}/document")
+async def generate_chat_document(chat_id: str) -> dict[str, Any]:
+    """Restructure a chat into a professional Markdown document (with charts).
+
+    An LLM turns the conversation into a titled, sectioned report and adds
+    Mermaid charts where the data supports them — even if the chat itself never
+    rendered one. The frontend renders the returned Markdown to a formatted PDF.
+    """
+    messages = state_manager.get_messages(chat_id)
+    turns: list[str] = []
+    for m in messages:
+        if m.get("kind") == "ingestion" or m.get("status") == "loading":
+            continue
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        role = "User" if m.get("role") == "user" else "Assistant"
+        turns.append(f"{role}: {content}")
+
+    if not turns:
+        raise HTTPException(status_code=400, detail="This chat has no content to build a document from.")
+
+    conversation = "\n\n".join(turns)[:12000]
+
+    try:
+        provider_router = ProviderRouter()
+        markdown = await provider_router.chat(
+            "general_qa",
+            messages=[{"role": "user", "content": _DOCUMENT_PROMPT.format(conversation=conversation)}],
+            temperature=0.4,
+            max_tokens=4096,
+        )
+    except Exception:
+        logger.exception("Document generation failed for chat %s", chat_id)
+        raise HTTPException(status_code=502, detail="Could not generate the document. Please try again.")
+
+    markdown = (markdown or "").strip()
+    # Strip a stray outer ```markdown fence if the model wrapped the whole doc.
+    markdown = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", markdown).strip()
+    if not markdown:
+        raise HTTPException(status_code=502, detail="The generated document was empty. Please try again.")
+
+    # Derive a title from the first H1, else fall back to the chat title.
+    title_match = re.search(r"^#\s+(.+)$", markdown, flags=re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else "Document"
+
+    return {"markdown": markdown, "title": title}
 
 
 @router.post("/chats/{chat_id}/title")

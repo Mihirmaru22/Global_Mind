@@ -87,6 +87,11 @@ export async function generateChatTitle(chatId) {
   return response.data
 }
 
+export async function generateChatDocument(chatId) {
+  const response = await http.post(`/chats/${chatId}/document`)
+  return response.data
+}
+
 export async function setMessageFeedbackApi(chatId, messageId, feedback) {
   const response = await http.post(
     `/chats/${chatId}/messages/${messageId}/feedback`,
