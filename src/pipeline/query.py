@@ -246,7 +246,7 @@ class QueryPipeline:
         # Name the actual source files this question matched against, so two
         # different questions never show the same trace.
         doc_names = list(dict.fromkeys(
-            Path(c.source_file).name for c in vector_chunks if c.source_file
+            Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
         ))
         if doc_names:
             shown = ", ".join(doc_names[:3])
@@ -280,7 +280,7 @@ class QueryPipeline:
                 question, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-        top_source = Path(reranked[0].source_file).name if reranked and reranked[0].source_file else None
+        top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
         rank_detail = f"kept the {len(reranked)} best — top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
         yield _think("Ranked the most relevant sources", rank_detail)
         yield _think("Writing the answer")
