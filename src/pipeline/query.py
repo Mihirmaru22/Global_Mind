@@ -77,12 +77,18 @@ class QueryPipeline:
                 reasoning_task="document_listing",
             )
 
-        # Resolve follow-ups ("make a table to compare") into a standalone query
-        # so retrieval continues the current thread instead of matching random
-        # documents. The user's original question still drives generation.
-        search_query = await _contextualize_query(question, history, self._router)
-        if search_query != question:
-            logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
+        # Consult the conversation ONLY when the message looks like it depends on
+        # it. A self-contained or new-topic question skips history entirely and is
+        # answered exactly as it would be with no conversation — so history never
+        # biases an unrelated question. When it is a follow-up, rewrite it into a
+        # standalone query so retrieval continues the current thread.
+        needs_context = bool(history) and _looks_like_followup(question)
+        search_query = question
+        if needs_context:
+            search_query = await _contextualize_query(question, history, self._router)
+            if search_query != question:
+                logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
+        gen_history = history if needs_context else None
 
         exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
@@ -163,9 +169,10 @@ class QueryPipeline:
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
         logger.info("Final context: %d chunks", len(reranked))
 
-        # Stage 14 — Generation (the user's original question + conversation)
+        # Stage 14 — Generation (the user's original question + conversation,
+        # but only when the question actually depends on it)
         logger.info("[Stage 14] Generating answer")
-        result = await self._generator.generate(question, reranked, history=history)
+        result = await self._generator.generate(question, reranked, history=gen_history)
         result.chunks_retrieved = len(retrieved)
         result.chunks_after_rerank = len(reranked)
 
@@ -208,11 +215,17 @@ class QueryPipeline:
             thinking.append(step)
             return step
 
-        # Resolve follow-ups into a standalone query for retrieval (see query()).
-        search_query = await _contextualize_query(question, history, self._router)
-        if search_query != question:
-            logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
-            yield _think("Read the conversation", f"resolved to: {search_query}")
+        # Consult the conversation ONLY when the message looks like a follow-up
+        # (see query()) — a self-contained/new-topic question stays stateless so
+        # history can't bias it.
+        needs_context = bool(history) and _looks_like_followup(question)
+        search_query = question
+        if needs_context:
+            search_query = await _contextualize_query(question, history, self._router)
+            if search_query != question:
+                logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
+                yield _think("Read the conversation", f"resolved to: {search_query}")
+        gen_history = history if needs_context else None
 
         exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
@@ -309,8 +322,9 @@ class QueryPipeline:
         # finally, the QueryResult — attach the collected thinking to it and
         # note which provider/model actually answered, so the trace closes out
         # with a real, per-question detail rather than a static label. The
-        # user's original question + conversation history drive the answer.
-        async for chunk in self._generator.generate_stream(question, reranked, history=history):
+        # user's original question drives the answer; history is included only
+        # for genuine follow-ups (gen_history), never forced on new topics.
+        async for chunk in self._generator.generate_stream(question, reranked, history=gen_history):
             if isinstance(chunk, QueryResult):
                 if chunk.model_used:
                     thinking.append(ThinkingStep(label="Answered using", detail=chunk.model_used))
@@ -381,12 +395,13 @@ def _build_document_list_answer() -> str:
 # Conversational memory
 # ---------------------------------------------------------------------------
 
-_CONTEXTUALIZE_PROMPT = """You rewrite a user's follow-up message into a standalone question, using the conversation so far to resolve references.
+_CONTEXTUALIZE_PROMPT = """You rewrite a user's follow-up message into a standalone question, using the conversation ONLY to resolve references that genuinely need it.
 
 Rules:
-- Resolve pronouns and implicit references ("it", "that", "them", "those", "the second one", "compare", "make a table") using the conversation.
-- If the follow-up is already self-contained, return it unchanged.
-- Keep it concise. Output ONLY the rewritten question — no preamble, no quotes.
+- If the message depends on the conversation (pronouns like "it"/"that"/"them", or continuations like "compare", "make a table", "the second one", "why is it better"), rewrite it into a self-contained question by pulling in the missing subject from the conversation.
+- If the message is ALREADY self-contained, or introduces a NEW topic not discussed above, return it EXACTLY unchanged. Do not force the earlier subject onto an unrelated question.
+- Never add facts or assumptions — only resolve references.
+- Keep it concise. Output ONLY the resulting question — no preamble, no quotes.
 
 Conversation:
 {history}
@@ -394,6 +409,33 @@ Conversation:
 Follow-up: {question}
 
 Standalone question:"""
+
+
+# Cues that a message leans on the prior conversation rather than standing
+# alone. Deliberately excludes weak, ubiquitous words ("and", "also") to avoid
+# flagging self-contained questions.
+_FOLLOWUP_CUES = re.compile(
+    r"\b(it|its|it'?s|that|those|these|them|they|the (?:first|second|third|last|other|same|above|previous|former|latter)"
+    r"|compare|comparison|vs\.?|versus|make a table|make table|tabulate|chart it|graph it|plot it"
+    r"|how about|what about|expand|elaborate|continue|instead|difference|again|rephrase|the rest)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_followup(question: str) -> bool:
+    """Heuristic: does this message likely depend on the prior conversation?
+
+    Very short messages and referential/continuation cues suggest a follow-up.
+    Anything else is treated as self-contained, so history is never consulted
+    and a fresh, unrelated question is answered exactly as it would be with no
+    conversation at all — no bias toward earlier topics.
+    """
+    q = question.strip()
+    if not q:
+        return False
+    if len(q.split()) <= 4:
+        return True
+    return bool(_FOLLOWUP_CUES.search(q))
 
 
 def _format_history(history: list[dict] | None, *, max_turns: int = 6, max_chars: int = 700) -> str:
