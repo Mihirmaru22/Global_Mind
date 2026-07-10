@@ -181,6 +181,13 @@ class Citation(BaseModel):
     relevance_score: float = 0.0
 
 
+class ThinkingStep(BaseModel):
+    """One step in the query's reasoning trace, shown as a persistent
+    Claude-style 'thinking' block in the UI."""
+    label: str
+    detail: str = ""
+
+
 class QueryResult(BaseModel):
     """Final output of the query pipeline."""
     query: str
@@ -190,3 +197,4 @@ class QueryResult(BaseModel):
     reasoning_task: str = ""
     chunks_retrieved: int = 0
     chunks_after_rerank: int = 0
+    thinking: list[ThinkingStep] = Field(default_factory=list)

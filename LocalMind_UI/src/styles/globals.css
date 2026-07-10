@@ -1293,6 +1293,71 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   justify-items: end;
 }
 
+/* Reasoning trace — Claude-style collapsible "thinking" block above answers. */
+.thinking {
+  margin-bottom: 10px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border-strong));
+  padding-left: 2px;
+}
+
+.thinking__header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.thinking__header:hover {
+  color: var(--text-secondary);
+}
+
+.thinking__icon {
+  color: color-mix(in srgb, var(--accent-strong) 80%, var(--text-muted));
+}
+
+.thinking--live .thinking__label {
+  color: var(--text-secondary);
+}
+
+.thinking__chevron {
+  transition: transform 180ms ease;
+}
+
+.thinking__chevron--open {
+  transform: rotate(180deg);
+}
+
+.thinking__steps {
+  list-style: none;
+  margin: 4px 0 0 0;
+  padding: 2px 0 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.thinking__step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.thinking__step-label {
+  color: var(--text-secondary);
+}
+
+.thinking__step-detail {
+  font-size: 0.74rem;
+  opacity: 0.85;
+}
+
 /* Ingestion progress card — the step-by-step upload trace. */
 .message--ingestion {
   width: 100%;

@@ -19,6 +19,7 @@ import TextareaAutosize from 'react-textarea-autosize'
 import { useAppStore } from '../store/store.js'
 import MermaidDiagram from './MermaidDiagram.jsx'
 import IngestionCard from './IngestionCard.jsx'
+import ThinkingTrace from './ThinkingTrace.jsx'
 import rehypeCitations from './rehypeCitations.js'
 
 /** Recursively flatten a react-markdown children tree back into plain text.
@@ -253,6 +254,9 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
     >
       {isLoading ? (
         <div className="message__assistant message__assistant--loading" aria-live="polite">
+          {message.thinking?.length ? (
+            <ThinkingTrace steps={message.thinking} streaming />
+          ) : null}
           <span className="message__typing">
             <span className="loader__dot" />
             <span className="loader__dot" />
@@ -262,6 +266,9 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
         </div>
       ) : isAssistant ? (
         <div className="message__content">
+          {message.thinking?.length ? (
+            <ThinkingTrace steps={message.thinking} streaming={isStreaming} />
+          ) : null}
           <div className="message__assistant markdown">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}

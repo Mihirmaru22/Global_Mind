@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
 from src.core.state import state_manager
+from src.models.schemas import ThinkingStep
 from src.pipeline.query import QueryPipeline
 
 logger = logging.getLogger(__name__)
@@ -239,7 +240,10 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
     async def event_generator():
         try:
             async for chunk in pipeline.query_stream(msg.message):
-                if isinstance(chunk, str):
+                if isinstance(chunk, ThinkingStep):
+                    # A reasoning step — stream it live for the "thinking" block.
+                    yield f"data: {json.dumps({'type': 'thinking', 'step': chunk.model_dump()})}\n\n"
+                elif isinstance(chunk, str):
                     yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
                 else:
                     # Final QueryResult
@@ -251,6 +255,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
                         "chatId": chat_id,
                         "citations": [c.model_dump() for c in chunk.citations],
                         "modelUsed": chunk.model_used,
+                        "thinking": [t.model_dump() for t in chunk.thinking],
                     }
                     state_manager.add_message(chat_id, assistant_message)
                     state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})

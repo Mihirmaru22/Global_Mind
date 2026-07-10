@@ -10,7 +10,7 @@ import logging
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
 from src.core.rate_limiter import RateLimiter
-from src.models.schemas import QueryResult
+from src.models.schemas import QueryResult, ThinkingStep
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
 from src.stages.s12_s13_s14_retrieval import (
@@ -187,6 +187,15 @@ class QueryPipeline:
         if exhaustive:
             logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
 
+        # Reasoning trace ("thinking") — each step is streamed live to the UI as
+        # it happens and collected onto the final QueryResult so it persists.
+        thinking: list[ThinkingStep] = []
+
+        def _think(label: str, detail: str = "") -> ThinkingStep:
+            step = ThinkingStep(label=label, detail=detail)
+            thinking.append(step)
+            return step
+
         # Step: Intent Classification
         intent = await _classify_sql_intent(question, self._router)
         # See query(): an exhaustive enumeration must always scan documents,
@@ -200,6 +209,12 @@ class QueryPipeline:
             logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
             intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
+        _intent_detail = {
+            "SQL": "needs figures from the live database",
+            "VECTOR": "needs context from the documents",
+            "BOTH": "needs both live data and documents",
+        }.get(intent, intent)
+        yield _think("Understanding the question", _intent_detail)
 
         retrieved = []
         sql_chunks = []
@@ -207,6 +222,10 @@ class QueryPipeline:
         # Stage 12b — SQL Retrieval (additive)
         if intent in ["SQL", "BOTH"]:
             sql_chunks = await self._sql_retriever.retrieve(question)
+            if sql_chunks:
+                yield _think("Queried the live database", "returned matching rows")
+            else:
+                yield _think("Queried the live database", "no rows — using documents instead")
 
         # Stage 12 — Vector Retrieval (always runs; see query() for rationale).
         # Document context is never skipped so a document-only answer can't be
@@ -218,6 +237,7 @@ class QueryPipeline:
             exhaustive=exhaustive,
         )
         retrieved.extend(vector_chunks)
+        yield _think("Searched the documents", f"found {len(vector_chunks)} relevant passage(s)")
 
         if sql_chunks:
             retrieved = sql_chunks + retrieved
@@ -231,6 +251,7 @@ class QueryPipeline:
                 answer=fallback_msg,
                 model_used="none",
                 reasoning_task="no_results",
+                thinking=thinking,
             )
             return
 
@@ -242,9 +263,15 @@ class QueryPipeline:
                 question, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+        yield _think("Ranked the most relevant sources", f"kept the top {len(reranked)}")
+        yield _think("Writing the answer")
 
-        # Stage 14 — Generation
+        # Stage 14 — Generation. generate_stream yields answer text chunks and,
+        # finally, the QueryResult — attach the collected thinking to it so the
+        # trace is saved with the message.
         async for chunk in self._generator.generate_stream(question, reranked):
+            if isinstance(chunk, QueryResult):
+                chunk.thinking = thinking
             yield chunk
 
         logger.info("=== Query stream complete ===")

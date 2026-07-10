@@ -143,6 +143,10 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
               ...state.messagesByChatId,
               [chatId]: chatMessages.map((message) => {
                 if (message.id !== request.placeholderId) return message
+                if (chunkData.type === 'thinking') {
+                  // Live reasoning step — append to the thinking trace.
+                  return { ...message, thinking: [...(message.thinking || []), chunkData.step] }
+                }
                 if (chunkData.type === 'chunk') {
                   return { ...message, content: message.content + chunkData.text, status: 'streaming' }
                 }
@@ -157,6 +161,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
                       content: snapshot.content,
                       citations: snapshot.citations,
                       modelUsed: snapshot.modelUsed,
+                      thinking: chunkData.message.thinking || [],
                       versions,
                       activeVersion: versions.length - 1,
                       status: 'done',
@@ -560,7 +565,8 @@ export const useAppStore = create((set, get) => ({
         [chatId]: (currentState.messagesByChatId[chatId] || []).map((m) => {
           if (m.id !== messageId) return m
           const versions = m.versions?.length ? m.versions : [versionSnapshot(m)]
-          return { ...m, versions, content: '', status: 'loading' }
+          // Reset the live thinking trace so the regenerated attempt starts clean.
+          return { ...m, versions, content: '', thinking: [], status: 'loading' }
         }),
       },
       activeRequest: { id: requestId, chatId, placeholderId: messageId, mode: 'regenerate' },
