@@ -10,12 +10,29 @@ import {
   getOverview,
   getProviders,
   getSettings,
+  persistIngestionCard,
   renameChat as renameChatApi,
   saveSettings,
   sendMessage,
   sendMessageStream,
   uploadDocument,
+  uploadDocumentStream,
 } from '../services/api.js'
+
+// The 10 ingestion stages, mirrored from the backend pipeline
+// (_STAGE_LABELS in src/pipeline/ingestion.py).
+const INGESTION_STAGES = [
+  'File detection',
+  'Document classification',
+  'Content parsing',
+  'OCR (scanned pages)',
+  'Layout analysis',
+  'Table extraction',
+  'Visual analysis',
+  'Chunking',
+  'Embedding',
+  'Storing in vector DB',
+]
 
 function normalizeList(value, fallback = []) {
   if (Array.isArray(value)) return value
@@ -626,6 +643,113 @@ export const useAppStore = create((set, get) => ({
     const uploaded = await uploadDocument(file)
     await get().refreshDocuments()
     return uploaded
+  },
+
+  // Upload + ingest a file into its own chat, streaming the 10-stage pipeline
+  // progress into a persistent card (kind: 'ingestion') that survives reload.
+  ingestDocument: async (file) => {
+    const chat = await createChat(`📄 ${file.name}`)
+    const messageId = `ingest-${Date.now()}`
+    const card = {
+      id: messageId,
+      role: 'assistant',
+      kind: 'ingestion',
+      fileName: file.name,
+      status: 'running',
+      steps: INGESTION_STAGES.map((label, i) => ({
+        stage: i + 1,
+        label,
+        status: 'pending',
+        detail: '',
+      })),
+      summary: null,
+      content: '',
+      createdAt: new Date().toISOString(),
+      chatId: chat.id,
+    }
+
+    set((state) => ({
+      chats: [
+        { ...chat, title: `📄 ${file.name}`, isUntitled: false },
+        ...normalizeList(state.chats, demoChats),
+      ],
+      activeChatId: chat.id,
+      messagesByChatId: { ...state.messagesByChatId, [chat.id]: [card] },
+      sidebarOpen: false,
+    }))
+
+    const patchCard = (updater) =>
+      set((state) => ({
+        messagesByChatId: {
+          ...state.messagesByChatId,
+          [chat.id]: (state.messagesByChatId[chat.id] || []).map((m) =>
+            m.id === messageId ? { ...m, ...updater(m) } : m,
+          ),
+        },
+      }))
+
+    try {
+      await uploadDocumentStream(file, (event) => {
+        if (event.type === 'progress') {
+          patchCard((m) => ({
+            steps: m.steps.map((s) =>
+              s.stage === event.stage
+                ? { ...s, status: event.status, detail: event.detail || s.detail }
+                : s,
+            ),
+          }))
+        } else if (event.type === 'skipped') {
+          patchCard(() => ({ status: 'skipped' }))
+        } else if (event.type === 'complete') {
+          const result = event.result || {}
+          patchCard((m) => ({
+            status: event.skipped ? 'skipped' : 'done',
+            // Any stage not explicitly closed out (e.g. skipped uploads) is
+            // resolved so no spinner is left hanging.
+            steps: m.steps.map((s) =>
+              s.status === 'pending' || s.status === 'running'
+                ? { ...s, status: event.skipped ? 'skipped' : 'done' }
+                : s,
+            ),
+            summary: {
+              totalChunks: result.total_chunks ?? 0,
+              totalPages: result.total_pages ?? 0,
+              documentType: result.document_type,
+            },
+            content: event.skipped
+              ? `${file.name} was already ingested.`
+              : `Ingested ${file.name}: ${result.total_chunks ?? 0} chunks across ${result.total_pages ?? 0} page(s).`,
+          }))
+        } else if (event.type === 'error') {
+          patchCard(() => ({ status: 'error', content: `Ingestion failed: ${event.message || 'unknown error'}` }))
+        }
+      })
+    } catch (error) {
+      console.error('Ingestion stream failed:', error)
+      patchCard(() => ({ status: 'error', content: 'Ingestion failed — check server logs.' }))
+    }
+
+    await get().refreshDocuments()
+
+    // Persist the finished card so the step trace stays after a reload.
+    const finalCard = (get().messagesByChatId[chat.id] || []).find((m) => m.id === messageId)
+    if (finalCard) {
+      try {
+        await persistIngestionCard(chat.id, {
+          id: finalCard.id,
+          fileName: finalCard.fileName,
+          status: finalCard.status,
+          steps: finalCard.steps,
+          summary: finalCard.summary,
+          content: finalCard.content,
+          createdAt: finalCard.createdAt,
+        })
+      } catch (error) {
+        console.warn('Failed to persist ingestion card:', error)
+      }
+    }
+
+    return finalCard
   },
 
   refreshDocuments: async () => {

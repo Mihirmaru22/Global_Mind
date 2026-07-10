@@ -32,7 +32,7 @@ export default function Sidebar() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
-  const uploadDocument = useAppStore((state) => state.uploadDocument)
+  const ingestDocument = useAppStore((state) => state.ingestDocument)
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
   const [openMenuId, setOpenMenuId] = useState(null)
@@ -50,9 +50,9 @@ export default function Sidebar() {
 
     try {
       setIsUploading(true)
-      toast.info(`Uploading and ingesting ${file.name}...`)
-      await uploadDocument(file)
-      toast.success(`Ingested ${file.name} successfully!`)
+      // Opens a new chat and streams the live ingestion trace into it.
+      navigate('/chat')
+      await ingestDocument(file)
     } catch (error) {
       console.error(error)
       toast.error(`Upload failed. Check server logs.`)

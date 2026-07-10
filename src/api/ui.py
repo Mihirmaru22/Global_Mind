@@ -103,6 +103,16 @@ class MessageFeedback(BaseModel):
     # "up", "down", or None to clear the rating.
     feedback: str | None = None
 
+class IngestionCard(BaseModel):
+    """A persisted ingestion-progress card (the step-by-step upload trace)."""
+    id: str
+    fileName: str
+    status: str
+    steps: list[dict[str, Any]]
+    summary: dict[str, Any] | None = None
+    content: str = ""
+    createdAt: str
+
 
 @router.get("/overview")
 async def get_overview() -> dict[str, Any]:
@@ -259,6 +269,31 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
             yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/chats/{chat_id}/messages/ingestion")
+async def persist_ingestion_card(chat_id: str, card: IngestionCard) -> dict[str, Any]:
+    """Persist a finished ingestion-progress card so it survives a reload.
+
+    The card streams live during upload (via /upload/stream); once ingestion
+    finishes the frontend calls this to keep the step-by-step trace in the chat
+    permanently, like a normal message.
+    """
+    message = {
+        "id": card.id,
+        "role": "assistant",
+        "kind": "ingestion",
+        "fileName": card.fileName,
+        "status": card.status,
+        "steps": card.steps,
+        "summary": card.summary,
+        "content": card.content,
+        "createdAt": card.createdAt,
+        "chatId": chat_id,
+    }
+    state_manager.add_message(chat_id, message)
+    state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})
+    return {"status": "ok"}
 
 
 @router.post("/chats/{chat_id}/messages/{message_id}/feedback")

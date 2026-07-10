@@ -1293,6 +1293,151 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   justify-items: end;
 }
 
+/* Ingestion progress card — the step-by-step upload trace. */
+.message--ingestion {
+  width: 100%;
+}
+
+.ingest-card {
+  width: 100%;
+  max-width: 560px;
+  border: 1px solid var(--panel-border-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  overflow: hidden;
+}
+
+.ingest-card--error {
+  border-color: color-mix(in srgb, #d1495b 40%, var(--panel-border-strong));
+}
+
+.ingest-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ingest-card__file-icon {
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+.ingest-card__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ingest-card__title {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.ingest-card__file {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ingest-card__progress {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ingest-card__chevron {
+  color: var(--text-muted);
+  transition: transform 180ms ease;
+  flex-shrink: 0;
+}
+
+.ingest-card__chevron--open {
+  transform: rotate(180deg);
+}
+
+.ingest-card__steps {
+  list-style: none;
+  margin: 0;
+  padding: 4px 14px 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ingest-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.ingest-step--done,
+.ingest-step--running {
+  color: var(--text-primary);
+}
+
+.ingest-step__dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  border: 1.5px solid var(--panel-border-strong);
+  flex-shrink: 0;
+}
+
+.ingest-step__icon {
+  flex-shrink: 0;
+}
+
+.ingest-step__icon--done {
+  color: var(--success);
+}
+
+.ingest-step__icon--error {
+  color: #d1495b;
+}
+
+.ingest-step__icon--skipped {
+  color: var(--text-muted);
+}
+
+.ingest-step__icon--running {
+  color: var(--accent-strong);
+  animation: ingest-spin 0.9s linear infinite;
+}
+
+@keyframes ingest-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ingest-step__detail {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.ingest-card__summary {
+  margin: 0;
+  padding: 0 14px 12px 14px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
 /* Version pager for regenerated answers — always visible (not hover-gated). */
 .message__versions {
   display: inline-flex;

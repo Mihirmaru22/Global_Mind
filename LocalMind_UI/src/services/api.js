@@ -119,6 +119,50 @@ export async function getDocuments() {
   return response.data
 }
 
+export async function uploadDocumentStream(file, onEvent, signal) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${http.defaults.baseURL}/upload/stream`, {
+    method: 'POST',
+    body: formData,
+    signal,
+  })
+
+  if (!response.ok || !response.body) {
+    throw new Error('Failed to start ingestion stream')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const dispatch = (line) => {
+    if (!line.startsWith('data: ')) return
+    try {
+      onEvent(JSON.parse(line.slice(6)))
+    } catch (e) {
+      console.error('Failed to parse ingestion SSE JSON:', e, line)
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) dispatch(line)
+  }
+  buffer += decoder.decode()
+  for (const line of buffer.split('\n')) dispatch(line)
+}
+
+export async function persistIngestionCard(chatId, card) {
+  const response = await http.post(`/chats/${chatId}/messages/ingestion`, card)
+  return response.data
+}
+
 export async function saveSettings(payload) {
   const response = await http.post('/settings', payload)
   return response.data

@@ -18,6 +18,7 @@ import clsx from 'clsx'
 import TextareaAutosize from 'react-textarea-autosize'
 import { useAppStore } from '../store/store.js'
 import MermaidDiagram from './MermaidDiagram.jsx'
+import IngestionCard from './IngestionCard.jsx'
 import rehypeCitations from './rehypeCitations.js'
 
 /** Recursively flatten a react-markdown children tree back into plain text.
@@ -226,6 +227,19 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   const handleCancelEdit = () => {
     setDraft(message.content || '')
     setIsEditing(false)
+  }
+
+  if (message.kind === 'ingestion') {
+    return (
+      <motion.div
+        className="message message--assistant message--ingestion"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.24, delay: index * 0.03 }}
+      >
+        <IngestionCard message={message} />
+      </motion.div>
+    )
   }
 
   return (
