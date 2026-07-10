@@ -53,6 +53,7 @@ class QueryPipeline:
         self,
         question: str,
         filters: dict | None = None,
+        history: list[dict] | None = None,
     ) -> QueryResult:
         """Run a full RAG query: retrieve → rerank → generate.
 
@@ -60,6 +61,9 @@ class QueryPipeline:
             question: The user's natural-language question.
             filters: Optional metadata filters. Supported keys:
                      document_type, source_file, page_number, document_id, chunk_type.
+            history: Prior conversation turns (dicts with role/content), used to
+                     resolve follow-ups into standalone queries and to keep the
+                     answer coherent with the conversation.
         """
         logger.info("=== Query: %s ===", question[:100])
 
@@ -73,12 +77,19 @@ class QueryPipeline:
                 reasoning_task="document_listing",
             )
 
-        exhaustive = _is_exhaustive_query(question)
+        # Resolve follow-ups ("make a table to compare") into a standalone query
+        # so retrieval continues the current thread instead of matching random
+        # documents. The user's original question still drives generation.
+        search_query = await _contextualize_query(question, history, self._router)
+        if search_query != question:
+            logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
+
+        exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
             logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
 
         # Step: Intent Classification
-        intent = await _classify_sql_intent(question, self._router)
+        intent = await _classify_sql_intent(search_query, self._router)
         # An exhaustive enumeration ("list every X across all documents") is
         # inherently a document-wide scan. If the router sent it down the
         # SQL-only path it would answer from one structured table and miss the
@@ -89,7 +100,7 @@ class QueryPipeline:
         # A visualization request ("bar chart of total units") often trips a
         # metric keyword like "total" and gets routed to SQL-only, but the
         # values to chart may live in the documents. Keep both sources in play.
-        elif _is_visualization_query(question) and intent == "SQL":
+        elif _is_visualization_query(search_query) and intent == "SQL":
             logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
             intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
@@ -100,7 +111,7 @@ class QueryPipeline:
         # Stage 12b — SQL Retrieval (additive: precise figures from the live DB)
         if intent in ["SQL", "BOTH"]:
             logger.info("[Stage 12b] Executing Text-to-SQL")
-            sql_chunks = await self._sql_retriever.retrieve(question)
+            sql_chunks = await self._sql_retriever.retrieve(search_query)
             if sql_chunks:
                 logger.info("SQL query succeeded and returned rows.")
             else:
@@ -118,7 +129,7 @@ class QueryPipeline:
         # relevant chunks makes the outcome consistent and correct.
         logger.info("[Stage 12] Retrieving vector chunks")
         vector_chunks = await self._retriever.retrieve(
-            question,
+            search_query,
             top_k=settings.retrieval_top_k,
             filters=filters,
             exhaustive=exhaustive,
@@ -147,26 +158,29 @@ class QueryPipeline:
         else:
             logger.info("[Stage 13] Reranking")
             reranked = await self._reranker.rerank(
-                question, retrieved, top_k=settings.rerank_top_k
+                search_query, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
         logger.info("Final context: %d chunks", len(reranked))
 
-        # Stage 14 — Generation
+        # Stage 14 — Generation (the user's original question + conversation)
         logger.info("[Stage 14] Generating answer")
-        result = await self._generator.generate(question, reranked)
+        result = await self._generator.generate(question, reranked, history=history)
         result.chunks_retrieved = len(retrieved)
         result.chunks_after_rerank = len(reranked)
 
         logger.info("=== Query complete ===")
         return result
 
-    async def query_stream(self, question: str, filters: dict | None = None):
+    async def query_stream(
+        self, question: str, filters: dict | None = None, history: list[dict] | None = None
+    ):
         """Run a full RAG query and yield SSE stream chunks.
 
         Args:
             question: The user's natural-language question.
             filters: Optional metadata filters (same keys as query()).
+            history: Prior conversation turns for follow-up resolution.
         """
         from typing import AsyncGenerator
         from src.models.schemas import QueryResult
@@ -185,10 +199,6 @@ class QueryPipeline:
             )
             return
 
-        exhaustive = _is_exhaustive_query(question)
-        if exhaustive:
-            logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
-
         # Reasoning trace ("thinking") — each step is streamed live to the UI as
         # it happens and collected onto the final QueryResult so it persists.
         thinking: list[ThinkingStep] = []
@@ -198,8 +208,18 @@ class QueryPipeline:
             thinking.append(step)
             return step
 
+        # Resolve follow-ups into a standalone query for retrieval (see query()).
+        search_query = await _contextualize_query(question, history, self._router)
+        if search_query != question:
+            logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
+            yield _think("Read the conversation", f"resolved to: {search_query}")
+
+        exhaustive = _is_exhaustive_query(search_query)
+        if exhaustive:
+            logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
+
         # Step: Intent Classification
-        intent = await _classify_sql_intent(question, self._router)
+        intent = await _classify_sql_intent(search_query, self._router)
         # See query(): an exhaustive enumeration must always scan documents,
         # never answer from the SQL table alone.
         if exhaustive and intent == "SQL":
@@ -207,7 +227,7 @@ class QueryPipeline:
             intent = "BOTH"
         # See query(): a chart request must keep document retrieval in play even
         # when a metric keyword routed it to SQL.
-        elif _is_visualization_query(question) and intent == "SQL":
+        elif _is_visualization_query(search_query) and intent == "SQL":
             logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
             intent = "BOTH"
         logger.info(f"Query intent classified as: {intent}")
@@ -223,7 +243,7 @@ class QueryPipeline:
 
         # Stage 12b — SQL Retrieval (additive)
         if intent in ["SQL", "BOTH"]:
-            sql_chunks = await self._sql_retriever.retrieve(question)
+            sql_chunks = await self._sql_retriever.retrieve(search_query)
             if sql_chunks:
                 # Surface the actual generated SQL, not a canned phrase — every
                 # question produces a different query.
@@ -237,7 +257,7 @@ class QueryPipeline:
         # Document context is never skipped so a document-only answer can't be
         # hijacked by the gpu_sales table, and regenerating stays consistent.
         vector_chunks = await self._retriever.retrieve(
-            question,
+            search_query,
             top_k=settings.retrieval_top_k,
             filters=filters,
             exhaustive=exhaustive,
@@ -277,7 +297,7 @@ class QueryPipeline:
             reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
         else:
             reranked = await self._reranker.rerank(
-                question, retrieved, top_k=settings.rerank_top_k
+                search_query, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
         top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
@@ -288,8 +308,9 @@ class QueryPipeline:
         # Stage 14 — Generation. generate_stream yields answer text chunks and,
         # finally, the QueryResult — attach the collected thinking to it and
         # note which provider/model actually answered, so the trace closes out
-        # with a real, per-question detail rather than a static label.
-        async for chunk in self._generator.generate_stream(question, reranked):
+        # with a real, per-question detail rather than a static label. The
+        # user's original question + conversation history drive the answer.
+        async for chunk in self._generator.generate_stream(question, reranked, history=history):
             if isinstance(chunk, QueryResult):
                 if chunk.model_used:
                     thinking.append(ThinkingStep(label="Answered using", detail=chunk.model_used))
@@ -354,6 +375,71 @@ def _build_document_list_answer() -> str:
         lines.append(f"{i}. **{file_name}** — {chunks} chunks (ingested {date_str})")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Conversational memory
+# ---------------------------------------------------------------------------
+
+_CONTEXTUALIZE_PROMPT = """You rewrite a user's follow-up message into a standalone question, using the conversation so far to resolve references.
+
+Rules:
+- Resolve pronouns and implicit references ("it", "that", "them", "those", "the second one", "compare", "make a table") using the conversation.
+- If the follow-up is already self-contained, return it unchanged.
+- Keep it concise. Output ONLY the rewritten question — no preamble, no quotes.
+
+Conversation:
+{history}
+
+Follow-up: {question}
+
+Standalone question:"""
+
+
+def _format_history(history: list[dict] | None, *, max_turns: int = 6, max_chars: int = 700) -> str:
+    """Compact the last few conversation turns into a plain transcript."""
+    if not history:
+        return ""
+    lines: list[str] = []
+    for msg in history[-max_turns:]:
+        if msg.get("kind") == "ingestion" or msg.get("status") == "loading":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        lines.append(f"{role}: {content[:max_chars]}")
+    return "\n".join(lines)
+
+
+async def _contextualize_query(
+    question: str, history: list[dict] | None, router: ProviderRouter
+) -> str:
+    """Rewrite a follow-up into a standalone query for retrieval.
+
+    Without this, a message like "make a table to compare" carries no subject,
+    so retrieval matches arbitrary documents instead of continuing the current
+    thread. Returns the original question when there's no history or the rewrite
+    is unavailable.
+    """
+    convo = _format_history(history)
+    if not convo:
+        return question
+    try:
+        rewritten = await router.chat(
+            task="fast_support",
+            messages=[
+                {"role": "user", "content": _CONTEXTUALIZE_PROMPT.format(history=convo, question=question)},
+            ],
+            max_tokens=120,
+            temperature=0.0,
+        )
+        rewritten = (rewritten or "").strip().strip('"').strip()
+        if rewritten and len(rewritten) <= 400:
+            return rewritten
+    except Exception as e:
+        logger.warning("Query contextualization failed: %s — using original question", e)
+    return question
 
 
 # ---------------------------------------------------------------------------

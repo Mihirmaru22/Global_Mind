@@ -168,6 +168,7 @@ class Generator:
         chunks: list[RetrievedChunk],
         *,
         task: str | None = None,
+        history: list[dict] | None = None,
     ) -> QueryResult:
         """Generate an answer from retrieved chunks.
 
@@ -201,11 +202,13 @@ Answer the question using ONLY the information provided in the context above.
 Each excerpt is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% [a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a separate column or heading for them and do NOT refer to them as "chunks" in your prose.
 If the context doesn't contain enough information to answer, say so explicitly."""
 
-        # Generate
+        # Generate — recent conversation turns go between the system prompt and
+        # the grounded question so follow-ups stay coherent.
         response = await self._router.chat(
             task,
             messages=[
                 {"role": "system", "content": system_prompt},
+                *_history_messages(history),
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=2048,
@@ -230,6 +233,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
         chunks: list[RetrievedChunk],
         *,
         task: str | None = None,
+        history: list[dict] | None = None,
     ):
         """Stage 14: Answer generation via LLM stream.
 
@@ -270,6 +274,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
             task,
             messages=[
                 {"role": "system", "content": system_prompt},
+                *_history_messages(history),
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=2048,
@@ -463,6 +468,25 @@ def _build_system_prompt(task: str) -> str:
     }
 
     return prompts.get(task, prompts["general_qa"]) + _VISUALIZATION_GUIDANCE
+
+
+def _history_messages(history: list[dict] | None, *, max_turns: int = 6, max_chars: int = 1500) -> list[dict]:
+    """Convert stored chat turns into chat-completion messages for continuity.
+
+    Keeps only the last few user/assistant turns (skipping ingestion cards and
+    in-flight placeholders) and truncates long answers so the prompt stays lean.
+    """
+    if not history:
+        return []
+    messages: list[dict] = []
+    for turn in history[-max_turns:]:
+        if turn.get("kind") == "ingestion" or turn.get("status") == "loading":
+            continue
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content[:max_chars]})
+    return messages
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:

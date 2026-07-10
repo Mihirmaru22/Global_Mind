@@ -197,6 +197,9 @@ async def get_messages(chat_id: str) -> list[dict[str, Any]]:
 @router.post("/chats/{chat_id}/messages")
 async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
     """Send a message to a chat, process it via RAG, and return the response."""
+    # Capture prior turns for conversational context BEFORE adding this message.
+    history = state_manager.get_messages(chat_id)
+
     # Save the user's message
     user_message = {
         "id": f"msg-u-{uuid.uuid4().hex[:8]}",
@@ -211,7 +214,7 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
         # Fresh pipeline per request — avoids accumulated RateLimiter backoff
         # bleeding across unrelated queries and biasing provider selection.
         pipeline = QueryPipeline(preferred_provider=_resolve_provider(msg.provider))
-        result = await pipeline.query(msg.message)
+        result = await pipeline.query(msg.message, history=history)
 
 
         # Save the assistant's message
@@ -247,6 +250,9 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
 @router.post("/chats/{chat_id}/messages/stream")
 async def send_message_stream(chat_id: str, msg: SendMessage):
     """Send a message to a chat and stream the RAG response via SSE."""
+    # Capture prior turns for conversational context BEFORE adding this message.
+    history = state_manager.get_messages(chat_id)
+
     # Save the user's message
     user_message = {
         "id": f"msg-u-{uuid.uuid4().hex[:8]}",
@@ -261,7 +267,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
 
     async def event_generator():
         try:
-            async for chunk in pipeline.query_stream(msg.message):
+            async for chunk in pipeline.query_stream(msg.message, history=history):
                 if isinstance(chunk, ThinkingStep):
                     # A reasoning step — stream it live for the "thinking" block.
                     yield f"data: {json.dumps({'type': 'thinking', 'step': chunk.model_dump()})}\n\n"
