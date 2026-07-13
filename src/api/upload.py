@@ -142,6 +142,25 @@ async def upload_document_stream(file: UploadFile = File(...)):
     return StreamingResponse(_event_generator(), media_type="text/event-stream")
 
 
+@router.post("/ingest/folder")
+async def scan_ingest_folder() -> dict:
+    """Scan the watched drop-folder and ingest any new files.
+
+    Content-addressed dedup makes this idempotent: files already ingested are
+    skipped, so it's safe to call repeatedly. The returned ``message`` is a
+    short, ready-to-display status (covers the empty-folder and nothing-new
+    cases) that the UI surfaces as a popup.
+    """
+    from src.pipeline.folder_ingestion import scan_and_ingest
+
+    try:
+        result = await scan_and_ingest()
+    except Exception:
+        logger.exception("Folder scan failed")
+        raise HTTPException(status_code=500, detail="Folder scan failed")
+    return {"status": "success", **result.to_dict()}
+
+
 @router.post("/documents/{old_document_id}/replace")
 async def replace_document(old_document_id: str, file: UploadFile = File(...)) -> dict:
     """Replace an existing document with a new file (safe atomic cutover).

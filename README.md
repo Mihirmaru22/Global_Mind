@@ -271,6 +271,15 @@ globle-mind ingest path/to/your/document.pdf
 # Or running the module directly
 python -m src.cli ingest path/to/your/document.pdf
 ```
+**Option C (Drop-folder automation):** Drop files into the watched folder (`data/inbox/` by default) and trigger a scan — every new file is ingested automatically. Because identity is content-addressed, scans are **idempotent**: files already ingested are skipped, so it's safe to leave them in the folder and re-scan.
+```text
+# Trigger a scan on demand (returns a summary, incl. a ready-to-display message)
+curl -X POST http://localhost:8000/api/ingest/folder
+```
+Automate it with two optional env vars (see `.env.example`):
+- `AUTO_INGEST_ON_STARTUP=true` — scan the folder once each time the server starts.
+- `AUTO_INGEST_INTERVAL_SECONDS=300` — re-scan the folder every N seconds in the background (`0` disables it).
+
 *Note: Because of the deep visual analysis, complex PDFs (like Model Cards or Financial Reports) may take several minutes to ingest. The pipeline uses `asyncio` parallel processing and will automatically route around rate limits if needed!*
 
 ### 3. Chat!
