@@ -42,6 +42,10 @@ dependencies = [
     # Stage 11: Vector store
     "qdrant-client>=1.9",
 
+    # Stage 12b: Text-to-SQL retrieval
+    "sqlglot>=23.0.0",   # SQL parsing / safety validation
+    "aiosqlite>=0.20.0", # async SQLite for the live-data DB
+
     # API server
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",

@@ -24,7 +24,10 @@ WORKDIR /app
 # stays at /app and the frontend/config are served from source.
 COPY pyproject.toml requirements.txt ./
 COPY src ./src
-RUN pip install --no-cache-dir -e .
+# pyproject holds the full dependency list; requirements.txt is installed too as
+# a backstop so nothing pinned only there is ever missed.
+RUN pip install --no-cache-dir -e . \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Bring in the rest: the built frontend, provider config, etc.
 COPY . .
