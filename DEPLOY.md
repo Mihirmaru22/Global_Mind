@@ -42,11 +42,19 @@ Every push to `main` redeploys automatically (`autoDeploy: true`).
 - **Streaming works out of the box** — uvicorn serves SSE directly, no proxy
   buffering to fight.
 - **Qdrant is external** (Qdrant Cloud), so vectors persist across redeploys.
-- **Local state is ephemeral on the free tier.** `data/` (chat history, the
-  ingestion registry) lives on the container's disk, which resets on redeploy/
-  sleep. Chats and the "already ingested" registry reset; the actual document
-  vectors in Qdrant are unaffected. For durable chat history, attach a
-  persistent disk (paid) mounted at `/app/data`, or move state to a DB later.
+- **Document metadata is durable and host-independent.** The ingestion
+  registry (document identity, versions, active/superseded state, dedup
+  hashes) lives in Qdrant alongside the embeddings — a single source of truth,
+  no persistent local disk required. A redeploy, container restart, or move to
+  any other host (Docker, K8s, VPS, any PaaS) comes back with the correct
+  state as long as `QDRANT_URL`/`QDRANT_API_KEY` point at the same cluster.
+  When Qdrant isn't configured, the registry falls back to a local JSON file
+  for development only. Existing installations migrate their old
+  `data/ingested_files.json` into Qdrant automatically on first startup.
+- **Chat history is still local** (`data/`), which resets on redeploy/sleep on
+  the free tier. Uploaded files under `data/uploads/` are transient too — their
+  content already lives in Qdrant. For durable chat history, attach a
+  persistent disk (paid) mounted at `/app/data`, or move it to a DB later.
 - **Cold starts:** the free plan sleeps after ~15 min idle; the first request
   after that takes ~30s to wake.
 

@@ -12,6 +12,26 @@ import json
 import pytest
 
 from src.core.ingestion_registry import IngestionRegistry, RegistryStatus
+from src.core.metadata_store import JsonMetadataBackend
+
+
+class InMemoryBackend:
+    """A MetadataBackend with no filesystem or network — proves the registry's
+    correctness does not depend on where metadata is stored."""
+
+    def __init__(self):
+        self._data: dict[str, dict] = {}
+
+    def load_all(self) -> dict[str, dict]:
+        # Return copies so callers mutating entries don't corrupt the store
+        # until they write_batch — mirrors a real remote backend.
+        return {k: dict(v) for k, v in self._data.items()}
+
+    def write_batch(self, upserts, deletes) -> None:
+        for entry in upserts:
+            self._data[entry["document_id"]] = dict(entry)
+        for doc_id in deletes:
+            self._data.pop(doc_id, None)
 
 
 def _write(path, content: bytes = b"hello"):
@@ -19,9 +39,13 @@ def _write(path, content: bytes = b"hello"):
     return path
 
 
-@pytest.fixture
-def registry(tmp_path):
-    return IngestionRegistry(registry_path=tmp_path / "reg.json")
+@pytest.fixture(params=["json", "memory"])
+def registry(tmp_path, request):
+    """Run every registry test against both a file backend and a non-file
+    (remote-like) backend, so behavior is identical regardless of platform."""
+    if request.param == "json":
+        return IngestionRegistry(backend=JsonMetadataBackend(tmp_path / "reg.json"))
+    return IngestionRegistry(backend=InMemoryBackend())
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +233,59 @@ def test_migration_is_idempotent(tmp_path):
     reloaded = IngestionRegistry(registry_path=path)
     assert reloaded.get_by_document_id("d1") is not None
     assert reloaded.get_active_ids() == {"d1"}
+
+
+# ---------------------------------------------------------------------------
+# metadata_store: backend batch semantics + migration
+# ---------------------------------------------------------------------------
+
+def test_json_backend_batch_upsert_and_delete(tmp_path):
+    backend = JsonMetadataBackend(tmp_path / "m.json")
+    a = {"document_id": "a", "content_hash": "h1", "active": True}
+    b = {"document_id": "b", "content_hash": "h2", "active": True}
+    backend.write_batch([a, b], [])
+    assert set(backend.load_all()) == {"a", "b"}
+
+    # Upsert-and-delete in one atomic batch.
+    a2 = {"document_id": "a", "content_hash": "h1b", "active": False}
+    backend.write_batch([a2], ["b"])
+    stored = backend.load_all()
+    assert set(stored) == {"a"}
+    assert stored["a"]["content_hash"] == "h1b"
+
+
+def test_migrate_registry_legacy_schema():
+    from src.core.metadata_store import migrate_registry
+
+    legacy = {
+        "f" * 64: {
+            "document_id": "leg",
+            "file_name": "d.pdf",
+            "total_chunks": 7,
+            "ingested_at": "2026-02-02T00:00:00+00:00",
+        }
+    }
+    upgraded, changed = migrate_registry(legacy)
+    assert changed is True
+    assert upgraded["leg"]["content_hash"] == "f" * 64
+    assert upgraded["leg"]["filename"] == "d.pdf"
+    assert upgraded["leg"]["active"] is True
+    assert upgraded["leg"]["lineage_root"] == "leg"
+
+    # Idempotent: feeding the upgraded form back is a no-op.
+    again, changed2 = migrate_registry(upgraded)
+    assert changed2 is False
+    assert again == upgraded
+
+
+def test_migrate_registry_rekeys_lineage_by_document_id():
+    """Lineage-schema data keyed by something other than document_id is rekeyed
+    (e.g. a Qdrant import or a hand-edited file)."""
+    from src.core.metadata_store import migrate_registry
+
+    data = {
+        "SOME_KEY": {"document_id": "real-id", "content_hash": "h", "active": True}
+    }
+    upgraded, changed = migrate_registry(data)
+    assert changed is True
+    assert set(upgraded) == {"real-id"}

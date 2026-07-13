@@ -528,6 +528,39 @@ class IngestionPipeline:
         return result
 
 
+async def reconcile_active_flags(
+    registry: IngestionRegistry | None = None,
+    store: QdrantStore | None = None,
+) -> dict[str, int]:
+    """Force the vector store's chunk ``active`` flags to match registry state.
+
+    The registry (durable in Qdrant) is the source of truth for which version is
+    live. A crash *between* marking a version superseded and flipping its chunks
+    inactive would leave stale chunks retrievable. Running this at startup closes
+    that gap: every superseded document's chunks are forced inactive. Idempotent
+    and safe to run repeatedly — it only ever hides already-superseded content.
+    """
+    registry = registry or IngestionRegistry()
+    store = store or QdrantStore()
+
+    superseded = registry.get_superseded_ids()
+    reconciled = 0
+    for doc_id in superseded:
+        try:
+            await store.set_document_active(doc_id, False)
+            reconciled += 1
+        except Exception:
+            logger.exception("Reconcile: failed to deactivate chunks for %s", doc_id)
+
+    if superseded:
+        logger.info(
+            "Reconcile: ensured %d/%d superseded document(s) are hidden from retrieval",
+            reconciled,
+            len(superseded),
+        )
+    return {"superseded": len(superseded), "reconciled": reconciled}
+
+
 class IngestionResult:
     """Result of a document ingestion."""
 
