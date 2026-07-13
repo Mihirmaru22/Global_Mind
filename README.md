@@ -130,7 +130,11 @@ globle_mind/
 │   ├── live_data.db           # SQLite database for Text-to-SQL stage
 │   ├── uploads/               # Raw uploaded files (pre-processing)
 │   └── processed/             # Post-processing artifacts
-├── docs/                      # Sample documents for testing ingestion
+├── docs/                      # Project documentation
+│   ├── ARCHITECTURE.md        # Deep-dive system mechanics & directory map
+│   ├── DEPLOY.md              # Container/PaaS deployment guide
+│   ├── document-identity.html # Document identity, versioning & dedup reference
+│   └── design-history/        # Original free-API design research (historical)
 ├── frontend/                  # Compiled React UI (Served directly by FastAPI)
 ├── src/                       # Core Python Backend
 │   ├── api/                   # FastAPI Endpoints
@@ -178,9 +182,14 @@ globle_mind/
 │   ├── test_provider_gemini.py # Gemini provider-specific tests
 │   ├── test_file_lock.py       # File locking concurrency tests
 │   └── test_path_safety.py     # Path traversal protection tests
-├── setup_db.py                # SQLite sample database setup script
-├── ARCHITECTURE.md            # Deep-dive system mechanics documentation
+├── scripts/                   # Dev & ops scripts (not shipped in the image)
+│   ├── setup_db.py            # Loads the sample CSV into data/live_data.db
+│   ├── sql_smoke_test.py      # Manual Text-to-SQL smoke check (hits live APIs)
+│   └── adversarial_smoke_test.py # Manual SQL-injection / routing smoke check
+├── Dockerfile                 # Container image (FastAPI + bundled UI)
+├── render.yaml                # Render blueprint (auto-deploy)
 ├── CLAUDE.md                  # AI coding standards & conventions
+├── requirements.txt           # Runtime deps installed as a backstop to pyproject
 └── pyproject.toml             # Python dependencies & project config
 ```
 
@@ -301,4 +310,4 @@ globle-mind health
 - **Adding a New LLM Provider:** Implement the `LLMProvider` protocol (defined in `src/core/provider_client.py`) — `chat()`, `chat_stream()`, and `vision()` — register it in `ProviderRouter`, and add entries in `config/providers.yaml`.
 
 ## 📚 Architecture Details
-For a deep dive into the internal mechanics, state management, and file structure of GlobleMind, please read the comprehensive **[ARCHITECTURE.md](ARCHITECTURE.md)** file included in this repository.
+For a deep dive into the internal mechanics, state management, and file structure of GlobleMind, please read the comprehensive **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. Deployment instructions live in **[docs/DEPLOY.md](docs/DEPLOY.md)**, and the document identity/versioning model is documented in **[docs/document-identity.html](docs/document-identity.html)**.
