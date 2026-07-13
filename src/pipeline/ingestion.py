@@ -35,6 +35,23 @@ from src.stages.s11_vector_store import QdrantStore
 logger = logging.getLogger(__name__)
 
 
+def _discard_redundant_upload(path: Path) -> None:
+    """Delete a just-uploaded file whose content was already ingested.
+
+    Uploads land in a unique per-upload subdirectory, so a duplicate upload
+    leaves a redundant copy on disk. Remove the file (and its now-empty
+    subdirectory) so duplicates don't accumulate. Best-effort — never fatal.
+    """
+    try:
+        path.unlink(missing_ok=True)
+        parent = path.parent
+        # Only remove the subdirectory if it's an (empty) per-upload dir.
+        if parent.name and parent != parent.parent and not any(parent.iterdir()):
+            parent.rmdir()
+    except Exception as e:
+        logger.debug("Could not clean up redundant upload '%s': %s", path, e)
+
+
 # Stage labels for progress events
 _STAGE_LABELS: dict[int, str] = {
     1: "File detection",
@@ -84,7 +101,8 @@ class IngestionPipeline:
 
         if check.status == RegistryStatus.ALREADY_INGESTED:
             entry = check.old_entry or {}
-            logger.info("Skipping '%s' — already ingested (hash match)", path.name)
+            logger.info("Skipping '%s' — identical content already ingested", path.name)
+            _discard_redundant_upload(path)
             return IngestionResult(
                 file_path=str(path),
                 file_category=entry.get("file_category", "unknown"),
@@ -95,18 +113,10 @@ class IngestionPipeline:
                 skipped=True,
             )
 
-        if check.status == RegistryStatus.CONTENT_CHANGED and check.old_document_id:
-            logger.info(
-                "Content changed for '%s' — removing old vectors (doc_id=%s)",
-                path.name,
-                check.old_document_id,
-            )
-            try:
-                await self._store.delete_document(check.old_document_id)
-            except Exception as e:
-                logger.warning("Failed to delete old document vectors: %s", e)
-
         # ── Pipeline ────────────────────────────────────────────────────────
+        # Any new content is a distinct document (content-addressed identity), so
+        # there is nothing to delete first — a same-name file never displaces an
+        # existing one.
         result = await self._run_pipeline(path)
 
         # Register after successful ingestion
@@ -144,10 +154,14 @@ class IngestionPipeline:
             }
 
         # ── Deduplication check ──────────────────────────────────────────────
+        # Content-addressed: identical content is skipped; anything else is a
+        # new, distinct document (a same-name file never displaces an existing
+        # one), so there is nothing to delete first.
         check = self._registry.check(path)
         if check.status == RegistryStatus.ALREADY_INGESTED:
             entry = check.old_entry or {}
-            yield {"type": "skipped", "file": path.name, "reason": "Already ingested (content unchanged)"}
+            _discard_redundant_upload(path)
+            yield {"type": "skipped", "file": path.name, "reason": "Already ingested (identical content)"}
             yield {
                 "type": "complete",
                 "skipped": True,
@@ -159,13 +173,6 @@ class IngestionPipeline:
                 },
             }
             return
-
-        if check.status == RegistryStatus.CONTENT_CHANGED and check.old_document_id:
-            yield {"type": "info", "message": f"Content changed — removing old vectors for '{path.name}'"}
-            try:
-                await self._store.delete_document(check.old_document_id)
-            except Exception as e:
-                logger.warning("Failed to delete old document vectors: %s", e)
 
         # ── Stage 1: File Detection ──────────────────────────────────────────
         yield _event(1, "running")

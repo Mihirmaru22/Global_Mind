@@ -1,10 +1,17 @@
-"""Ingestion Registry — SHA-256-based document deduplication.
+"""Ingestion Registry — content-addressed document deduplication.
 
-Tracks all ingested documents in data/ingested_files.json.
-On re-upload:
-  - Same file (same hash) → skip entirely (no wasted API calls)
-  - Modified file (same name, different hash) → delete old Qdrant vectors + re-ingest
-  - New file → normal ingestion
+Tracks all ingested documents in data/ingested_files.json, keyed by the SHA-256
+of the file's *content*. Identity is content, not filename:
+
+  - Same content (any name) → skip entirely (no wasted API calls)
+  - New content            → a new, distinct document — ALWAYS ingested
+
+The filename is only a display label. Two different files that happen to share a
+name (e.g. two people's ``resume.pdf``) are two separate documents and both are
+kept — a same-name upload never deletes or overwrites a different document. This
+is a deliberate no-data-loss guarantee: re-uploading an edited file therefore
+creates a second document rather than replacing the first (delete the old one
+explicitly if you want it gone).
 """
 
 from __future__ import annotations
@@ -61,16 +68,18 @@ class IngestionRegistry:
     # ------------------------------------------------------------------
 
     def check(self, file_path: str | Path) -> RegistryCheckResult:
-        """Compute SHA-256 and check the registry.
+        """Compute the content SHA-256 and check the registry.
 
-        Returns a RegistryCheckResult describing whether this is new,
-        already ingested, or a changed version of an existing document.
+        Identity is content-based: an exact content match is a duplicate to
+        skip; anything else is a brand-new, distinct document. Filename is never
+        used to decide identity, so a same-name upload with different content is
+        a new document — it never displaces the existing one.
         """
         path = Path(file_path)
         file_hash = self._sha256(path)
         registry = self._load()
 
-        # Case 1: Exact hash match — already ingested, nothing to do
+        # Exact content match — already ingested, nothing to do.
         if file_hash in registry:
             entry = registry[file_hash]
             logger.info(
@@ -85,26 +94,16 @@ class IngestionRegistry:
                 old_entry=entry,
             )
 
-        # Case 2: Same filename, different hash — file content changed
-        file_name = path.name
-        old_hash = self._find_by_filename(registry, file_name)
-        if old_hash:
-            old_entry = registry[old_hash]
+        # New content — a distinct document, even if the filename matches an
+        # existing one. Both are kept (no data loss).
+        same_name = self._find_by_filename(registry, path.name)
+        if same_name:
             logger.info(
-                "Registry: '%s' content changed (old hash=%s..., new hash=%s...)",
-                file_name,
-                old_hash[:12],
-                file_hash[:12],
+                "Registry: '%s' is new content under an existing name — adding as a separate document",
+                path.name,
             )
-            return RegistryCheckResult(
-                status=RegistryStatus.CONTENT_CHANGED,
-                sha256=file_hash,
-                old_document_id=old_entry.get("document_id"),
-                old_entry=old_entry,
-            )
-
-        # Case 3: Brand new file
-        logger.info("Registry: '%s' is new (hash=%s...)", path.name, file_hash[:12])
+        else:
+            logger.info("Registry: '%s' is new (hash=%s...)", path.name, file_hash[:12])
         return RegistryCheckResult(
             status=RegistryStatus.NEW_FILE,
             sha256=file_hash,
@@ -124,12 +123,9 @@ class IngestionRegistry:
         file_hash = sha256 or self._sha256(path)
         registry = self._load()
 
-        # Remove any old entries with the same filename (handles content changes)
-        old_hash = self._find_by_filename(registry, path.name)
-        if old_hash and old_hash != file_hash:
-            del registry[old_hash]
-            logger.debug("Registry: removed old entry for '%s'", path.name)
-
+        # Keyed by content hash. A same-name entry with different content is a
+        # DIFFERENT document and is intentionally left untouched — never delete
+        # another document just because it shares a display name.
         registry[file_hash] = {
             "document_id": document_id,
             "file_name": path.name,
