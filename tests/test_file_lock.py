@@ -63,5 +63,17 @@ def test_registry_save_overwrites_existing_file(tmp_path):
     reg._path = tmp_path / "reg.json"
     reg._path.write_text("{}")  # destination already exists
 
-    reg._save({"sha1": {"file_name": "a.pdf", "total_chunks": 5}})
-    assert reg._load() == {"sha1": {"file_name": "a.pdf", "total_chunks": 5}}
+    # Use the current (lineage) schema so the roundtrip doesn't trigger the
+    # legacy-migration path — this test targets the os.replace overwrite fix.
+    entry = {
+        "doc-1": {
+            "document_id": "doc-1",
+            "content_hash": "sha1",
+            "filename": "a.pdf",
+            "total_chunks": 5,
+            "active": True,
+            "lineage_root": "doc-1",
+        }
+    }
+    reg._save(entry)
+    assert reg._load() == entry

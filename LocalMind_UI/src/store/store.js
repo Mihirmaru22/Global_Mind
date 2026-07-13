@@ -17,6 +17,8 @@ import {
   sendMessageStream,
   uploadDocument,
   uploadDocumentStream,
+  replaceDocumentStream,
+  deleteDocument as deleteDocumentApi,
 } from '../services/api.js'
 
 // The 10 ingestion stages, mirrored from the backend pipeline
@@ -653,8 +655,37 @@ export const useAppStore = create((set, get) => ({
 
   // Upload + ingest a file into its own chat, streaming the 10-stage pipeline
   // progress into a persistent card (kind: 'ingestion') that survives reload.
-  ingestDocument: async (file) => {
-    const chat = await createChat(`📄 ${file.name}`)
+  ingestDocument: async (file) =>
+    get()._streamIngestionCard({
+      file,
+      title: `📄 ${file.name}`,
+      stream: (onEvent) => uploadDocumentStream(file, onEvent),
+      doneVerb: 'Ingested',
+      failVerb: 'Ingestion',
+    }),
+
+  // Replace an existing document with a new file. Uses the same streaming card
+  // so the user sees the full pipeline run; the backend keeps the old version
+  // live until the new one is fully indexed (safe atomic cutover).
+  replaceDocument: async (oldDocumentId, file) =>
+    get()._streamIngestionCard({
+      file,
+      title: `♻️ Replace → ${file.name}`,
+      stream: (onEvent) => replaceDocumentStream(oldDocumentId, file, onEvent),
+      doneVerb: 'Replaced with',
+      failVerb: 'Replace',
+    }),
+
+  deleteDocument: async (documentId) => {
+    await deleteDocumentApi(documentId)
+    await get().refreshDocuments()
+  },
+
+  // Shared driver for ingest/replace: opens a chat, streams stage events into a
+  // persistent ingestion card, refreshes the document list, and persists the
+  // finished card so its step trace survives a reload.
+  _streamIngestionCard: async ({ file, title, stream, doneVerb, failVerb }) => {
+    const chat = await createChat(title)
     const messageId = `ingest-${Date.now()}`
     const card = {
       id: messageId,
@@ -676,7 +707,7 @@ export const useAppStore = create((set, get) => ({
 
     set((state) => ({
       chats: [
-        { ...chat, title: `📄 ${file.name}`, isUntitled: false },
+        { ...chat, title, isUntitled: false },
         ...normalizeList(state.chats, demoChats),
       ],
       activeChatId: chat.id,
@@ -695,7 +726,7 @@ export const useAppStore = create((set, get) => ({
       }))
 
     try {
-      await uploadDocumentStream(file, (event) => {
+      await stream((event) => {
         if (event.type === 'progress') {
           patchCard((m) => ({
             steps: m.steps.map((s) =>
@@ -724,15 +755,15 @@ export const useAppStore = create((set, get) => ({
             },
             content: event.skipped
               ? `${file.name} was already ingested.`
-              : `Ingested ${file.name}: ${result.total_chunks ?? 0} chunks across ${result.total_pages ?? 0} page(s).`,
+              : `${doneVerb} ${file.name}: ${result.total_chunks ?? 0} chunks across ${result.total_pages ?? 0} page(s).`,
           }))
         } else if (event.type === 'error') {
-          patchCard(() => ({ status: 'error', content: `Ingestion failed: ${event.message || 'unknown error'}` }))
+          patchCard(() => ({ status: 'error', content: `${failVerb} failed: ${event.message || 'unknown error'}` }))
         }
       })
     } catch (error) {
-      console.error('Ingestion stream failed:', error)
-      patchCard(() => ({ status: 'error', content: 'Ingestion failed — check server logs.' }))
+      console.error(`${failVerb} stream failed:`, error)
+      patchCard(() => ({ status: 'error', content: `${failVerb} failed — check server logs.` }))
     }
 
     await get().refreshDocuments()

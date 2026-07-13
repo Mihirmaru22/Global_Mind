@@ -368,16 +368,18 @@ def _build_document_list_answer() -> str:
     import datetime
 
     registry = IngestionRegistry()
-    entries = list(registry.get_all().values())
+    # Only the current (active) version of each document — superseded versions
+    # are history, not part of the live knowledge base.
+    entries = registry.get_active()
 
     if not entries:
         return "I don't have any documents ingested yet. Please upload some files first."
 
     lines = [f"I currently have **{len(entries)} document(s)** in my knowledge base:\n"]
     for i, entry in enumerate(entries, 1):
-        file_name = entry.get("file_name", "Unknown")
+        file_name = entry.get("filename", "Unknown")
         chunks = entry.get("total_chunks", "?")
-        ingested_at = entry.get("ingested_at", "")
+        ingested_at = entry.get("created_at", "")
         # Format date nicely — convert to IST (UTC+5:30)
         try:
             dt = datetime.datetime.fromisoformat(ingested_at)

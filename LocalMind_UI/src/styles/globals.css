@@ -2510,6 +2510,17 @@ html[data-scrolling='true'] .theme-grid::-webkit-scrollbar-thumb {
   font-size: 0.82rem;
 }
 
+.doc-row__badge {
+  color: var(--accent, #6366f1);
+  font-weight: 600;
+}
+
+.doc-row__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .settings-list {
   display: grid;
   gap: 12px;
