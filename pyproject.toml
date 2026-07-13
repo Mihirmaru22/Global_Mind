@@ -1,3 +1,11 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Only ship the `src` package (flat layout also has tests/, config/, etc.).
+include = ["src*"]
+
 [project]
 name = "globle-mind"
 version = "0.1.0"

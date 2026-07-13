@@ -1,0 +1,18 @@
+# Keep the build context (and image) lean.
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+*.bundle
+
+# Node/build tooling — the *built* output in frontend/ is what we ship, not the
+# React source or its 100s of MB of node_modules.
+LocalMind_UI/node_modules
+node_modules
+
+# Runtime state — recreated on startup; never bake it into the image.
+data/
+
+# Local secrets — provided as environment variables on the host instead.
+.env
