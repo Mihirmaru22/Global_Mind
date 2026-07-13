@@ -10,7 +10,6 @@ import json
 import pytest
 
 from src.core.file_lock import LockMode, locked
-from src.core.ingestion_registry import IngestionRegistry
 from src.core.state import UIStateManager
 
 
@@ -59,9 +58,22 @@ def test_state_save_overwrites_existing_file(tmp_path):
 
 
 def test_registry_save_overwrites_existing_file(tmp_path):
-    reg = IngestionRegistry()
-    reg._path = tmp_path / "reg.json"
-    reg._path.write_text("{}")  # destination already exists
+    # The JSON metadata backend must atomically overwrite an existing file
+    # (the os.replace / Windows fix). Use the lineage schema so the roundtrip
+    # doesn't trigger the legacy-migration path.
+    from src.core.metadata_store import JsonMetadataBackend
 
-    reg._save({"sha1": {"file_name": "a.pdf", "total_chunks": 5}})
-    assert reg._load() == {"sha1": {"file_name": "a.pdf", "total_chunks": 5}}
+    path = tmp_path / "reg.json"
+    path.write_text("{}")  # destination already exists
+    backend = JsonMetadataBackend(path)
+
+    entry = {
+        "document_id": "doc-1",
+        "content_hash": "sha1",
+        "filename": "a.pdf",
+        "total_chunks": 5,
+        "active": True,
+        "lineage_root": "doc-1",
+    }
+    backend.write_batch([entry], [])
+    assert backend.load_all() == {"doc-1": entry}

@@ -86,10 +86,13 @@ class IngestionPipeline:
     async def ingest(self, file_path: str | Path) -> "IngestionResult":
         """Ingest a single document through the full pipeline.
 
-        Checks the deduplication registry first:
-          - Already ingested (same hash) → returns immediately with skipped=True
-          - Content changed (same name, new hash) → deletes old vectors, re-ingests
-          - New file → normal ingestion
+        Checks the content-addressed registry first:
+          - Already ingested (identical content) → returns immediately, skipped=True
+          - New content → a distinct document, ingested and registered as a new
+            active version (a same-name file never displaces an existing one)
+
+        To swap new content in for an existing document, use :meth:`replace`,
+        which supersedes the old version instead of adding a parallel one.
 
         Returns an IngestionResult with metadata about what was processed.
         """
@@ -119,18 +122,60 @@ class IngestionPipeline:
         # existing one.
         result = await self._run_pipeline(path)
 
-        # Register after successful ingestion
-        self._registry.register(
+        # Register after successful ingestion (brand-new document, no supersede)
+        await self._commit_version(
             path,
             document_id=result.document_id,
             total_chunks=result.total_chunks,
-            sha256=check.sha256,
+            content_hash=check.sha256,
+            supersedes=None,
         )
 
         return result
 
+    async def _commit_version(
+        self,
+        path: Path,
+        document_id: str,
+        total_chunks: int,
+        content_hash: str,
+        supersedes: str | None,
+    ) -> None:
+        """Commit a freshly-indexed version, performing the cutover if replacing.
+
+        Assumes the content is already embedded and upserted (chunks active).
+        Steps, each durable before the next, so there is never a window with
+        zero active versions:
+
+            create new version (registry) → hide old chunks (Qdrant)
+            → supersede old (registry)
+
+        For a brand-new document (``supersedes is None``) only the first step
+        runs.
+        """
+        self._registry.create_version(
+            file_path=path,
+            content_hash=content_hash,
+            total_chunks=total_chunks,
+            document_id=document_id,
+            supersedes=supersedes,
+        )
+        if not supersedes:
+            return
+
+        try:
+            await self._store.set_document_active(supersedes, False)
+        except Exception:
+            logger.exception(
+                "Replace: failed to deactivate old chunks for %s — new version "
+                "is live but stale chunks may linger",
+                supersedes,
+            )
+        self._registry.supersede(supersedes, document_id)
+        logger.info("Cutover complete: %s → %s", supersedes, document_id)
+
     async def ingest_with_progress(
-        self, file_path: str | Path
+        self, file_path: str | Path, supersedes: str | None = None
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Async generator that yields SSE-compatible progress events for each stage.
 
@@ -298,12 +343,16 @@ class IngestionPipeline:
             return
 
         # ── Registration & Complete ──────────────────────────────────────────
+        # Content is fully indexed now, so committing the version (and, for a
+        # replace, cutting over from the old one) is safe — the old version was
+        # live throughout the stages above.
         document_id = chunks[0].document_id if chunks else ""
-        self._registry.register(
+        await self._commit_version(
             path,
             document_id=document_id,
             total_chunks=len(chunks),
-            sha256=check.sha256,
+            content_hash=check.sha256,
+            supersedes=supersedes,
         )
 
         yield {
@@ -319,6 +368,77 @@ class IngestionPipeline:
                 "document_id": document_id,
             },
         }
+
+    async def replace(
+        self, old_document_id: str, file_path: str | Path
+    ) -> "IngestionResult":
+        """Replace an existing document with new content — safe atomic cutover.
+
+        The old version stays fully live until the new one is completely indexed.
+        Ordering (each step durable before the next):
+
+            1. index new content        (embed + upsert, chunks born active)
+            2. create new version        (registry: new active, supersedes old)
+            3. hide old chunks in Qdrant (set active=False)
+            4. supersede old in registry (registry: old inactive, linked)
+
+        A failure before step 2 leaves the old version fully active (the new
+        chunks are simply orphaned and re-created on retry, since document_id is
+        derived from the unique upload path). A failure between 2 and 4 leaves
+        *both* versions active — a harmless duplicate, never zero. There is no
+        ordering that yields zero active versions.
+        """
+        path = Path(file_path)
+        old = self._registry.get_by_document_id(old_document_id)
+        if old is None:
+            raise ValueError(f"Cannot replace unknown document_id={old_document_id!r}")
+
+        # Identical content → nothing to replace.
+        check = self._registry.check(path)
+        if check.status == RegistryStatus.ALREADY_INGESTED:
+            logger.info(
+                "Replace '%s' → identical content already active; no-op", path.name
+            )
+            _discard_redundant_upload(path)
+            return IngestionResult(
+                file_path=str(path),
+                file_category=old.get("file_category", "unknown"),
+                document_type=old.get("document_type", "general"),
+                total_pages=old.get("total_pages", 0),
+                total_chunks=old.get("total_chunks", 0),
+                warnings=[],
+                skipped=True,
+                document_id=check.old_document_id or old_document_id,
+            )
+
+        # 1) Index the new content (chunks are upserted active=True).
+        result = await self._run_pipeline(path)
+        if not result.document_id or result.total_chunks == 0:
+            # Nothing indexed — do NOT touch the old version.
+            logger.warning(
+                "Replace '%s' produced no chunks; keeping old version %s active",
+                path.name,
+                old_document_id,
+            )
+            return result
+
+        # 2–4) Commit the new version and cut over from the old one.
+        await self._commit_version(
+            path,
+            document_id=result.document_id,
+            total_chunks=result.total_chunks,
+            content_hash=check.sha256,
+            supersedes=old_document_id,
+        )
+
+        logger.info(
+            "Replaced document %s → %s ('%s', %d chunks)",
+            old_document_id,
+            result.document_id,
+            path.name,
+            result.total_chunks,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Internal: shared pipeline logic (no progress events)
@@ -406,6 +526,39 @@ class IngestionPipeline:
             len(chunks),
         )
         return result
+
+
+async def reconcile_active_flags(
+    registry: IngestionRegistry | None = None,
+    store: QdrantStore | None = None,
+) -> dict[str, int]:
+    """Force the vector store's chunk ``active`` flags to match registry state.
+
+    The registry (durable in Qdrant) is the source of truth for which version is
+    live. A crash *between* marking a version superseded and flipping its chunks
+    inactive would leave stale chunks retrievable. Running this at startup closes
+    that gap: every superseded document's chunks are forced inactive. Idempotent
+    and safe to run repeatedly — it only ever hides already-superseded content.
+    """
+    registry = registry or IngestionRegistry()
+    store = store or QdrantStore()
+
+    superseded = registry.get_superseded_ids()
+    reconciled = 0
+    for doc_id in superseded:
+        try:
+            await store.set_document_active(doc_id, False)
+            reconciled += 1
+        except Exception:
+            logger.exception("Reconcile: failed to deactivate chunks for %s", doc_id)
+
+    if superseded:
+        logger.info(
+            "Reconcile: ensured %d/%d superseded document(s) are hidden from retrieval",
+            reconciled,
+            len(superseded),
+        )
+    return {"superseded": len(superseded), "reconciled": reconciled}
 
 
 class IngestionResult:

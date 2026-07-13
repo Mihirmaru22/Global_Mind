@@ -22,6 +22,9 @@ def mock_router():
 
     router.chat = mock_chat
     router.chat_stream = mock_chat_stream
+    # The generator reads router.last_used for QueryResult.model_used; the real
+    # router sets this to a "provider/model" string once a call completes.
+    router.last_used = "mock/model"
     return router
 
 

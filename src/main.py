@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,10 +19,36 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown hooks.
+
+    On startup, reconcile the vector store's chunk ``active`` flags with the
+    durable document registry. Because metadata now lives in Qdrant (the single
+    source of truth), a fresh container/redeploy comes up with the correct
+    registry state; this step heals any chunk-flag drift left by a crash mid
+    version-cutover, so superseded content never resurfaces after a restart.
+    Best-effort — a failure here must never block the app from serving.
+    """
+    if settings.qdrant_url and settings.qdrant_api_key:
+        try:
+            from src.pipeline.ingestion import reconcile_active_flags
+
+            summary = await reconcile_active_flags()
+            logger.info("Startup reconcile: %s", summary)
+        except Exception:
+            logger.exception("Startup reconcile failed — continuing without it")
+    yield
+
+
 app = FastAPI(
     title="GlobleMind",
     description="Zero-Cost Enterprise RAG Pipeline — accuracy-first document processing",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS: a wildcard origin combined with credentials makes Starlette reflect any

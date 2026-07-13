@@ -52,6 +52,7 @@ class VectorStore(Protocol):
     ) -> list[RetrievedChunk]: ...
 
     async def delete_document(self, document_id: str) -> None: ...
+    async def set_document_active(self, document_id: str, active: bool) -> None: ...
     async def get_stats(self) -> dict[str, Any]: ...
 
 
@@ -188,6 +189,10 @@ class QdrantStore:
                 "source_file": chunk.source_file,
                 "confidence": chunk.confidence,
                 "token_count": chunk.token_count,
+                # Version lifecycle: chunks are born active. A later replacement
+                # flips the superseded version's chunks to active=False (see
+                # set_document_active), and retrieval excludes those.
+                "active": True,
             }
 
             # Build the vectors dict — always include dense; add sparse if available
@@ -226,7 +231,7 @@ class QdrantStore:
     ) -> list[RetrievedChunk]:
         """Dense (semantic) vector search with optional metadata filtering."""
         client = await self._get_client()
-        qdrant_filter = self._build_filter(filters) if filters else None
+        qdrant_filter = self._build_filter(filters)
 
         response = await client.query_points(
             collection_name=self._collection_name,
@@ -249,7 +254,7 @@ class QdrantStore:
 
         Falls back to dense-only if sparse vector is empty (e.g., Gemini fallback).
         """
-        qdrant_filter = self._build_filter(filters) if filters else None
+        qdrant_filter = self._build_filter(filters)
 
         # If no sparse vector available, degrade gracefully to dense-only
         if sparse_vector is None or sparse_vector.is_empty() or not self._has_sparse:
@@ -315,6 +320,30 @@ class QdrantStore:
         )
         logger.info("Deleted document %s from Qdrant", document_id)
 
+    async def set_document_active(self, document_id: str, active: bool) -> None:
+        """Flip the ``active`` flag on every chunk of a document.
+
+        Used by the replace flow: after a new version is fully indexed, the
+        superseded version's chunks are marked ``active=False`` so they stop
+        surfacing in retrieval without being deleted (history is preserved).
+        """
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        client = await self._get_client()
+        await client.set_payload(
+            collection_name=self._collection_name,
+            payload={"active": active},
+            points=Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=document_id),
+                    )
+                ]
+            ),
+        )
+        logger.info("Set active=%s for document %s in Qdrant", active, document_id)
+
     async def get_stats(self) -> dict[str, Any]:
         """Return collection statistics."""
         client = await self._get_client()
@@ -332,10 +361,16 @@ class QdrantStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_filter(filters: dict[str, Any]) -> Any:
+    def _build_filter(filters: dict[str, Any] | None) -> Any:
         """Build a Qdrant Filter from a plain dict.
 
-        Supported keys:
+        Every search excludes superseded chunks: a ``must_not active == False``
+        clause is always applied. It is expressed as *exclude the inactive*
+        (rather than *require active*) so chunks written before the ``active``
+        field existed — which have no ``active`` key — still surface. Only a
+        chunk explicitly flipped to ``active=False`` by a replacement is hidden.
+
+        Supported filter keys:
           document_type (str)  — exact match
           source_file (str)    — substring match
           page_number (int)    — minimum page number
@@ -350,6 +385,7 @@ class QdrantStore:
             Range,
         )
 
+        filters = filters or {}
         conditions = []
 
         if "document_type" in filters:
@@ -373,7 +409,9 @@ class QdrantStore:
                 FieldCondition(key="page_number", range=Range(gte=filters["page_number"]))
             )
 
-        return Filter(must=conditions) if conditions else None
+        # Always hide superseded chunks.
+        exclude_inactive = [FieldCondition(key="active", match=MatchValue(value=False))]
+        return Filter(must=conditions or None, must_not=exclude_inactive)
 
     @staticmethod
     def _point_to_retrieved_chunk(point: Any, method: str) -> RetrievedChunk:
