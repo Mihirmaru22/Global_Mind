@@ -213,10 +213,16 @@ class Generator:
         *,
         task: str | None = None,
         history: list[dict] | None = None,
+        context_limit: int | None = None,
     ) -> QueryResult:
         """Generate an answer from retrieved chunks.
 
         Automatically routes to the best model for the inferred task type.
+
+        ``context_limit`` caps how many of the (already reranked) chunks are
+        actually placed in the prompt; ``None`` uses them all. The top few
+        carry the answer, so trimming cuts input tokens and latency without
+        hurting quality — see _limit_context_chunks.
         """
         if not chunks:
             return QueryResult(
@@ -230,21 +236,21 @@ class Generator:
         if task is None:
             task = _classify_query_task(query)
 
-        # Build context from chunks
-        context = _build_context(chunks)
+        # Only the best chunks go into the prompt; citations are drawn from the
+        # same trimmed set so we never cite a source the model didn't see.
+        context_chunks = _limit_context_chunks(chunks, context_limit)
+        context = _build_context(context_chunks)
 
-        # Build the prompt
+        # Build the prompt. The fixed answer rules live in the system prompt
+        # (cacheable prefix), so the user message carries only the volatile
+        # context + question.
         system_prompt = _build_system_prompt(task)
         user_prompt = f"""Context (retrieved document chunks):
 ---
 {context}
 ---
 
-Question: {query}
-
-Answer the question using ONLY the information provided in the context above.
-Each excerpt is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% [a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a separate column or heading for them and do NOT refer to them as "chunks" in your prose.
-If the context doesn't contain enough information to answer, say so explicitly."""
+Question: {query}"""
 
         # Generate — recent conversation turns go between the system prompt and
         # the grounded question so follow-ups stay coherent.
@@ -259,7 +265,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
         )
 
         # Extract citations and format the answer text
-        citations, clean_answer = _extract_and_format_citations(response, chunks)
+        citations, clean_answer = _extract_and_format_citations(response, context_chunks)
 
         return QueryResult(
             query=query,
@@ -283,11 +289,13 @@ If the context doesn't contain enough information to answer, say so explicitly."
         *,
         task: str | None = None,
         history: list[dict] | None = None,
+        context_limit: int | None = None,
     ):
         """Stage 14: Answer generation via LLM stream.
 
         Yields string chunks during generation, and a final QueryResult object
-        when the stream completes.
+        when the stream completes. ``context_limit`` caps how many reranked
+        chunks are placed in the prompt (see generate()).
         """
         if not chunks:
             yield "I don't have any information about that in my current documents."
@@ -305,18 +313,18 @@ If the context doesn't contain enough information to answer, say so explicitly."
         if task is None:
             task = _classify_query_task(query)
 
-        context = _build_context(chunks)
+        # Only the best chunks go into the prompt; citations come from the same
+        # trimmed set. The fixed answer rules are in the system prompt, so the
+        # user message carries only the volatile context + question.
+        context_chunks = _limit_context_chunks(chunks, context_limit)
+        context = _build_context(context_chunks)
         system_prompt = _build_system_prompt(task)
         user_prompt = f"""Context (retrieved document chunks):
 ---
 {context}
 ---
 
-Question: {query}
-
-Answer the question using ONLY the information provided in the context above.
-Each excerpt is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% [a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a separate column or heading for them and do NOT refer to them as "chunks" in your prose.
-If the context doesn't contain enough information to answer, say so explicitly."""
+Question: {query}"""
 
         full_answer_parts = []
         async for chunk_text in self._router.chat_stream(
@@ -332,7 +340,7 @@ If the context doesn't contain enough information to answer, say so explicitly."
             yield chunk_text
 
         full_answer = "".join(full_answer_parts)
-        citations, clean_answer = _extract_and_format_citations(full_answer, chunks)
+        citations, clean_answer = _extract_and_format_citations(full_answer, context_chunks)
 
         yield QueryResult(
             query=query,
@@ -509,8 +517,29 @@ flowchart TD
 Keep every data point on its own line and make sure the number of y-values matches the number of x-axis labels."""
 
 
+# The fixed answer-formatting rules — byte-identical on every generation call.
+# They live in the system prompt (not the per-call user message) so the whole
+# instruction block forms a stable prompt *prefix*. Groq and Gemini 2.5
+# automatically cache repeated prefixes, so keeping these constant and up front
+# means they're billed/encoded once and reused, instead of being re-sent as
+# fresh tokens after the (variable) context on every turn.
+_ANSWER_RULES = (
+    " Answer using ONLY the information in the provided context. If the context "
+    "doesn't contain enough information to answer, say so explicitly. Each excerpt "
+    "is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims "
+    'inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% '
+    '[a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a '
+    'separate column or heading for them and do NOT refer to them as "chunks" in '
+    "your prose."
+)
+
+
 def _build_system_prompt(task: str) -> str:
-    """Build a task-appropriate system prompt."""
+    """Build a task-appropriate system prompt.
+
+    Everything here is stable per task (no query-specific content), so it acts
+    as a cacheable prefix — see _ANSWER_RULES.
+    """
     base = "You are a precise document analysis assistant. "
 
     prompts = {
@@ -520,7 +549,7 @@ def _build_system_prompt(task: str) -> str:
         "summarization": base + "Provide comprehensive summaries. Cover all key points from the context. Cite sources with their bracketed markers.",
     }
 
-    return prompts.get(task, prompts["general_qa"]) + _VISUALIZATION_GUIDANCE
+    return prompts.get(task, prompts["general_qa"]) + _ANSWER_RULES + _VISUALIZATION_GUIDANCE
 
 
 def _history_messages(history: list[dict] | None, *, max_turns: int = 6, max_chars: int = 1500) -> list[dict]:
@@ -540,6 +569,20 @@ def _history_messages(history: list[dict] | None, *, max_turns: int = 6, max_cha
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content[:max_chars]})
     return messages
+
+
+def _limit_context_chunks(
+    chunks: list[RetrievedChunk], limit: int | None
+) -> list[RetrievedChunk]:
+    """Keep only the top ``limit`` reranked chunks for the generation prompt.
+
+    ``None`` (exhaustive queries) keeps everything. Otherwise the cap is floored
+    at 2 so a short document with only a couple of relevant chunks — or a
+    misconfigured limit — never starves the model of context.
+    """
+    if limit is None:
+        return chunks
+    return chunks[: max(limit, 2)]
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:

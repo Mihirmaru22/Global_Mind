@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     chunk_overlap_fraction: float = 0.12
     retrieval_top_k: int = 50
     rerank_top_k: int = 25
+    # How many of the top reranked chunks are actually fed into the generation
+    # prompt. Reranking still scores the wider rerank_top_k set for accuracy,
+    # but only the best few carry the answer — feeding all of them mostly buys
+    # input tokens and latency, not quality. Exhaustive ("list every X")
+    # queries bypass this cap to preserve recall. Floored at 2 so short-document
+    # answers never starve.
+    generation_context_k: int = 5
 
     # --- CORS ---
     # Comma-separated allow-list of browser origins permitted to call the API

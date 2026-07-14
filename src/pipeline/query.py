@@ -172,7 +172,12 @@ class QueryPipeline:
         # Stage 14 — Generation (the user's original question + conversation,
         # but only when the question actually depends on it)
         logger.info("[Stage 14] Generating answer")
-        result = await self._generator.generate(question, reranked, history=gen_history)
+        # Exhaustive queries keep every reranked chunk (recall matters); normal
+        # queries feed only the top few into the prompt to save input tokens.
+        context_limit = None if exhaustive else settings.generation_context_k
+        result = await self._generator.generate(
+            question, reranked, history=gen_history, context_limit=context_limit
+        )
         result.chunks_retrieved = len(retrieved)
         result.chunks_after_rerank = len(reranked)
 
@@ -324,7 +329,12 @@ class QueryPipeline:
         # with a real, per-question detail rather than a static label. The
         # user's original question drives the answer; history is included only
         # for genuine follow-ups (gen_history), never forced on new topics.
-        async for chunk in self._generator.generate_stream(question, reranked, history=gen_history):
+        # Exhaustive queries keep every reranked chunk; normal queries feed only
+        # the top few into the prompt (saves input tokens without hurting quality).
+        context_limit = None if exhaustive else settings.generation_context_k
+        async for chunk in self._generator.generate_stream(
+            question, reranked, history=gen_history, context_limit=context_limit
+        ):
             if isinstance(chunk, QueryResult):
                 if chunk.model_used:
                     thinking.append(ThinkingStep(label="Answered using", detail=chunk.model_used))
