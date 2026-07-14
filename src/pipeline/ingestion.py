@@ -35,6 +35,30 @@ from src.stages.s11_vector_store import QdrantStore
 logger = logging.getLogger(__name__)
 
 
+# Per-content-hash locks serialize ingestion of *identical* bytes within this
+# process. ``check()`` (dedup) and ``create_version()`` (commit) are far apart —
+# the whole embed+store pipeline awaits in between — so two concurrent uploads
+# of the same file could both pass the dedup check and both fully ingest,
+# double-spending embedding quota and writing duplicate vectors. Holding a lock
+# keyed on the content hash across check→commit closes that gap. Distinct files
+# hash differently, so unrelated ingestions stay fully concurrent. The dict is
+# bounded by the number of distinct documents ever ingested (small for this app).
+_INGEST_LOCKS: dict[str, "asyncio.Lock"] = {}
+
+
+def _lock_for_hash(content_hash: str) -> "asyncio.Lock":
+    """Get (or lazily create) the process-wide lock for a content hash.
+
+    Safe without its own guard: the get-or-create runs synchronously with no
+    ``await``, so the single-threaded event loop can't interleave two creators.
+    """
+    lock = _INGEST_LOCKS.get(content_hash)
+    if lock is None:
+        lock = asyncio.Lock()
+        _INGEST_LOCKS[content_hash] = lock
+    return lock
+
+
 def _discard_redundant_upload(path: Path) -> None:
     """Delete a just-uploaded file whose content was already ingested.
 
@@ -119,17 +143,37 @@ class IngestionPipeline:
         # ── Pipeline ────────────────────────────────────────────────────────
         # Any new content is a distinct document (content-addressed identity), so
         # there is nothing to delete first — a same-name file never displaces an
-        # existing one.
-        result = await self._run_pipeline(path)
+        # existing one. The per-hash lock serializes concurrent ingests of the
+        # same bytes; re-check inside it so a race that committed while we waited
+        # is detected and skipped instead of double-ingested.
+        async with _lock_for_hash(check.sha256):
+            dupe = self._registry.active_entry_for_hash(check.sha256)
+            if dupe is not None:
+                logger.info(
+                    "Skipping '%s' — identical content ingested concurrently", path.name
+                )
+                _discard_redundant_upload(path)
+                return IngestionResult(
+                    file_path=str(path),
+                    file_category=dupe.get("file_category", "unknown"),
+                    document_type=dupe.get("document_type", "general"),
+                    total_pages=dupe.get("total_pages", 0),
+                    total_chunks=dupe.get("total_chunks", 0),
+                    warnings=[],
+                    skipped=True,
+                    document_id=dupe.get("document_id", ""),
+                )
 
-        # Register after successful ingestion (brand-new document, no supersede)
-        await self._commit_version(
-            path,
-            document_id=result.document_id,
-            total_chunks=result.total_chunks,
-            content_hash=check.sha256,
-            supersedes=None,
-        )
+            result = await self._run_pipeline(path)
+
+            # Register after successful ingestion (brand-new document, no supersede)
+            await self._commit_version(
+                path,
+                document_id=result.document_id,
+                total_chunks=result.total_chunks,
+                content_hash=check.sha256,
+                supersedes=None,
+            )
 
         return result
 
@@ -188,16 +232,6 @@ class IngestionPipeline:
         """
         path = Path(file_path)
 
-        def _event(stage: int, status: str, **extra: Any) -> dict[str, Any]:
-            return {
-                "type": "progress",
-                "stage": stage,
-                "total_stages": len(_STAGE_LABELS),
-                "label": _STAGE_LABELS.get(stage, f"Stage {stage}"),
-                "status": status,
-                **extra,
-            }
-
         # ── Deduplication check ──────────────────────────────────────────────
         # Content-addressed: identical content is skipped; anything else is a
         # new, distinct document (a same-name file never displaces an existing
@@ -218,6 +252,51 @@ class IngestionPipeline:
                 },
             }
             return
+
+        # Serialize concurrent ingests of identical bytes across the whole
+        # embed+store pipeline (see ingest() / _lock_for_hash), re-checking dedup
+        # inside the lock so a race that committed while we waited is skipped
+        # rather than double-ingested.
+        async with _lock_for_hash(check.sha256):
+            dupe = self._registry.active_entry_for_hash(check.sha256)
+            if dupe is not None:
+                _discard_redundant_upload(path)
+                yield {"type": "skipped", "file": path.name, "reason": "Already ingested (identical content)"}
+                yield {
+                    "type": "complete",
+                    "skipped": True,
+                    "result": {
+                        "file_path": str(path),
+                        "total_chunks": dupe.get("total_chunks", 0),
+                        "total_pages": dupe.get("total_pages", 0),
+                        "warnings": [],
+                    },
+                }
+                return
+
+            async for event in self._staged_ingest_with_progress(
+                path, content_hash=check.sha256, supersedes=supersedes
+            ):
+                yield event
+
+    async def _staged_ingest_with_progress(
+        self, path: Path, *, content_hash: str, supersedes: str | None
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Run Stages 1–10 with SSE progress events, then commit the version.
+
+        Split out of :meth:`ingest_with_progress` so the public method can hold
+        the per-hash lock across the whole run (dedup re-check → commit).
+        """
+
+        def _event(stage: int, status: str, **extra: Any) -> dict[str, Any]:
+            return {
+                "type": "progress",
+                "stage": stage,
+                "total_stages": len(_STAGE_LABELS),
+                "label": _STAGE_LABELS.get(stage, f"Stage {stage}"),
+                "status": status,
+                **extra,
+            }
 
         # ── Stage 1: File Detection ──────────────────────────────────────────
         yield _event(1, "running")
@@ -351,7 +430,7 @@ class IngestionPipeline:
             path,
             document_id=document_id,
             total_chunks=len(chunks),
-            content_hash=check.sha256,
+            content_hash=content_hash,
             supersedes=supersedes,
         )
 
