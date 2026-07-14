@@ -126,6 +126,7 @@ class QdrantStore:
                     "Collection '%s' already exists with sparse support",
                     self._collection_name,
                 )
+                await self._ensure_payload_indexes(client)
                 return
             else:
                 # Legacy collection without sparse — recreate it
@@ -153,6 +154,28 @@ class QdrantStore:
             self._collection_name,
             self._vector_size,
         )
+        await self._ensure_payload_indexes(client)
+
+    async def _ensure_payload_indexes(self, client: Any) -> None:
+        """Create payload indexes required for filtered search.
+
+        Qdrant requires an explicit payload index for any field used in a
+        Filter when the collection is large enough to need one. Without this,
+        queries using must_not on ``active`` raise a 400 "Index required" error.
+        The call is idempotent — safe to run on every startup even if the index
+        already exists.
+        """
+        from qdrant_client.models import PayloadSchemaType
+
+        try:
+            await client.create_payload_index(
+                collection_name=self._collection_name,
+                field_name="active",
+                field_schema=PayloadSchemaType.BOOL,
+            )
+            logger.info("Ensured payload index on 'active' for collection '%s'", self._collection_name)
+        except Exception as e:
+            logger.warning("Could not create payload index on 'active': %s", e)
 
     async def upsert(
         self,

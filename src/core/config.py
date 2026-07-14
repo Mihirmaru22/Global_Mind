@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     # --- Runtime paths ---
     upload_dir: Path = Field(default_factory=lambda: DATA_DIR / "uploads")
     processed_dir: Path = Field(default_factory=lambda: DATA_DIR / "processed")
+    # Drop-folder watched by the auto-ingestion service. Any file placed here is
+    # ingested on the next scan; content-addressed dedup makes repeat scans a
+    # no-op, so files can safely stay in the folder.
+    auto_ingest_dir: Path = Field(default_factory=lambda: DATA_DIR / "inbox")
+
+    # --- Auto-ingestion automation ---
+    # Scan the drop-folder once on startup.
+    auto_ingest_on_startup: bool = False
+    # Re-scan the drop-folder every N seconds in the background (0 disables the
+    # periodic loop; the manual /ingest/folder endpoint always works regardless).
+    auto_ingest_interval_seconds: int = 0
 
     # --- Pipeline defaults ---
     ocr_confidence_threshold: float = 0.75
@@ -80,6 +91,7 @@ class Settings(BaseSettings):
         """Create runtime directories if they don't exist."""
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.auto_ingest_dir.mkdir(parents=True, exist_ok=True)
 
 
 def load_provider_config() -> dict[str, Any]:
