@@ -261,11 +261,22 @@ class OpenAICompatibleProvider:
         if usage is not None:
             kwargs["stream_options"] = {"include_usage": True}
         response = await client.chat.completions.create(**kwargs)
-        async for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-            if usage is not None and getattr(chunk, "usage", None):
-                _apply_openai_usage(usage, chunk.usage, provider=self._name, model=model)
+        # Explicitly close the stream in a finally so a client disconnect /
+        # stop-generation (which throws GeneratorExit in here) releases the HTTP
+        # connection back to the shared pool instead of leaking it until GC.
+        try:
+            async for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                if usage is not None and getattr(chunk, "usage", None):
+                    _apply_openai_usage(usage, chunk.usage, provider=self._name, model=model)
+        finally:
+            close = getattr(response, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
 
     async def vision(
         self,
