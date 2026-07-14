@@ -182,3 +182,11 @@ export async function getProviders() {
   const response = await http.get('/providers')
   return response.data
 }
+
+// Scan the server's watched drop-folder (data/inbox) and ingest any new files.
+// Idempotent — already-ingested files are reported as duplicates, not re-ingested.
+// Returns { scanned, ingested, skipped, failed, message, ... }.
+export async function scanIngestFolder() {
+  const response = await http.post('/ingest/folder')
+  return response.data
+}

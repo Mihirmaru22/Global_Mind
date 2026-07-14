@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { toast } from 'sonner'
 import {
   createChat,
   deleteChat as deleteChatApi,
@@ -13,11 +14,15 @@ import {
   persistIngestionCard,
   renameChat as renameChatApi,
   saveSettings,
+  scanIngestFolder,
   sendMessage,
   sendMessageStream,
   uploadDocument,
   uploadDocumentStream,
 } from '../services/api.js'
+
+// Pluralization helper for the inbox-scan popup ("1 file" vs "2 files").
+const plural = (n) => (n === 1 ? '' : 's')
 
 // The 10 ingestion stages, mirrored from the backend pipeline
 // (_STAGE_LABELS in src/pipeline/ingestion.py).
@@ -355,6 +360,64 @@ export const useAppStore = create((set, get) => ({
       })
     } finally {
       set({ loading: false })
+    }
+
+    // Fire-and-forget: on first app load, scan the server's inbox folder and
+    // show a side popup with the outcome. Never block the UI on it.
+    get().runInboxScan()
+  },
+
+  // Scan the watched drop-folder once and surface the result as a persistent
+  // side toast (dismissible via its close cross). New files are ingested;
+  // already-ingested files are reported as duplicates and skipped.
+  runInboxScan: async () => {
+    const toastId = toast.loading('Checking inbox folder…')
+    try {
+      const result = await scanIngestFolder()
+      const { scanned = 0, ingested = 0, skipped = 0, failed = 0 } = result || {}
+
+      // Empty folder → nothing to do.
+      if (scanned === 0) {
+        toast.info('No files found', {
+          id: toastId,
+          description: 'Nothing in the inbox folder to ingest.',
+          duration: Infinity,
+        })
+        return
+      }
+
+      // Secondary details: duplicates skipped, and any failures.
+      const details = []
+      if (skipped > 0) {
+        details.push(`${skipped} duplicate${plural(skipped)} found — already ingested, skipped`)
+      }
+      if (failed > 0) {
+        details.push(`${failed} file${plural(failed)} failed to ingest`)
+      }
+      const description = details.join(' · ') || undefined
+
+      if (ingested > 0) {
+        // New content was added — refresh the document list to reflect it.
+        get().refreshDocuments()
+        const notify = failed > 0 ? toast.warning : toast.success
+        notify(`${ingested} new file${plural(ingested)} ingested`, {
+          id: toastId,
+          description,
+          duration: Infinity,
+        })
+      } else {
+        toast.info('No new files', {
+          id: toastId,
+          description: description || 'Everything in the inbox folder is already ingested.',
+          duration: Infinity,
+        })
+      }
+    } catch {
+      toast.error('Inbox scan failed', {
+        id: toastId,
+        description: 'Could not scan the inbox folder. Please try again later.',
+        duration: Infinity,
+      })
     }
   },
 

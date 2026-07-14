@@ -131,3 +131,97 @@ async def upload_document_stream(file: UploadFile = File(...)):
             yield f"data: {json.dumps(error_event)}\n\n"
 
     return StreamingResponse(_event_generator(), media_type="text/event-stream")
+<<<<<<< HEAD
+
+
+@router.post("/ingest/folder")
+async def scan_ingest_folder() -> dict:
+    """Scan the watched drop-folder and ingest any new files.
+
+    Content-addressed dedup makes this idempotent: files already ingested are
+    skipped, so it's safe to call repeatedly. The returned ``message`` is a
+    short, ready-to-display status (covers the empty-folder and nothing-new
+    cases) that the UI surfaces as a popup.
+    """
+    from src.pipeline.folder_ingestion import scan_and_ingest
+
+    try:
+        result = await scan_and_ingest()
+    except Exception:
+        logger.exception("Folder scan failed")
+        raise HTTPException(status_code=500, detail="Folder scan failed")
+    return {"status": "success", **result.to_dict()}
+
+
+@router.post("/documents/{old_document_id}/replace")
+async def replace_document(old_document_id: str, file: UploadFile = File(...)) -> dict:
+    """Replace an existing document with a new file (safe atomic cutover).
+
+    The old version stays live until the new one is fully indexed, so a failure
+    mid-ingestion never leaves the document with no active version.
+    """
+    upload_path = _resolve_upload_path(file.filename)
+    try:
+        with open(upload_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception:
+        logger.exception("Failed to save uploaded file '%s'", upload_path.name)
+        raise HTTPException(status_code=500, detail="Failed to save uploaded file")
+
+    try:
+        pipeline = IngestionPipeline()
+        result = await pipeline.replace(old_document_id, upload_path)
+        return {
+            "status": "success",
+            "message": f"Replaced document with '{upload_path.name}'",
+            "old_document_id": old_document_id,
+            **result.to_dict(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Replace failed for document '%s'", old_document_id)
+        raise HTTPException(status_code=500, detail="Replace failed")
+
+
+@router.post("/documents/{old_document_id}/replace/stream")
+async def replace_document_stream(old_document_id: str, file: UploadFile = File(...)):
+    """Replace a document and receive real-time ingestion progress via SSE.
+
+    Streams the same per-stage progress as ``/upload/stream``; the version
+    cutover (old → new) happens once the new content is fully indexed.
+    """
+    from src.core.ingestion_registry import IngestionRegistry
+
+    if IngestionRegistry().get_by_document_id(old_document_id) is None:
+        raise HTTPException(status_code=404, detail="Document to replace not found")
+
+    upload_path = _resolve_upload_path(file.filename)
+    try:
+        with open(upload_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception:
+        logger.exception("Failed to save uploaded file '%s'", upload_path.name)
+        raise HTTPException(status_code=500, detail="Failed to save uploaded file")
+
+    pipeline = IngestionPipeline()
+
+    async def _event_generator() -> AsyncGenerator[str, None]:
+        try:
+            async for event in pipeline.ingest_with_progress(
+                upload_path, supersedes=old_document_id
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception:
+            logger.exception("Streaming replace failed for '%s'", old_document_id)
+            error_event = {
+                "stage": 0,
+                "label": "complete",
+                "status": "error",
+                "error": "Replace failed",
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(_event_generator(), media_type="text/event-stream")
+=======
+>>>>>>> origin/feature/backend-auto-ingestion

@@ -1,4 +1,4 @@
-# Environment
+# Environment / secrets
 .env
 .venv/
 venv/
@@ -10,11 +10,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
 
-# Runtime data
-data/uploads/
-data/processed/
-data/qdrant_local/
+# Runtime data (chats, uploads, vector cache, generated SQLite DB)
+data/
+
+# Git bundles (occasional transfer artifacts — never committed)
+*.bundle
 
 # IDE
 .vscode/
@@ -25,5 +27,3 @@ data/qdrant_local/
 # OS
 .DS_Store
 Thumbs.db
-docs
-data/

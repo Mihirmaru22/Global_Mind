@@ -4,7 +4,13 @@
 venv
 **/__pycache__
 **/*.pyc
+.pytest_cache
 *.bundle
+
+# Docs, dev scripts, and the test suite aren't needed in the runtime image.
+docs/
+scripts/
+tests/
 
 # Node/build tooling — the *built* output in frontend/ is what we ship, not the
 # React source or its 100s of MB of node_modules.
