@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from src.core.config import Settings
-from src.core.paths import contained_path, safe_basename
+from src.core.paths import contained_path, safe_basename, unique_upload_dest
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +86,37 @@ def test_contained_path_root_itself_is_allowed(tmp_path):
     root = tmp_path / "frontend"
     root.mkdir()
     assert contained_path(root, ".") == root.resolve()
+
+
+# ---------------------------------------------------------------------------
+# unique_upload_dest — collision-proof per-upload storage
+# ---------------------------------------------------------------------------
+
+def test_unique_upload_dest_places_name_in_child_dir(tmp_path):
+    dest = unique_upload_dest(tmp_path, "resume.pdf")
+    assert dest.name == "resume.pdf"
+    assert dest.parent.parent == tmp_path  # base/<token>/resume.pdf
+    assert dest.parent.is_dir()            # subdir created eagerly
+
+
+def test_unique_upload_dest_never_collides_for_same_name(tmp_path):
+    """Two uploads sharing a filename must resolve to distinct paths.
+
+    Regression: /upload/batch previously wrote every file to
+    ``upload_dir/<name>`` directly, so two same-named files (or a batch file
+    colliding with an existing upload) clobbered each other on disk.
+    """
+    dest_a = unique_upload_dest(tmp_path, "dup.txt")
+    dest_b = unique_upload_dest(tmp_path, "dup.txt")
+
+    assert dest_a != dest_b
+    assert dest_a.parent != dest_b.parent
+
+    # Writing different content to each must not overwrite the other.
+    dest_a.write_text("A")
+    dest_b.write_text("B")
+    assert dest_a.read_text() == "A"
+    assert dest_b.read_text() == "B"
 
 
 # ---------------------------------------------------------------------------
