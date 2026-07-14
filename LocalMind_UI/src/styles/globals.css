@@ -1352,6 +1352,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
 
 .message--user .message__content {
   justify-items: end;
+  gap: 6px;
 }
 
 /* Reasoning trace — Claude-style collapsible "thinking" block above answers. */
@@ -1630,6 +1631,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
 
 .message__actions--user {
   justify-content: flex-end;
+  margin-top: -2px;
 }
 
 .message__action {

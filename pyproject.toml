@@ -50,6 +50,7 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
+    "watchdog>=4.0",
 
     # Utilities
     "rich>=13.0",

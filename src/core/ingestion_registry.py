@@ -205,10 +205,29 @@ class IngestionRegistry:
         try:
             with open(self._path, encoding="utf-8") as f:
                 with locked(f, LockMode.SHARED):
-                    return json.load(f)
+                    data = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Registry: invalid JSON in %s; resetting to empty registry: %s",
+                self._path,
+                e,
+            )
+            self._save({})
+            return {}
+        except FileNotFoundError:
+            return {}
         except Exception as e:
             logger.error("Registry: failed to load %s: %s", self._path, e)
             return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "Registry: expected JSON object in %s but got %s; resetting to empty registry",
+                self._path,
+                type(data).__name__,
+            )
+            self._save({})
+            return {}
+        return data
 
     def _save(self, data: dict[str, Any]) -> None:
         """Atomically write registry to disk with exclusive (write) lock."""
