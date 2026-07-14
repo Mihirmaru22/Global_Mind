@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from src.models.schemas import QueryResult, Chunk, RetrievedChunk, ChunkType, DocumentType
+from src.models.schemas import QueryResult, Chunk, RetrievedChunk, ChunkType, DocumentType, TokenUsage
 from src.pipeline.query import QueryPipeline
 from src.stages.s10_embeddings import SparseVector
 
@@ -25,6 +25,9 @@ def mock_router():
     # The generator reads router.last_used for QueryResult.model_used; the real
     # router sets this to a "provider/model" string once a call completes.
     router.last_used = "mock/model"
+    # The generator also reads router.usage (a real TokenUsage the router
+    # accumulates per request) and copies it onto the QueryResult.
+    router.usage = TokenUsage(input_tokens=120, output_tokens=45, calls=1, provider="mock", model="model")
     return router
 
 
@@ -130,3 +133,7 @@ async def test_query_pipeline_stream_success(mock_router, mock_store, mock_embed
     assert final_result.query == "What is the capital of France?"
     assert "stream answer" in final_result.answer
     assert final_result.chunks_retrieved == 1
+    # Token usage from the router is copied onto the result and serializes with
+    # a computed total, so the UI can show a breakdown per answer.
+    assert final_result.usage.total_tokens == 165
+    assert final_result.usage.model_dump()["total_tokens"] == 165

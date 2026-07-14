@@ -272,6 +272,8 @@ If the context doesn't contain enough information to answer, say so explicitly."
             reasoning_task=task,
             chunks_retrieved=len(chunks),
             chunks_after_rerank=len(chunks),
+            # Token cost of the whole query (all LLM calls routed so far).
+            usage=self._router.usage.model_copy(),
         )
 
     async def generate_stream(
@@ -342,6 +344,8 @@ If the context doesn't contain enough information to answer, say so explicitly."
             reasoning_task=task,
             chunks_retrieved=len(chunks),
             chunks_after_rerank=len(chunks),
+            # Token cost of the whole query (all LLM calls routed so far).
+            usage=self._router.usage.model_copy(),
         )
 
 

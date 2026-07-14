@@ -20,6 +20,7 @@ import { useAppStore } from '../store/store.js'
 import MermaidDiagram from './MermaidDiagram.jsx'
 import IngestionCard from './IngestionCard.jsx'
 import ThinkingTrace from './ThinkingTrace.jsx'
+import TokenUsage from './TokenUsage.jsx'
 import rehypeCitations from './rehypeCitations.js'
 
 /** Recursively flatten a react-markdown children tree back into plain text.
@@ -306,6 +307,9 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
               </button>
             ) : null}
           </div>
+          {/* Token cost of this answer — a collapsible footer, mirroring the
+              thinking trace at the top. Self-hides when no usage was captured. */}
+          {!isStreaming ? <TokenUsage usage={message.usage} /> : null}
         </div>
       ) : (
         <div className="message__content">

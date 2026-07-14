@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +188,58 @@ class ThinkingStep(BaseModel):
     detail: str = ""
 
 
+class TokenUsage(BaseModel):
+    """Token accounting for a query, normalized across every provider.
+
+    Providers report usage in different shapes (OpenAI-style prompt/completion
+    with an optional reasoning sub-count; Gemini's promptTokenCount /
+    candidatesTokenCount / thoughtsTokenCount). We map them all into one shape
+    so the UI shows a single consistent breakdown regardless of which lane
+    answered::
+
+        total = input + output + thinking
+
+    A single query typically makes several LLM calls (contextualize a
+    follow-up, classify intent, generate the answer). Because every call in a
+    request goes through the same per-request router, those calls accumulate
+    here — so the number reflects the *whole* cost of producing the answer,
+    not just the final generation. ``calls`` records how many LLM round-trips
+    that was, which is itself a lever for reducing spend.
+    """
+    input_tokens: int = 0
+    output_tokens: int = 0      # visible answer tokens
+    thinking_tokens: int = 0    # hidden reasoning tokens (0 on non-reasoning lanes)
+    calls: int = 0              # number of LLM round-trips folded into this total
+    provider: str = ""          # provider/model that produced the final answer
+    model: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens + self.thinking_tokens
+
+    @property
+    def has_data(self) -> bool:
+        return self.total_tokens > 0
+
+    def add_call(self, other: "TokenUsage") -> None:
+        """Fold one LLM call's usage into this running total (in place).
+
+        Counts accumulate; provider/model track the *most recent* non-empty
+        call, so after the generation step they name the model that actually
+        wrote the visible answer rather than an auxiliary classifier.
+        """
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.thinking_tokens += other.thinking_tokens
+        if other.total_tokens > 0:
+            self.calls += 1
+        if other.provider:
+            self.provider = other.provider
+        if other.model:
+            self.model = other.model
+
+
 class QueryResult(BaseModel):
     """Final output of the query pipeline."""
     query: str
@@ -198,3 +250,4 @@ class QueryResult(BaseModel):
     chunks_retrieved: int = 0
     chunks_after_rerank: int = 0
     thinking: list[ThinkingStep] = Field(default_factory=list)
+    usage: TokenUsage = Field(default_factory=TokenUsage)
