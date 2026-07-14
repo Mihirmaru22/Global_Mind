@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import shutil
-import uuid
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -24,22 +23,14 @@ router = APIRouter()
 def _resolve_upload_path(filename: str | None) -> Path:
     """Validate an untrusted upload filename and return a safe destination path.
 
-    Each upload lands in its own per-upload subdirectory
-    (``upload_dir/<token>/<name>``). This means two files that happen to share a
-    name (two different ``resume.pdf``s) never overwrite each other on disk, and
-    each gets a distinct storage path — so document identity can't collide.
-    The file keeps its original name inside the subdirectory, so display names
-    and citations stay clean.
-
-    ``safe_basename`` still collapses the name to a basename so a crafted
-    filename like ``"../../etc/cron.d/x"`` can't escape the uploads directory.
+    Collapses the name to a basename inside ``upload_dir`` so a crafted filename
+    like ``"../../etc/cron.d/x"`` or ``"/etc/passwd"`` can't escape the uploads
+    directory and overwrite arbitrary files.
     """
     name = safe_basename(filename or "")
     if name is None:
         raise HTTPException(status_code=400, detail="Invalid filename")
-    subdir = settings.upload_dir / uuid.uuid4().hex[:12]
-    subdir.mkdir(parents=True, exist_ok=True)
-    return subdir / name
+    return settings.upload_dir / name
 
 
 @router.post("/upload")
@@ -140,6 +131,7 @@ async def upload_document_stream(file: UploadFile = File(...)):
             yield f"data: {json.dumps(error_event)}\n\n"
 
     return StreamingResponse(_event_generator(), media_type="text/event-stream")
+<<<<<<< HEAD
 
 
 @router.post("/ingest/folder")
@@ -231,3 +223,5 @@ async def replace_document_stream(old_document_id: str, file: UploadFile = File(
             yield f"data: {json.dumps(error_event)}\n\n"
 
     return StreamingResponse(_event_generator(), media_type="text/event-stream")
+=======
+>>>>>>> origin/feature/backend-auto-ingestion

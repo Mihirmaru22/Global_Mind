@@ -25,7 +25,7 @@ A resilient `ProviderRouter` directs workloads to the best free-tier model for t
 - **Streaming Support:** Full Server-Sent Events (SSE) support across all generators for real-time streaming.
 
 ### 🚀 V2 Architecture Upgrades
-- **Content-Addressed Ingestion (Deduplication):** Documents are identified by the SHA-256 of their *content*, not their filename. Re-uploading byte-identical content costs zero API credits, while any new content becomes a distinct document — even under an existing filename. Two different files that share a name (e.g. two people's `resume.pdf`) are kept as separate documents and never overwrite each other, so a same-name upload can't cause data loss.
+- **Idempotent Ingestion (Deduplication):** Documents are hashed (SHA-256) and tracked. Re-uploading exact duplicates costs zero API credits. Updating a document automatically scrubs stale vectors.
 - **True Hybrid Search (RRF):** Queries are powered by Qdrant's Reciprocal Rank Fusion, seamlessly merging semantic dense vectors with exact-keyword sparse vectors (via Jina `return_sparse`).
 - **Metadata Filtering:** Constrain searches with surgical precision (e.g., by document type, filename, or page range).
 - **Parallel Batching:** Ingest folders of documents concurrently without violating rate limits using an `asyncio.Semaphore`.

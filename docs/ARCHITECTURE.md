@@ -61,7 +61,7 @@ We use a JSON-based Data Access Object (DAO) pattern. The `UIStateManager` reads
 Wraps `portalocker` into a clean context manager with `LockMode.SHARED` (read) and `LockMode.EXCLUSIVE` (write). This replaces the previous `fcntl`-based locking, which was Unix-only. Both `state.py` and `ingestion_registry.py` share this single abstraction so the locking strategy lives in one place.
 
 ### `src/core/ingestion_registry.py` (Deduplication State)
-Provides stateful tracking of ingested documents via **content-addressed** SHA-256 hashing (stored in `data/ingested_files.json`). Identity is the file's *content*, not its name: byte-identical re-uploads are skipped (no redundant API calls), while any new content becomes a distinct document — even if it shares a filename with an existing one. Uploads are stored in a unique per-upload subdirectory, so two different files that share a name (e.g. two people's `resume.pdf`) never overwrite each other on disk or collide in identity, and neither is ever destroyed. Re-uploading an edited file therefore adds a second document rather than replacing the first (delete the old one explicitly to remove it).
+Provides stateful tracking of ingested documents via SHA-256 hashing (stored in `data/ingested_files.json`). Prevents redundant API calls on duplicate uploads and orchestrates the deletion of stale vector chunks when a document is modified.
 
 ### `src/core/provider_client.py` (The Routing Engine)
 This is the most critical file in the system (~750 lines). It implements:

@@ -1,8 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Outlet } from 'react-router-dom'
 import Header from './Header.jsx'
 import Sidebar from './Sidebar.jsx'
 import { useAppStore } from '../store/store.js'
+import { http } from '../services/http.js'
 import { useResolvedTheme } from '../utils/theme.js'
 
 export function Layout() {
@@ -11,6 +13,7 @@ export function Layout() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const appliedTheme = useResolvedTheme(theme)
   const initialized = useRef(false)
+  const [directoryNotice, setDirectoryNotice] = useState(null)
 
   useEffect(() => {
     if (initialized.current) return
@@ -47,6 +50,42 @@ export function Layout() {
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return undefined
+
+    const source = new EventSource(`${http.defaults.baseURL}/events/stream`)
+
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data)
+        if (payload?.type === 'NO_DOCUMENTS_IN_DIRECTORY') {
+          setDirectoryNotice({
+            title: 'No Documents Found',
+            message:
+              payload.message ||
+              'No documents were found in the uploads directory. Please add documents to data/uploads before proceeding.',
+            path: payload.path || 'data/uploads',
+          })
+          return
+        }
+
+        if (payload?.type === 'DOCUMENTS_RESTORED') {
+          setDirectoryNotice(null)
+        }
+      } catch (error) {
+        console.error('Failed to parse directory notification:', error)
+      }
+    }
+
+    source.onerror = () => {
+      // EventSource retries automatically.
+    }
+
+    return () => {
+      source.close()
+    }
+  }, [])
+
   return (
     <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed ? 'true' : 'false'}>
       <Sidebar />
@@ -58,6 +97,43 @@ export function Layout() {
           </div>
         </div>
       </main>
+      {directoryNotice
+        ? createPortal(
+            <div
+              className="dialog-backdrop"
+              role="presentation"
+              onClick={() => setDirectoryNotice(null)}
+            >
+              <div
+                className="dialog-card"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="uploads-dialog-title"
+                aria-describedby="uploads-dialog-description"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="dialog-card__eyebrow">Directory notice</p>
+                <h3 id="uploads-dialog-title" className="dialog-card__title">
+                  {directoryNotice.title}
+                </h3>
+                <p id="uploads-dialog-description" className="dialog-card__text">
+                  {directoryNotice.message}
+                </p>
+                <div className="dialog-card__actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setDirectoryNotice(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }
+

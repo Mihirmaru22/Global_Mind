@@ -1352,6 +1352,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
 
 .message--user .message__content {
   justify-items: end;
+  gap: 6px;
 }
 
 /* Reasoning trace — Claude-style collapsible "thinking" block above answers. */
@@ -1630,6 +1631,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
 
 .message__actions--user {
   justify-content: flex-end;
+  margin-top: -2px;
 }
 
 .message__action {
@@ -2508,17 +2510,6 @@ html[data-scrolling='true'] .theme-grid::-webkit-scrollbar-thumb {
   margin: 4px 0 0;
   color: var(--text-muted);
   font-size: 0.82rem;
-}
-
-.doc-row__badge {
-  color: var(--accent, #6366f1);
-  font-weight: 600;
-}
-
-.doc-row__actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
 }
 
 .settings-list {

@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import { motion } from 'framer-motion'
-import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { FileUp, RefreshCw } from 'lucide-react'
 import Button from '../components/Button.jsx'
+import Card from '../components/Card.jsx'
 import Loader from '../components/Loader.jsx'
 import { useAppStore } from '../store/store.js'
 
@@ -27,48 +27,7 @@ function fileExtension(name) {
 export default function Documents() {
   const documents = useAppStore((state) => state.documents)
   const refreshDocuments = useAppStore((state) => state.refreshDocuments)
-  const replaceDocument = useAppStore((state) => state.replaceDocument)
-  const deleteDocument = useAppStore((state) => state.deleteDocument)
   const loading = useAppStore((state) => state.loading)
-
-  const fileInputRef = useRef(null)
-  const replaceTargetRef = useRef(null)
-  const [busyId, setBusyId] = useState(null)
-
-  const openReplacePicker = (docId) => {
-    replaceTargetRef.current = docId
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-      fileInputRef.current.click()
-    }
-  }
-
-  const onReplaceFileChosen = async (event) => {
-    const file = event.target.files?.[0]
-    const targetId = replaceTargetRef.current
-    if (!file || !targetId) return
-    setBusyId(targetId)
-    try {
-      // Streams the pipeline into a new chat card; the old version stays live
-      // until the new one is fully indexed.
-      await replaceDocument(targetId, file)
-    } finally {
-      setBusyId(null)
-      replaceTargetRef.current = null
-    }
-  }
-
-  const onDelete = async (doc) => {
-    if (!window.confirm(`Delete "${doc.name}"? This removes it from the knowledge base.`)) {
-      return
-    }
-    setBusyId(doc.id)
-    try {
-      await deleteDocument(doc.id)
-    } finally {
-      setBusyId(null)
-    }
-  }
 
   return (
     <section className="page section">
@@ -76,8 +35,7 @@ export default function Documents() {
         <div>
           <h2 className="section__title">Documents</h2>
           <p className="section__subtitle">
-            The current version of every document in your knowledge base. Replace swaps in
-            new content without losing the old version; delete removes it entirely.
+            This view is using static demo documents for now.
           </p>
         </div>
         <Button variant="secondary" onClick={refreshDocuments}>
@@ -86,22 +44,18 @@ export default function Documents() {
         </Button>
       </div>
 
+      <div className="grid">
+        <Card label="Upload" title="Add local files">
+          Connect your upload endpoint here when the API is ready.
+        </Card>
+        <Card label="Sync" title="Backend-ready list">
+          Document rows below will render directly from your API response later.
+        </Card>
+      </div>
+
       {loading ? <Loader /> : null}
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        style={{ display: 'none' }}
-        onChange={onReplaceFileChosen}
-      />
-
       <div className="doc-list">
-        {documents.length === 0 && !loading ? (
-          <p className="section__subtitle">
-            No documents yet. Upload a file from a chat to ingest it.
-          </p>
-        ) : null}
-
         {documents.map((doc, index) => (
           <motion.article
             key={doc.id}
@@ -111,35 +65,16 @@ export default function Documents() {
             transition={{ delay: index * 0.03 }}
           >
             <div>
-              <p className="doc-row__title">
-                {doc.name}
-                {doc.versionCount > 1 ? (
-                  <span className="doc-row__badge"> · v{doc.versionCount}</span>
-                ) : null}
-              </p>
+              <p className="doc-row__title">{doc.name}</p>
               <p className="doc-row__meta">
                 {fileExtension(doc.name)} · {formatBytes(doc.sizeBytes)} · {doc.chunks ?? 0} chunks
-                {doc.ingestedAt ? ` · Added ${dayjs(doc.ingestedAt).format('MMM D, HH:mm')}` : ''}
+                {doc.ingestedAt ? ` · Ingested ${dayjs(doc.ingestedAt).format('MMM D, HH:mm')}` : ''}
               </p>
             </div>
-            <div className="doc-row__actions">
-              <Button
-                variant="secondary"
-                disabled={busyId === doc.id}
-                onClick={() => openReplacePicker(doc.id)}
-              >
-                <RotateCcw size={16} />
-                <span>Replace</span>
-              </Button>
-              <Button
-                variant="ghost"
-                disabled={busyId === doc.id}
-                onClick={() => onDelete(doc)}
-              >
-                <Trash2 size={16} />
-                <span>Delete</span>
-              </Button>
-            </div>
+            <Button variant="secondary">
+              <FileUp size={16} />
+              <span>Open</span>
+            </Button>
           </motion.article>
         ))}
       </div>
