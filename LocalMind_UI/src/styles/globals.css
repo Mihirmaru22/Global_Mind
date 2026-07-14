@@ -1572,12 +1572,13 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
 
 /* Ingestion progress card — the step-by-step upload trace. */
 .message--ingestion {
-  width: 100%;
+  width: fit-content;
 }
 
 .ingest-card {
-  width: 100%;
-  max-width: 560px;
+  width: fit-content;
+  min-width: 260px;
+  max-width: min(480px, 100%);
   border: 1px solid var(--panel-border-strong);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--panel) 80%, transparent);
