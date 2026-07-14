@@ -23,8 +23,54 @@ from openai import AsyncOpenAI
 
 from src.core.config import settings
 from src.core.rate_limiter import RateLimiter
+from src.models.schemas import TokenUsage
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Token-usage normalization
+# ---------------------------------------------------------------------------
+# Each provider reports usage in its own shape. These helpers write a single
+# per-call TokenUsage sink so the router can accumulate a uniform total. The
+# sink is always freshly created per call, so plain assignment (not +=) is
+# correct here — accumulation happens one level up in the router.
+
+def _apply_openai_usage(sink: TokenUsage, usage_obj: Any, *, provider: str, model: str) -> None:
+    """Fill a sink from an OpenAI-style usage object.
+
+    ``completion_tokens`` already *includes* any reasoning tokens, so the
+    visible output is completion minus reasoning. Reasoning is exposed (when
+    present) under ``completion_tokens_details.reasoning_tokens``.
+    """
+    if usage_obj is None:
+        return
+    prompt = getattr(usage_obj, "prompt_tokens", 0) or 0
+    completion = getattr(usage_obj, "completion_tokens", 0) or 0
+    reasoning = 0
+    details = getattr(usage_obj, "completion_tokens_details", None)
+    if details is not None:
+        reasoning = getattr(details, "reasoning_tokens", 0) or 0
+    sink.input_tokens = prompt
+    sink.output_tokens = max(completion - reasoning, 0)
+    sink.thinking_tokens = reasoning
+    sink.provider = provider
+    sink.model = model
+
+
+def _apply_gemini_usage(sink: TokenUsage, meta: dict[str, Any] | None, *, provider: str, model: str) -> None:
+    """Fill a sink from a Gemini ``usageMetadata`` block.
+
+    Gemini reports thinking separately (``thoughtsTokenCount``) — it is NOT
+    folded into ``candidatesTokenCount`` — which matches our shape exactly.
+    """
+    if not meta:
+        return
+    sink.input_tokens = meta.get("promptTokenCount", 0) or 0
+    sink.output_tokens = meta.get("candidatesTokenCount", 0) or 0
+    sink.thinking_tokens = meta.get("thoughtsTokenCount", 0) or 0
+    sink.provider = provider
+    sink.model = model
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +95,7 @@ class LLMProvider(Protocol):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         response_format: dict[str, str] | None = None,
+        usage: TokenUsage | None = None,
     ) -> str: ...
 
     async def chat_stream(
@@ -58,6 +105,7 @@ class LLMProvider(Protocol):
         model: str,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        usage: TokenUsage | None = None,
     ) -> AsyncGenerator[str, None]: ...
 
     async def vision(
@@ -111,6 +159,7 @@ class OpenAICompatibleProvider:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         response_format: dict[str, str] | None = None,
+        usage: TokenUsage | None = None,
     ) -> str:
         await self._rate_limiter.acquire(self._name)
         client = self._get_client()
@@ -123,6 +172,8 @@ class OpenAICompatibleProvider:
         if response_format:
             kwargs["response_format"] = response_format
         response = await client.chat.completions.create(**kwargs)
+        if usage is not None:
+            _apply_openai_usage(usage, getattr(response, "usage", None), provider=self._name, model=model)
         return response.choices[0].message.content or ""
 
     async def chat_stream(
@@ -132,19 +183,27 @@ class OpenAICompatibleProvider:
         model: str,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        usage: TokenUsage | None = None,
     ) -> AsyncGenerator[str, None]:
         await self._rate_limiter.acquire(self._name)
         client = self._get_client()
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True
-        )
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        # Usage is not sent during a stream unless explicitly requested; it then
+        # arrives in a final chunk whose `choices` list is empty.
+        if usage is not None:
+            kwargs["stream_options"] = {"include_usage": True}
+        response = await client.chat.completions.create(**kwargs)
         async for chunk in response:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+            if usage is not None and getattr(chunk, "usage", None):
+                _apply_openai_usage(usage, chunk.usage, provider=self._name, model=model)
 
     async def vision(
         self,
@@ -213,6 +272,7 @@ class GeminiProvider:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         response_format: dict[str, str] | None = None,
+        usage: TokenUsage | None = None,
     ) -> str:
         await self._rate_limiter.acquire(self.name)
         http = self._get_http()
@@ -256,6 +316,8 @@ class GeminiProvider:
         resp.raise_for_status()
         data = resp.json()
 
+        if usage is not None:
+            _apply_gemini_usage(usage, data.get("usageMetadata"), provider=self.name, model=model)
         return self._extract_gemini_text(data)
 
     async def chat_stream(
@@ -265,6 +327,7 @@ class GeminiProvider:
         model: str,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        usage: TokenUsage | None = None,
     ) -> AsyncGenerator[str, None]:
         import json
         await self._rate_limiter.acquire(self.name)
@@ -311,6 +374,11 @@ class GeminiProvider:
                         text = self._extract_gemini_text(data)
                         if text:
                             yield text
+                        # Gemini streams cumulative usage on each SSE frame; the
+                        # last one carries the final totals, so overwriting as we
+                        # go leaves the correct end state.
+                        if usage is not None and "usageMetadata" in data:
+                            _apply_gemini_usage(usage, data["usageMetadata"], provider=self.name, model=model)
                     except json.JSONDecodeError:
                         pass
 
@@ -490,6 +558,11 @@ class ProviderRouter:
         # "gemini/gemini-2.5-flash". Callers read this to report which model
         # actually answered (after fallback), instead of the task name.
         self.last_used: str = ""
+        # Running token total for every LLM call made through this router. A
+        # router is created fresh per request, so this naturally scopes to one
+        # query — contextualize + intent + generation all fold in here, giving
+        # the true cost of producing the answer. Callers read it at the end.
+        self.usage: TokenUsage = TokenUsage()
         self._providers: dict[str, LLMProvider] = {}
         self._init_providers()
 
@@ -628,14 +701,17 @@ class ProviderRouter:
                 continue
 
             try:
+                call_usage = TokenUsage()
                 result = await provider.chat(
                     messages,
                     model=option.model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,
+                    usage=call_usage,
                 )
                 self.last_used = f"{option.provider_name}/{option.model}"
+                self.usage.add_call(call_usage)
                 logger.debug(
                     "Task '%s' completed via %s/%s", task, option.provider_name, option.model
                 )
@@ -670,16 +746,19 @@ class ProviderRouter:
             emitted = False
             try:
                 # We yield from the provider's generator
+                call_usage = TokenUsage()
                 async for chunk in provider.chat_stream(
                     messages,
                     model=option.model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    usage=call_usage,
                 ):
                     emitted = True
                     yield chunk
 
                 self.last_used = f"{option.provider_name}/{option.model}"
+                self.usage.add_call(call_usage)
                 logger.debug(
                     "Task stream '%s' completed via %s/%s", task, option.provider_name, option.model
                 )

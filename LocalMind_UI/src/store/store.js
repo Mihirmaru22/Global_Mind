@@ -102,6 +102,7 @@ function versionSnapshot(source) {
     content: source.content || '',
     citations: source.citations || [],
     modelUsed: source.modelUsed,
+    usage: source.usage,
   }
 }
 
@@ -168,6 +169,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
                       content: snapshot.content,
                       citations: snapshot.citations,
                       modelUsed: snapshot.modelUsed,
+                      usage: chunkData.message.usage,
                       thinking: chunkData.message.thinking || [],
                       versions,
                       activeVersion: versions.length - 1,
@@ -252,6 +254,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
                   content: snapshot.content,
                   citations: snapshot.citations,
                   modelUsed: snapshot.modelUsed,
+                  usage: snapshot.usage,
                   versions,
                   activeVersion: versions.length - 1,
                   status: 'done',
@@ -660,6 +663,7 @@ export const useAppStore = create((set, get) => ({
             content: version.content,
             citations: version.citations || [],
             modelUsed: version.modelUsed,
+            usage: version.usage,
           }
         }),
       },

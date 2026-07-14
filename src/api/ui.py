@@ -226,9 +226,10 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
             "chatId": chat_id,
             "citations": [c.model_dump() for c in result.citations],
             "modelUsed": result.model_used,
+            "usage": result.usage.model_dump(),
         }
         state_manager.add_message(chat_id, assistant_message)
-        
+
         # Update chat modified time
         state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})
         
@@ -284,6 +285,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
                         "citations": [c.model_dump() for c in chunk.citations],
                         "modelUsed": chunk.model_used,
                         "thinking": [t.model_dump() for t in chunk.thinking],
+                        "usage": chunk.usage.model_dump(),
                     }
                     state_manager.add_message(chat_id, assistant_message)
                     state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})
