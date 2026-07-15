@@ -104,10 +104,17 @@ function buildConfig(source) {
 // the LLM uses typographic or Unicode alternatives to ASCII syntax.
 function sanitizeMermaid(source) {
   return source
-    // → (U+2192) used instead of mermaid's range arrow -->
+    // Strip any leaked closing-fence line (e.g. ``` [1]) from the end of the
+    // content. This happens when the LLM appends a citation to the closing
+    // fence and the markdown parser includes it as code content because the
+    // citation makes the line an invalid CommonMark closing fence.
+    .replace(/\n`{3,}[^\n]*$/, '')
+    // → (U+2192) and — followed by > (em-dash, U+2014) are both used instead
+    // of mermaid's range arrow -->
     .replace(/→/g, '-->')
-    // " " (U+201C/201D curly quotes) → straight quotes
-    .replace(/[“”]/g, '"')
+    .replace(/—>/g, '-->')
+    // “ “ (U+201C/201D curly quotes) → straight quotes
+    .replace(/[“”]/g, '”')
 }
 
 export default function MermaidDiagram({ code }) {

@@ -69,6 +69,15 @@ function mermaidSource(children) {
   return null
 }
 
+// CommonMark requires closing code fences to have only spaces after the
+// backticks. LLMs often append citation markers ([1]) directly after the
+// closing backticks, which prevents the fence from closing the block and leaks
+// the fence line into the code content. Move those citations to the next line
+// so the parser sees a valid closing fence.
+function normalizeClosingFences(text) {
+  return text.replace(/^(`{3,}|~{3,})[ \t]*(\[\d+(?:[,\s]*\d+)*\])/gm, '$1\n$2')
+}
+
 // Custom renderers for assistant markdown: mermaid code blocks become diagrams,
 // everything else falls through to the default <pre>.
 const markdownComponents = {
@@ -255,7 +264,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
               rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
               components={markdownComponents}
             >
-              {typedContent}
+              {normalizeClosingFences(typedContent)}
             </ReactMarkdown>
             {isTyping ? <span className="typing-cursor" aria-hidden="true" /> : null}
           </div>
