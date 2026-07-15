@@ -11,7 +11,9 @@ export default function Button({
     <Component
       type={Component === 'button' ? type : undefined}
       className={clsx(
-        variant === 'primary' ? 'primary-button' : 'secondary-button',
+        variant === 'primary' && 'primary-button',
+        variant === 'danger' && 'primary-button primary-button--danger',
+        (variant === 'secondary' || variant === 'ghost') && 'secondary-button',
         className,
       )}
       {...props}

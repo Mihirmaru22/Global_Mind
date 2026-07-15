@@ -1,4 +1,5 @@
 import {
+  FileText,
   Loader2,
   MessageSquareText,
   MoreVertical,
@@ -18,6 +19,7 @@ import { useAppStore } from '../store/store.js'
 
 const navItems = [
   { to: '/chat', label: 'Chat', icon: MessageSquareText },
+  { to: '/documents', label: 'Documents', icon: FileText },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
