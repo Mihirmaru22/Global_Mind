@@ -49,14 +49,18 @@ function buildConfig(source) {
   const text = cssVar('--text-primary', dark ? '#ededed' : '#1a1a1a')
   const muted = cssVar('--text-muted', dark ? '#8e8e8e' : '#767676')
   const line = cssVar('--panel-border-strong', dark ? '#3a3a3a' : '#bdbdbd')
-  const accent = cssVar('--accent-strong', '#d97757')
+  // Use --accent (the saturated brand fill), NOT --accent-strong. The latter is
+  // a high-luminance *emphasis* color meant for text/borders — on dark themes
+  // it's near-white (e.g. aurora-dark #daf4ed), which washes bars out to an
+  // unreadable pale blur. --accent is mid-luminance and reads on every theme.
+  const accent = cssVar('--accent', cssVar('--accent-strong', '#d97757'))
   const palette = [accent, ...BASE_PALETTE].join(', ')
 
   const isXY = /^xychart-beta/i.test(source.trimStart())
   const categories = isXY ? xAxisCategoryCount(source) : 0
-  // Give every category ~72px so 13 GPU models don't overlap; the container
-  // scrolls horizontally when the natural width exceeds the bubble.
-  const width = isXY ? Math.max(720, categories * 72) : undefined
+  // Give every category ~110px so bars are chunky and labels never overlap; the
+  // container scrolls horizontally when the natural width exceeds the bubble.
+  const width = isXY ? Math.max(900, categories * 110) : undefined
 
   return {
     isXY,
@@ -72,7 +76,7 @@ function buildConfig(source) {
       fontFamily: 'inherit',
       theme: 'base',
       themeVariables: {
-        fontSize: '15px',
+        fontSize: '16px',
         xyChart: {
           backgroundColor: 'transparent',
           titleColor: text,
@@ -89,11 +93,11 @@ function buildConfig(source) {
       },
       xyChart: {
         width,
-        height: 460,
-        titleFontSize: 18,
-        xAxis: { labelFontSize: 14, titleFontSize: 14, labelPadding: 6 },
-        yAxis: { labelFontSize: 13, titleFontSize: 14 },
-        plotReservedSpacePercent: 55,
+        height: 560,
+        titleFontSize: 22,
+        xAxis: { labelFontSize: 16, titleFontSize: 16, labelPadding: 8 },
+        yAxis: { labelFontSize: 15, titleFontSize: 16 },
+        plotReservedSpacePercent: 60,
       },
     },
   }
