@@ -29,7 +29,7 @@ export default function Header() {
   const activeChat = chats.find((chat) => chat.id === activeChatId)
   const messages = messagesByChatId[activeChatId] || []
   const exportableMessages = messages.filter(
-    (message) => message.status !== 'loading' && message.kind !== 'ingestion',
+    (message) => message != null && message.status !== 'loading' && message.kind !== 'ingestion',
   )
   const canExport = Boolean(activeChat) && exportableMessages.length > 0
 

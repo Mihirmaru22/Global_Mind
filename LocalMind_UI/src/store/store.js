@@ -358,7 +358,7 @@ export const useAppStore = create((set, get) => ({
         overview,
         chats: normalizedChats.length ? normalizedChats : demoChats,
         activeChatId,
-        messagesByChatId: { [activeChatId]: messages || [] },
+        messagesByChatId: { [activeChatId]: (messages || []).filter(Boolean) },
         settings: mergedSettings,
         providers: providerOptions,
         documents: normalizedDocuments,
@@ -432,7 +432,7 @@ export const useAppStore = create((set, get) => ({
     if (messagesByChatId[chatId]) return
     const messages = await getMessages(chatId)
     set((state) => ({
-      messagesByChatId: { ...state.messagesByChatId, [chatId]: messages || [] },
+      messagesByChatId: { ...state.messagesByChatId, [chatId]: (messages || []).filter(Boolean) },
     }))
   },
 

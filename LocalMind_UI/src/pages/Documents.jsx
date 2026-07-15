@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import { motion } from 'framer-motion'
 import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import Button from '../components/Button.jsx'
 import Loader from '../components/Loader.jsx'
 import { useAppStore } from '../store/store.js'
@@ -31,6 +32,7 @@ export default function Documents() {
   const deleteDocument = useAppStore((state) => state.deleteDocument)
   const loading = useAppStore((state) => state.loading)
 
+  const navigate = useNavigate()
   const fileInputRef = useRef(null)
   const replaceTargetRef = useRef(null)
   const [busyId, setBusyId] = useState(null)
@@ -49,8 +51,8 @@ export default function Documents() {
     if (!file || !targetId) return
     setBusyId(targetId)
     try {
-      // Streams the pipeline into a new chat card; the old version stays live
-      // until the new one is fully indexed.
+      // Navigate first so the streaming ingestion card is visible as it runs.
+      navigate('/chat')
       await replaceDocument(targetId, file)
     } finally {
       setBusyId(null)
@@ -132,7 +134,7 @@ export default function Documents() {
                 <span>Replace</span>
               </Button>
               <Button
-                variant="ghost"
+                variant="danger"
                 disabled={busyId === doc.id}
                 onClick={() => onDelete(doc)}
               >
