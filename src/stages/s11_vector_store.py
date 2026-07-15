@@ -161,21 +161,29 @@ class QdrantStore:
 
         Qdrant requires an explicit payload index for any field used in a
         Filter when the collection is large enough to need one. Without this,
-        queries using must_not on ``active`` raise a 400 "Index required" error.
-        The call is idempotent — safe to run on every startup even if the index
-        already exists.
+        queries raise a 400 "Index required" error. The calls are idempotent —
+        safe to run on every startup even if the indexes already exist.
         """
         from qdrant_client.models import PayloadSchemaType
 
-        try:
-            await client.create_payload_index(
-                collection_name=self._collection_name,
-                field_name="active",
-                field_schema=PayloadSchemaType.BOOL,
-            )
-            logger.info("Ensured payload index on 'active' for collection '%s'", self._collection_name)
-        except Exception as e:
-            logger.warning("Could not create payload index on 'active': %s", e)
+        indexes = [
+            ("active", PayloadSchemaType.BOOL),
+            ("document_id", PayloadSchemaType.KEYWORD),
+        ]
+        for field_name, field_schema in indexes:
+            try:
+                await client.create_payload_index(
+                    collection_name=self._collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                )
+                logger.info(
+                    "Ensured payload index on '%s' for collection '%s'",
+                    field_name,
+                    self._collection_name,
+                )
+            except Exception as e:
+                logger.warning("Could not create payload index on '%s': %s", field_name, e)
 
     async def upsert(
         self,
