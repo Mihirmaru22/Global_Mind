@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlglot import parse_one, exp
+import sqlglot
+from sqlglot import exp
 
 from src.core.config import settings
 from src.core.db_client import run_readonly_query
@@ -160,20 +161,56 @@ Schema:
             logger.error(f"Failed to generate SQL: {e}")
             return ""
 
+    # Functions that read/write files or execute code. Each is still a "SELECT"
+    # to sqlglot, so isinstance(ast, exp.Select) alone would wave them through.
+    _DANGEROUS_FUNCTIONS = frozenset({
+        "load_file", "loadfile",              # MySQL: read an arbitrary file
+        "sys_eval", "sys_exec", "sys_get",    # MySQL sys UDFs: shell execution
+        "lo_import", "lo_export",             # Postgres large-object file I/O
+    })
+
     def _is_safe_read_query(self, sql: str) -> bool:
-        """Use sqlglot to parse AST and ensure it's a single SELECT statement."""
+        """Parse the AST and confirm it's a single, side-effect-free read SELECT.
+
+        ``isinstance(ast, exp.Select)`` is necessary but NOT sufficient — several
+        write/exfiltration primitives are still SELECTs:
+
+          * ``SELECT ... INTO OUTFILE/DUMPFILE '/path'`` (MySQL) writes to disk;
+          * ``SELECT LOAD_FILE('/etc/passwd')`` reads an arbitrary file;
+          * a stacked ``SELECT 1; DROP TABLE t`` smuggles a second statement.
+
+        This rejects all of the above so the generated query can only ever read
+        rows, matching the layer's stated "read-only SELECT" guarantee.
+        """
         try:
-            # Parse into AST (using sqlglot)
-            ast = parse_one(sql, read=self._dialect.sqlglot_dialect)
-            
-            # Must be a SELECT statement
-            if not isinstance(ast, exp.Select):
-                return False
-                
-            return True
+            # parse() (not parse_one) surfaces stacked statements so they can be
+            # rejected rather than silently reduced to the first one.
+            statements = [s for s in sqlglot.parse(sql, read=self._dialect.sqlglot_dialect) if s is not None]
         except Exception as e:
             logger.error(f"sqlglot rejected query '{sql}': {e}")
             return False
+
+        if len(statements) != 1:
+            logger.warning("Blocked multi-statement / stacked SQL: %s", sql)
+            return False
+
+        ast = statements[0]
+        if not isinstance(ast, exp.Select):
+            return False
+
+        # SELECT ... INTO OUTFILE/DUMPFILE (or INTO @var) — a disk/variable write.
+        if ast.args.get("into") is not None:
+            logger.warning("Blocked SELECT ... INTO (file/variable write): %s", sql)
+            return False
+
+        # File-read / code-exec functions anywhere in the tree.
+        for anon in ast.find_all(exp.Anonymous):
+            fname = (anon.this or "")
+            if isinstance(fname, str) and fname.lower() in self._DANGEROUS_FUNCTIONS:
+                logger.warning("Blocked dangerous function '%s' in SQL: %s", fname, sql)
+                return False
+
+        return True
 
     def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
         """Format dictionary rows into a markdown table."""

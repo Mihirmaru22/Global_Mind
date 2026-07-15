@@ -315,6 +315,18 @@ class IngestionRegistry:
         """Return all currently-active document versions."""
         return [e for e in self._backend.load_all().values() if e.get("active", True)]
 
+    def active_entry_for_hash(self, content_hash: str) -> dict[str, Any] | None:
+        """Return the active version whose content matches ``content_hash``, if any.
+
+        Unlike :meth:`check`, this does not hash a file — it takes an already
+        computed content hash. Used to re-confirm dedup under a per-hash lock so
+        two concurrent ingests of identical bytes don't both embed and store the
+        same document.
+        """
+        registry = self._backend.load_all()
+        doc_id = self._find_active_by_hash(registry, content_hash)
+        return registry[doc_id] if doc_id is not None else None
+
     def get_active_ids(self) -> set[str]:
         """Return the set of active document_ids."""
         return {

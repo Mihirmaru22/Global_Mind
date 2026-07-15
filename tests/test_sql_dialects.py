@@ -17,7 +17,59 @@ from pathlib import Path
 import pytest
 
 from src.core.sql_dialects import DIALECTS, SQLDialectProfile, get_dialect_profile
-from src.stages.s12b_sql_retrieval import format_schema_rows
+from src.stages.s12b_sql_retrieval import SQLRetriever, format_schema_rows
+
+
+def _retriever(engine: str) -> SQLRetriever:
+    """Build a retriever whose safety check runs against ``engine``'s dialect.
+
+    The router is unused by ``_is_safe_read_query``, so a bare stand-in is fine.
+    """
+    retriever = SQLRetriever(router=object())
+    retriever._dialect = get_dialect_profile(engine)
+    return retriever
+
+
+class TestSafeReadQuery:
+    """`_is_safe_read_query` must accept only single, side-effect-free SELECTs."""
+
+    def test_allows_plain_select(self) -> None:
+        assert _retriever("mysql")._is_safe_read_query(
+            "SELECT model, price FROM gpu_sales WHERE price < 500"
+        )
+        assert _retriever("sqlite")._is_safe_read_query(
+            "SELECT COUNT(*) FROM gpu_sales"
+        )
+
+    def test_blocks_non_select(self) -> None:
+        r = _retriever("mysql")
+        assert not r._is_safe_read_query("DELETE FROM gpu_sales")
+        assert not r._is_safe_read_query("UPDATE gpu_sales SET price = 0")
+
+    def test_blocks_stacked_statements(self) -> None:
+        # parse_one used to silently keep only the first statement.
+        assert not _retriever("mysql")._is_safe_read_query(
+            "SELECT 1; DROP TABLE gpu_sales"
+        )
+
+    def test_blocks_load_file(self) -> None:
+        assert not _retriever("mysql")._is_safe_read_query(
+            "SELECT LOAD_FILE('/etc/passwd')"
+        )
+
+    def test_blocks_select_into_variable(self) -> None:
+        assert not _retriever("mysql")._is_safe_read_query(
+            "SELECT price INTO @v FROM gpu_sales"
+        )
+
+    def test_blocks_into_outfile(self) -> None:
+        # Rejected either by the INTO guard or by sqlglot failing to parse it.
+        assert not _retriever("mysql")._is_safe_read_query(
+            "SELECT * FROM gpu_sales INTO OUTFILE '/tmp/x.csv'"
+        )
+
+    def test_blocks_garbage(self) -> None:
+        assert not _retriever("mysql")._is_safe_read_query("not a query at all;;;")
 
 # --- MySQL integration tests are opt-in, not run by default in CI ---
 MYSQL_HOST = os.environ.get("MYSQL_TEST_HOST")

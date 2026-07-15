@@ -99,6 +99,17 @@ function buildConfig(source) {
   }
 }
 
+// Light sanitizer for common model output mistakes that cause Mermaid parse
+// errors. Applied before every render attempt so charts still work even when
+// the LLM uses typographic or Unicode alternatives to ASCII syntax.
+function sanitizeMermaid(source) {
+  return source
+    // → (U+2192) used instead of mermaid's range arrow -->
+    .replace(/→/g, '-->')
+    // " " (U+201C/201D curly quotes) → straight quotes
+    .replace(/[“”]/g, '"')
+}
+
 export default function MermaidDiagram({ code }) {
   const [svg, setSvg] = useState('')
   const [failed, setFailed] = useState(false)
@@ -108,7 +119,7 @@ export default function MermaidDiagram({ code }) {
 
   useEffect(() => {
     let cancelled = false
-    const source = (code || '').trim()
+    const source = sanitizeMermaid((code || '').trim())
     if (!source) return undefined
 
     const { isXY, config } = buildConfig(source)

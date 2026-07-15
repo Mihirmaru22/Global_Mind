@@ -40,17 +40,31 @@ function nodeText(node) {
 const MERMAID_DIRECTIVE =
   /^(?:%%\{[^]*?\}%%\s*)?(?:xychart-beta|pie\b|flowchart\b|graph\b|sequenceDiagram\b|timeline\b|gantt\b|classDiagram\b|stateDiagram(?:-v2)?\b|erDiagram\b|journey\b|mindmap\b|quadrantChart\b)/
 
+// When a model fences a block as ```xychart-beta (not ```mermaid), the language
+// tag becomes the className — but the content body no longer has the directive on
+// its first line, so MERMAID_DIRECTIVE can't catch it. This regex matches any
+// mermaid chart-type language class so we can prepend the directive ourselves.
+const MERMAID_LANG_RE =
+  /^language-(xychart-beta|xychart|pie|flowchart|graph|sequenceDiagram|timeline|gantt|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|mindmap|quadrantChart)$/i
+
 /**
- * Pull the source out of a fenced code block if it's a Mermaid diagram — either
- * tagged ```mermaid, or any block whose first line is a Mermaid directive.
- * react-markdown renders fenced code as <pre><code className="language-*">.
+ * Pull the source out of a fenced code block if it's a Mermaid diagram.
+ * Handles three fence styles the model might produce:
+ *   1. ```mermaid   — content already starts with the chart directive.
+ *   2. ```xychart-beta (etc.) — directive is the language tag; we prepend it.
+ *   3. ``` (unlabelled) — directive is the first line of content.
  */
 function mermaidSource(children) {
   const child = Array.isArray(children) ? children[0] : children
   if (!child?.props) return null
   const className = child.props.className || ''
   const source = nodeText(child.props.children).replace(/\n$/, '')
+  // Case 1: ```mermaid — content already contains the directive header.
   if (/\bmermaid\b/.test(className)) return source
+  // Case 2: ```xychart-beta etc. — language tag IS the directive; prepend it.
+  const lang = className.match(MERMAID_LANG_RE)?.[1]
+  if (lang) return `${lang}\n${source}`
+  // Case 3: unlabelled/mis-labelled fence whose content starts with a directive.
   if (MERMAID_DIRECTIVE.test(source.trimStart())) return source
   return null
 }

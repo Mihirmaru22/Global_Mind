@@ -71,6 +71,20 @@ def test_identical_content_is_deduped(registry, tmp_path):
     assert result.old_document_id == "doc-a"
 
 
+def test_active_entry_for_hash_finds_and_ignores(registry, tmp_path):
+    """Backs the per-hash lock's dedup re-check: lookup by known hash, no rehash."""
+    f = _write(tmp_path / "a.pdf", b"alpha")
+    check = registry.check(f)
+    assert registry.active_entry_for_hash(check.sha256) is None  # not yet ingested
+
+    registry.register(f, document_id="doc-a", total_chunks=3, sha256=check.sha256)
+    entry = registry.active_entry_for_hash(check.sha256)
+    assert entry is not None and entry["document_id"] == "doc-a"
+
+    # Unknown hash → None; a superseded version is not "active".
+    assert registry.active_entry_for_hash("deadbeef") is None
+
+
 def test_same_name_different_content_are_two_documents(registry, tmp_path):
     """Two people's resume.pdf must both survive."""
     a = _write(tmp_path / "resume.pdf", b"person-one")

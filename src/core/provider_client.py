@@ -29,6 +29,59 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Shared HTTP clients (created once per process, reused across requests)
+# ---------------------------------------------------------------------------
+# A ProviderRouter is built fresh per request (so each query gets an isolated
+# RateLimiter). If every provider also spun up its own AsyncOpenAI / httpx
+# client, those connection pools would never be closed and would accumulate
+# across requests, leaking sockets/file descriptors. Instead, the underlying
+# clients live at module scope and are shared by all provider instances that
+# target the same endpoint — the correct long-lived pattern for httpx clients.
+
+_shared_openai_clients: dict[tuple[str, str], "AsyncOpenAI"] = {}
+_shared_gemini_http: "httpx.AsyncClient | None" = None
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit detection
+# ---------------------------------------------------------------------------
+
+_MAX_BACKOFF_SECONDS = 60.0
+
+
+def _rate_limit_retry_after(exc: Exception) -> float | None:
+    """Return a backoff duration (seconds) if ``exc`` is a 429, else ``None``.
+
+    Detects a rate-limit response from either the OpenAI SDK (which exposes
+    ``status_code``) or a raw ``httpx`` error (``exc.response.status_code``),
+    and honours a ``Retry-After`` header when present. Returning ``None`` for
+    anything that isn't a 429 keeps ordinary failures (5xx, timeouts) out of
+    the cooldown path so they can still be retried normally on the next call.
+    """
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if status != 429:
+        return None
+
+    retry_after = 5.0
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        raw = None
+        try:
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:
+            raw = None
+        if raw:
+            try:
+                retry_after = float(raw)
+            except (TypeError, ValueError):
+                retry_after = 5.0
+    return min(max(retry_after, 0.0), _MAX_BACKOFF_SECONDS)
+
+
+# ---------------------------------------------------------------------------
 # Token-usage normalization
 # ---------------------------------------------------------------------------
 # Each provider reports usage in its own shape. These helpers write a single
@@ -143,13 +196,22 @@ class OpenAICompatibleProvider:
         return bool(self._api_key)
 
     def _get_client(self) -> AsyncOpenAI:
-        if self._client is None:
-            self._client = AsyncOpenAI(
+        # An injected/pre-set client (tests) always wins. Otherwise reuse a
+        # process-wide client keyed by endpoint+key so per-request routers don't
+        # each leak a fresh connection pool.
+        if self._client is not None:
+            return self._client
+        key = (self._base_url, self._api_key)
+        client = _shared_openai_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(
                 base_url=self._base_url,
                 api_key=self._api_key,
-                timeout=60.0
+                timeout=60.0,
             )
-        return self._client
+            _shared_openai_clients[key] = client
+        self._client = client
+        return client
 
     async def chat(
         self,
@@ -199,11 +261,22 @@ class OpenAICompatibleProvider:
         if usage is not None:
             kwargs["stream_options"] = {"include_usage": True}
         response = await client.chat.completions.create(**kwargs)
-        async for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-            if usage is not None and getattr(chunk, "usage", None):
-                _apply_openai_usage(usage, chunk.usage, provider=self._name, model=model)
+        # Explicitly close the stream in a finally so a client disconnect /
+        # stop-generation (which throws GeneratorExit in here) releases the HTTP
+        # connection back to the shared pool instead of leaking it until GC.
+        try:
+            async for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                if usage is not None and getattr(chunk, "usage", None):
+                    _apply_openai_usage(usage, chunk.usage, provider=self._name, model=model)
+        finally:
+            close = getattr(response, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
 
     async def vision(
         self,
@@ -260,9 +333,16 @@ class GeminiProvider:
         return bool(self._api_key)
 
     def _get_http(self) -> httpx.AsyncClient:
-        if self._http is None:
-            self._http = httpx.AsyncClient(timeout=120.0)
-        return self._http
+        # An injected/pre-set client (tests) always wins. Otherwise reuse a
+        # process-wide httpx client so per-request routers don't each leak a
+        # fresh connection pool.
+        if self._http is not None:
+            return self._http
+        global _shared_gemini_http
+        if _shared_gemini_http is None:
+            _shared_gemini_http = httpx.AsyncClient(timeout=120.0)
+        self._http = _shared_gemini_http
+        return _shared_gemini_http
 
     async def chat(
         self,
@@ -717,6 +797,7 @@ class ProviderRouter:
                 )
                 return result
             except Exception as e:
+                self._note_rate_limit(option.provider_name, e)
                 error_msg = f"{option.provider_name}/{option.model}: {e}"
                 errors.append(error_msg)
                 logger.warning("Provider failed for task '%s': %s", task, error_msg)
@@ -725,6 +806,19 @@ class ProviderRouter:
         raise RuntimeError(
             f"All providers exhausted for task '{task}'. Errors: {'; '.join(errors)}"
         )
+
+    def _note_rate_limit(self, provider_name: str, exc: Exception) -> None:
+        """Record a provider cooldown when a call failed with HTTP 429.
+
+        Without this, a provider that just returned 429 would be re-tried at the
+        front of the chain on the *next* task in the same request — burning
+        another doomed request (and free-tier quota) every time. Marking it
+        rate-limited makes ``RateLimiter.acquire`` reject it for the backoff
+        window, so the router falls straight through to the next provider.
+        """
+        retry_after = _rate_limit_retry_after(exc)
+        if retry_after is not None:
+            self._rate_limiter.report_429(provider_name, retry_after)
 
     async def chat_stream(
         self,
@@ -764,6 +858,7 @@ class ProviderRouter:
                 )
                 return
             except Exception as e:
+                self._note_rate_limit(option.provider_name, e)
                 error_msg = f"{option.provider_name}/{option.model}: {e}"
                 errors.append(error_msg)
                 logger.warning("Provider stream failed for task '%s': %s", task, error_msg)
@@ -820,6 +915,7 @@ class ProviderRouter:
                 )
                 return result
             except Exception as e:
+                self._note_rate_limit(option.provider_name, e)
                 error_msg = f"{option.provider_name}/{option.model}: {e}"
                 errors.append(error_msg)
                 logger.warning("Vision provider failed for task '%s': %s", task, error_msg)
