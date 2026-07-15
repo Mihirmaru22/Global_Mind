@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     # queries bypass this cap to preserve recall. Floored at 2 so short-document
     # answers never starve.
     generation_context_k: int = 5
+    # Near-duplicate suppression: boilerplate shared across documents (a company
+    # motto, a repeated project preamble, a standard disclaimer) is stored once
+    # per document, so a query matching it can retrieve the same passage many
+    # times and crowd out unique content. After retrieval, a chunk whose text
+    # overlaps a higher-ranked chunk by at least this Jaccard ratio is dropped,
+    # keeping the best-scored representative. Exact repeats are always collapsed;
+    # this threshold governs only the fuzzy case. Set to >1.0 to disable fuzzy
+    # matching (exact-only); lower it toward ~0.8 to be more aggressive.
+    dedup_near_duplicate_threshold: float = 0.9
 
     # --- CORS ---
     # Comma-separated allow-list of browser origins permitted to call the API

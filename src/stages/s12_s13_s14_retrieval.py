@@ -8,8 +8,10 @@ Stage 14: Task-routed LLM generation with citations
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +82,13 @@ class Retriever:
             filters=filters,
         )
 
-        return results
+        # Collapse boilerplate shared across documents (same intro/disclaimer
+        # stored once per file) so repeated passages don't crowd the reranker or
+        # the final context. Results are already score-sorted, so the first copy
+        # — the best-scored one — is the representative we keep.
+        return _suppress_near_duplicates(
+            results, similarity_threshold=settings.dedup_near_duplicate_threshold
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +411,90 @@ def _is_visualization_query(query: str) -> bool:
     """
     q = query.lower()
     return any(kw in q for kw in _VISUALIZATION_KEYWORDS)
+
+
+_DEDUP_WORD_RE = re.compile(r"[a-z0-9]+")
+
+# Below this many distinct words a chunk is too short for token-overlap to be a
+# reliable duplicate signal (a lone number, a one-line heading, a table cell can
+# collide with an unrelated chunk by coincidence), so we only ever collapse it
+# on an *exact* normalized-text match, never a fuzzy one.
+_DEDUP_MIN_TOKENS = 12
+
+
+def _dedup_tokens(text: str) -> list[str]:
+    """Lowercased alphanumeric words — the normalization both dedup paths share."""
+    return _DEDUP_WORD_RE.findall(text.lower())
+
+
+def _suppress_near_duplicates(
+    chunks: list[RetrievedChunk],
+    *,
+    similarity_threshold: float = 0.9,
+) -> list[RetrievedChunk]:
+    """Drop chunks whose text duplicates a higher-ranked chunk already kept.
+
+    Boilerplate shared across documents — a company motto, a repeated project
+    preamble, a standard disclaimer — is embedded and stored once per file, so a
+    query that matches it retrieves the same passage many times. Left alone,
+    those near-identical copies dominate the reranker and the final context,
+    starving unique content. This collapses them, keeping a single representative.
+
+    Two shapes are handled:
+      * **Exact repeats** — identical text after whitespace/case normalization.
+        Always collapsed; there is no downside to keeping one copy of identical
+        text (the only loss is a redundant citation to a second file).
+      * **Near repeats** — same passage with a trivial edit (a date, a version
+        number). Collapsed only when the token-set Jaccard overlap meets
+        ``similarity_threshold`` AND both chunks are long enough
+        (``_DEDUP_MIN_TOKENS``) that high overlap is meaningful — so genuinely
+        distinct short chunks are never merged. Pass a threshold > 1.0 to disable
+        the fuzzy path and collapse exact repeats only.
+
+    Input is assumed to be in descending relevance order (as retrieval returns
+    it), so the first occurrence is the best-scored copy and is the one kept.
+    """
+    if len(chunks) <= 1:
+        return chunks
+
+    kept: list[RetrievedChunk] = []
+    kept_token_sets: list[set[str]] = []
+    seen_exact: set[str] = set()
+    dropped = 0
+
+    for c in chunks:
+        tokens = _dedup_tokens(c.chunk.content or "")
+
+        # Exact-duplicate (normalized) — cheap, and always safe to collapse.
+        fingerprint = hashlib.sha1(" ".join(tokens).encode("utf-8")).hexdigest()
+        if fingerprint in seen_exact:
+            dropped += 1
+            continue
+
+        # Near-duplicate — only meaningful for chunks with enough distinct words.
+        token_set = set(tokens)
+        if len(token_set) >= _DEDUP_MIN_TOKENS:
+            is_near_dup = any(
+                prior
+                and len(token_set & prior) / len(token_set | prior) >= similarity_threshold
+                for prior in kept_token_sets
+            )
+            if is_near_dup:
+                dropped += 1
+                continue
+
+        seen_exact.add(fingerprint)
+        kept.append(c)
+        kept_token_sets.append(token_set)
+
+    if dropped:
+        logger.info(
+            "Near-duplicate suppression: dropped %d/%d chunk(s) sharing text "
+            "with a higher-ranked passage",
+            dropped,
+            len(chunks),
+        )
+    return kept
 
 
 def _enforce_document_diversity(
