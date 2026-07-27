@@ -5,13 +5,15 @@ Usage:
 
 What it does:
   1. Strips MySQL-specific header noise (SET SQL_MODE, /*!...*/ blocks, etc.)
-  2. Transpiles each CREATE TABLE / INSERT statement from MySQL → SQLite dialect
-     using sqlglot (already a project dependency).
-  3. Skips ALTER TABLE statements (indexes, keys) that SQLite doesn't support —
-     they're logged so you can add CREATE INDEX manually if needed.
-  4. Loads everything into data/live_data.db, which is what the pipeline reads.
+  2. Tries sqlglot transpilation first (MySQL → SQLite dialect).
+  3. If sqlglot fails, falls back to regex-based manual cleanup that handles
+     MariaDB-specific syntax sqlglot can't always parse (ENUM, UNSIGNED,
+     ENGINE=, COLLATE, COMMENT clauses, etc.).
+  4. Skips ALTER TABLE / CREATE DATABASE — those are just indexes/keys and
+     SQLite doesn't support them; logged at the end.
+  5. Loads everything into data/live_data.db, which is what the pipeline reads.
 
-Run this once per dump. Re-running is safe (tables are replaced, not appended).
+Re-running is safe — tables are replaced, not appended.
 """
 
 from __future__ import annotations
@@ -26,23 +28,18 @@ import sqlglot
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = REPO_ROOT / "data" / "live_data.db"
 
-# ── Pre-processing regexes ────────────────────────────────────────────────────
+# ── Pre-processing: strip phpMyAdmin / MySQL header noise ─────────────────────
 
-# phpMyAdmin conditional comments: /*!40101 SET ... */
 _CONDITIONAL_COMMENT = re.compile(r"/\*!.*?\*/\s*;?", re.DOTALL)
-# SET statements (SQL_MODE, time_zone, character set etc.)
 _SET_STMT = re.compile(r"^\s*SET\s+[^;]+;", re.IGNORECASE | re.MULTILINE)
-# START TRANSACTION / COMMIT / LOCK / UNLOCK
 _TRANSACTION = re.compile(
     r"^\s*(START\s+TRANSACTION|COMMIT|LOCK\s+TABLES?|UNLOCK\s+TABLES?)\s*;",
     re.IGNORECASE | re.MULTILINE,
 )
-# MySQL "Dumping data for table X" comment blocks
 _COMMENT_LINE = re.compile(r"^\s*--[^\n]*\n", re.MULTILINE)
 
 
 def preprocess(sql: str) -> str:
-    """Strip MySQL-specific noise that sqlglot can't transpile."""
     sql = _CONDITIONAL_COMMENT.sub("", sql)
     sql = _SET_STMT.sub("", sql)
     sql = _TRANSACTION.sub("", sql)
@@ -51,7 +48,6 @@ def preprocess(sql: str) -> str:
 
 
 def split_statements(sql: str) -> list[str]:
-    """Split on semicolons, skip empty/whitespace-only fragments."""
     stmts = []
     for raw in sql.split(";"):
         s = raw.strip()
@@ -60,25 +56,112 @@ def split_statements(sql: str) -> list[str]:
     return stmts
 
 
+# ── Manual fallback: regex-clean a MySQL statement into valid SQLite ──────────
+
+# Column-level clauses SQLite doesn't understand
+_UNSIGNED = re.compile(r"\bUNSIGNED\b", re.IGNORECASE)
+_ZEROFILL = re.compile(r"\bZEROFILL\b", re.IGNORECASE)
+_AUTO_INCREMENT = re.compile(r"\bAUTO_INCREMENT\b", re.IGNORECASE)
+_CHARACTER_SET = re.compile(r"\bCHARACTER\s+SET\s+\S+", re.IGNORECASE)
+_COLLATE_COL = re.compile(r"\bCOLLATE\s+\S+", re.IGNORECASE)
+_COMMENT_COL = re.compile(r"\bCOMMENT\s+'[^']*'", re.IGNORECASE)
+_ON_UPDATE = re.compile(r"\bON\s+UPDATE\s+\S+", re.IGNORECASE)
+
+# Table-level options after the closing ) of a CREATE TABLE
+_TABLE_OPTIONS = re.compile(
+    r"\)\s*(ENGINE\s*=\s*\S+|AUTO_INCREMENT\s*=\s*\d+|DEFAULT\s+CHARSET\s*=\s*\S+|"
+    r"COLLATE\s*=\s*\S+|ROW_FORMAT\s*=\s*\S+|COMMENT\s*=\s*'[^']*'|"
+    r"CHECKSUM\s*=\s*\d+|DELAY_KEY_WRITE\s*=\s*\d+|\s)+\s*$",
+    re.IGNORECASE,
+)
+
+# ENUM / SET → TEXT
+_ENUM_SET = re.compile(r"\b(ENUM|SET)\s*\([^)]+\)", re.IGNORECASE)
+
+# MySQL int types with display width e.g. int(11) → INTEGER
+_INT_WIDTH = re.compile(
+    r"\b(TINYINT|SMALLINT|MEDIUMINT|BIGINT|INT)\s*\(\d+\)",
+    re.IGNORECASE,
+)
+
+# Backtick identifiers → double-quoted (SQLite standard)
+_BACKTICK = re.compile(r"`([^`]+)`")
+
+# KEY / INDEX lines inside CREATE TABLE that SQLite doesn't support
+_KEY_LINE = re.compile(
+    r"^\s*(UNIQUE\s+)?(KEY|INDEX)\s+.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PRIMARY_KEY_LINE = re.compile(
+    r"^\s*PRIMARY\s+KEY\s*\([^)]+\)\s*,?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Trailing comma before closing paren (left after removing KEY lines)
+_TRAILING_COMMA = re.compile(r",\s*\)", re.DOTALL)
+
+
+def manual_cleanup(stmt: str) -> str:
+    """Best-effort regex cleanup of MySQL syntax that sqlglot couldn't handle."""
+    s = stmt
+
+    # Backticks → double quotes
+    s = _BACKTICK.sub(r'"\1"', s)
+
+    # Column-level noise
+    s = _UNSIGNED.sub("", s)
+    s = _ZEROFILL.sub("", s)
+    s = _AUTO_INCREMENT.sub("", s)
+    s = _CHARACTER_SET.sub("", s)
+    s = _COLLATE_COL.sub("", s)
+    s = _COMMENT_COL.sub("", s)
+    s = _ON_UPDATE.sub("", s)
+
+    # Type replacements
+    s = _ENUM_SET.sub("TEXT", s)
+    s = _INT_WIDTH.sub(r"\1", s)
+
+    # Remove KEY / INDEX lines inside CREATE TABLE (not PRIMARY KEY)
+    s = _KEY_LINE.sub("", s)
+
+    # Remove table-level options after closing paren
+    # Match ) followed by table options at end of statement
+    s = re.sub(
+        r"\)\s*(?:ENGINE\s*=\s*\w+|AUTO_INCREMENT\s*=\s*\d+|DEFAULT\s+CHARSET\s*=\s*\w+|"
+        r"COLLATE\s*=\s*\w+|ROW_FORMAT\s*=\s*\w+|COMMENT\s*=\s*'[^']*'|\s)+\s*$",
+        ")",
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    # Clean up trailing commas before )
+    s = _TRAILING_COMMA.sub(")", s)
+
+    # Collapse multiple blank lines
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    return s.strip()
+
+
 def transpile_statement(stmt: str) -> str | None:
-    """MySQL → SQLite via sqlglot. Returns None if the statement should be skipped."""
+    """MySQL → SQLite. Returns None if statement should be skipped entirely."""
     upper = stmt.upper().lstrip()
 
-    # Skip ALTER TABLE (adding indexes/keys) — SQLite supports very limited ALTER.
-    # CREATE INDEX equivalents can be added manually if needed.
-    if upper.startswith("ALTER TABLE"):
+    if upper.startswith(("ALTER TABLE", "CREATE DATABASE", "CREATE SCHEMA", "USE ")):
         return None
 
-    # Skip CREATE DATABASE / USE — SQLite has no namespace concept.
-    if upper.startswith(("CREATE DATABASE", "CREATE SCHEMA", "USE ")):
-        return None
-
+    # Try sqlglot first
     try:
-        results = sqlglot.transpile(stmt, read="mysql", write="sqlite", error_level=sqlglot.ErrorLevel.WARN)
-        return results[0] if results else None
-    except Exception as e:
-        print(f"  [warn] Could not transpile, skipping: {e!s:.120}")
-        return None
+        results = sqlglot.transpile(
+            stmt, read="mysql", write="sqlite", error_level=sqlglot.ErrorLevel.WARN
+        )
+        if results and results[0].strip():
+            return results[0]
+    except Exception:
+        pass
+
+    # sqlglot failed — fall back to manual regex cleanup
+    return manual_cleanup(stmt)
 
 
 def load(dump_path: Path) -> None:
@@ -88,12 +171,14 @@ def load(dump_path: Path) -> None:
     print("Pre-processing MySQL-specific syntax …")
     cleaned = preprocess(raw)
     statements = split_statements(cleaned)
-    print(f"  {len(statements)} statements found after splitting")
+    print(f"  {len(statements)} statements found")
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
 
     ok = skipped = errors = 0
+    failed_stmts: list[tuple[str, str]] = []
+
     with con:
         for stmt in statements:
             sqlite_stmt = transpile_statement(stmt)
@@ -105,24 +190,30 @@ def load(dump_path: Path) -> None:
                 ok += 1
             except sqlite3.OperationalError as e:
                 errors += 1
-                # Truncate long statements in the log to keep output readable
-                preview = stmt[:120].replace("\n", " ")
-                print(f"  [error] {e!s:.100}  ← {preview!r}")
+                preview = stmt[:100].replace("\n", " ")
+                failed_stmts.append((str(e), preview))
 
     con.close()
 
     print(f"\nDone. Loaded into {DB_PATH}")
     print(f"  ✓ executed : {ok}")
-    print(f"  ⊘ skipped  : {skipped}  (ALTER TABLE / CREATE DATABASE / untranslatable)")
+    print(f"  ⊘ skipped  : {skipped}  (ALTER TABLE / CREATE DATABASE)")
     print(f"  ✗ errors   : {errors}")
 
-    # Quick sanity check — list tables and row counts
+    if failed_stmts:
+        print("\nFailed statements:")
+        for err, preview in failed_stmts[:20]:
+            print(f"  [{err:.80}] {preview!r:.100}")
+
+    # Sanity check — list tables and row counts
     con = sqlite3.connect(DB_PATH)
-    tables = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
-    print(f"\nTables now in {DB_PATH.name}:")
+    tables = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    print(f"\nTables in {DB_PATH.name} ({len(tables)} total):")
     for (name,) in tables:
-        count = con.execute(f"SELECT COUNT(*) FROM \"{name}\"").fetchone()[0]
-        print(f"  {name:<40} {count:>8} rows")
+        count = con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        print(f"  {name:<45} {count:>8} rows")
     con.close()
 
 
