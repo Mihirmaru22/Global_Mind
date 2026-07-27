@@ -3,17 +3,12 @@
 Usage:
     python scripts/load_mysql_dump.py path/to/dump.sql
 
-What it does:
-  1. Strips MySQL-specific header noise (SET SQL_MODE, /*!...*/ blocks, etc.)
-  2. Tries sqlglot transpilation first (MySQL → SQLite dialect).
-  3. If sqlglot fails, falls back to regex-based manual cleanup that handles
-     MariaDB-specific syntax sqlglot can't always parse (ENUM, UNSIGNED,
-     ENGINE=, COLLATE, COMMENT clauses, etc.).
-  4. Skips ALTER TABLE / CREATE DATABASE — those are just indexes/keys and
-     SQLite doesn't support them; logged at the end.
-  5. Loads everything into data/live_data.db, which is what the pipeline reads.
-
-Re-running is safe — tables are replaced, not appended.
+Key design decisions:
+  - Quote-aware semicolon splitter: never splits inside a string literal,
+    so INSERT rows containing HTML/CSS (with embedded semicolons, &nbsp;, etc.)
+    are kept intact instead of being shredded into garbage fragments.
+  - Two-pass transpilation: sqlglot first, regex fallback second.
+  - CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE so re-runs are safe.
 """
 
 from __future__ import annotations
@@ -28,7 +23,64 @@ import sqlglot
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = REPO_ROOT / "data" / "live_data.db"
 
-# ── Pre-processing: strip phpMyAdmin / MySQL header noise ─────────────────────
+
+# ── Quote-aware statement splitter ───────────────────────────────────────────
+
+def split_statements(sql: str) -> list[str]:
+    """Split on semicolons while respecting single-quoted string literals.
+
+    A naive sql.split(';') breaks INSERT statements whose string values
+    contain semicolons (HTML, CSS, etc.), producing fragments that look like
+    SQL but aren't. This parser tracks open/close quotes correctly.
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    in_string = False
+    i = 0
+    n = len(sql)
+
+    while i < n:
+        ch = sql[i]
+
+        if in_string:
+            buf.append(ch)
+            if ch == "\\":             # escape sequence inside string
+                i += 1
+                if i < n:
+                    buf.append(sql[i])
+            elif ch == "'":
+                if i + 1 < n and sql[i + 1] == "'":   # '' escape
+                    buf.append(sql[i + 1])
+                    i += 1
+                else:
+                    in_string = False
+        else:
+            if ch == "'":
+                in_string = True
+                buf.append(ch)
+            elif ch == ";":
+                stmt = "".join(buf).strip()
+                if stmt:
+                    statements.append(stmt)
+                buf = []
+            elif ch == "-" and i + 1 < n and sql[i + 1] == "-":
+                # Line comment — skip to end of line
+                while i < n and sql[i] != "\n":
+                    i += 1
+                continue
+            else:
+                buf.append(ch)
+        i += 1
+
+    # Last statement (no trailing semicolon)
+    stmt = "".join(buf).strip()
+    if stmt:
+        statements.append(stmt)
+
+    return statements
+
+
+# ── Pre-processing: strip phpMyAdmin / MySQL session noise ────────────────────
 
 _CONDITIONAL_COMMENT = re.compile(r"/\*!.*?\*/\s*;?", re.DOTALL)
 _SET_STMT = re.compile(r"^\s*SET\s+[^;]+;", re.IGNORECASE | re.MULTILINE)
@@ -36,140 +88,101 @@ _TRANSACTION = re.compile(
     r"^\s*(START\s+TRANSACTION|COMMIT|LOCK\s+TABLES?|UNLOCK\s+TABLES?)\s*;",
     re.IGNORECASE | re.MULTILINE,
 )
-_COMMENT_LINE = re.compile(r"^\s*--[^\n]*\n", re.MULTILINE)
-
 
 def preprocess(sql: str) -> str:
     sql = _CONDITIONAL_COMMENT.sub("", sql)
     sql = _SET_STMT.sub("", sql)
     sql = _TRANSACTION.sub("", sql)
-    sql = _COMMENT_LINE.sub("", sql)
     return sql
 
 
-def split_statements(sql: str) -> list[str]:
-    stmts = []
-    for raw in sql.split(";"):
-        s = raw.strip()
-        if s:
-            stmts.append(s)
-    return stmts
+# ── Manual MySQL→SQLite cleanup (fallback when sqlglot can't parse) ───────────
 
-
-# ── Manual fallback: regex-clean a MySQL statement into valid SQLite ──────────
-
-# Column-level clauses SQLite doesn't understand
-_UNSIGNED = re.compile(r"\bUNSIGNED\b", re.IGNORECASE)
-_ZEROFILL = re.compile(r"\bZEROFILL\b", re.IGNORECASE)
-_AUTO_INCREMENT = re.compile(r"\bAUTO_INCREMENT\b", re.IGNORECASE)
-_CHARACTER_SET = re.compile(r"\bCHARACTER\s+SET\s+\S+", re.IGNORECASE)
-_COLLATE_COL = re.compile(r"\bCOLLATE\s+\S+", re.IGNORECASE)
-_COMMENT_COL = re.compile(r"\bCOMMENT\s+'[^']*'", re.IGNORECASE)
-_ON_UPDATE = re.compile(r"\bON\s+UPDATE\s+\S+", re.IGNORECASE)
-
-# Table-level options after the closing ) of a CREATE TABLE
-_TABLE_OPTIONS = re.compile(
-    r"\)\s*(ENGINE\s*=\s*\S+|AUTO_INCREMENT\s*=\s*\d+|DEFAULT\s+CHARSET\s*=\s*\S+|"
-    r"COLLATE\s*=\s*\S+|ROW_FORMAT\s*=\s*\S+|COMMENT\s*=\s*'[^']*'|"
-    r"CHECKSUM\s*=\s*\d+|DELAY_KEY_WRITE\s*=\s*\d+|\s)+\s*$",
+_BACKTICK      = re.compile(r"`([^`]+)`")
+_UNSIGNED      = re.compile(r"\bUNSIGNED\b", re.IGNORECASE)
+_ZEROFILL      = re.compile(r"\bZEROFILL\b", re.IGNORECASE)
+_AUTO_INC      = re.compile(r"\bAUTO_INCREMENT\b", re.IGNORECASE)
+_CHAR_SET      = re.compile(r"\bCHARACTER\s+SET\s+\S+", re.IGNORECASE)
+_COLLATE       = re.compile(r"\bCOLLATE\s+\S+", re.IGNORECASE)
+_COL_COMMENT   = re.compile(r"\bCOMMENT\s+'(?:''|[^'])*'", re.IGNORECASE)
+_ON_UPDATE     = re.compile(r"\bON\s+UPDATE\s+\S+", re.IGNORECASE)
+_ENUM_SET      = re.compile(r"\b(?:ENUM|SET)\s*\([^)]+\)", re.IGNORECASE)
+_INT_WIDTH     = re.compile(r"\b(TINYINT|SMALLINT|MEDIUMINT|BIGINT|INT)\s*\(\d+\)", re.IGNORECASE)
+_KEY_LINE      = re.compile(r"^\s*(?:UNIQUE\s+)?(?:KEY|INDEX)\s+[^\n]+", re.IGNORECASE | re.MULTILINE)
+_TABLE_OPTS    = re.compile(
+    r"\)\s*(?:ENGINE\s*=\s*\w+|AUTO_INCREMENT\s*=\s*\d+|DEFAULT\s+CHARSET\s*=\s*\w+|"
+    r"COLLATE\s*=\s*\w+|ROW_FORMAT\s*=\s*\w+|COMMENT\s*=\s*'(?:''|[^'])*'|\s)+\s*$",
     re.IGNORECASE,
 )
-
-# ENUM / SET → TEXT
-_ENUM_SET = re.compile(r"\b(ENUM|SET)\s*\([^)]+\)", re.IGNORECASE)
-
-# MySQL int types with display width e.g. int(11) → INTEGER
-_INT_WIDTH = re.compile(
-    r"\b(TINYINT|SMALLINT|MEDIUMINT|BIGINT|INT)\s*\(\d+\)",
-    re.IGNORECASE,
-)
-
-# Backtick identifiers → double-quoted (SQLite standard)
-_BACKTICK = re.compile(r"`([^`]+)`")
-
-# KEY / INDEX lines inside CREATE TABLE that SQLite doesn't support
-_KEY_LINE = re.compile(
-    r"^\s*(UNIQUE\s+)?(KEY|INDEX)\s+.*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_PRIMARY_KEY_LINE = re.compile(
-    r"^\s*PRIMARY\s+KEY\s*\([^)]+\)\s*,?",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-# Trailing comma before closing paren (left after removing KEY lines)
-_TRAILING_COMMA = re.compile(r",\s*\)", re.DOTALL)
+_TRAILING_COMMA = re.compile(r",(\s*\))", re.DOTALL)
 
 
 def manual_cleanup(stmt: str) -> str:
-    """Best-effort regex cleanup of MySQL syntax that sqlglot couldn't handle."""
-    s = stmt
-
-    # Backticks → double quotes
-    s = _BACKTICK.sub(r'"\1"', s)
-
-    # Column-level noise
+    s = _BACKTICK.sub(r'"\1"', stmt)
     s = _UNSIGNED.sub("", s)
     s = _ZEROFILL.sub("", s)
-    s = _AUTO_INCREMENT.sub("", s)
-    s = _CHARACTER_SET.sub("", s)
-    s = _COLLATE_COL.sub("", s)
-    s = _COMMENT_COL.sub("", s)
+    s = _AUTO_INC.sub("", s)
+    s = _CHAR_SET.sub("", s)
+    s = _COLLATE.sub("", s)
+    s = _COL_COMMENT.sub("", s)
     s = _ON_UPDATE.sub("", s)
-
-    # Type replacements
     s = _ENUM_SET.sub("TEXT", s)
     s = _INT_WIDTH.sub(r"\1", s)
-
-    # Remove KEY / INDEX lines inside CREATE TABLE (not PRIMARY KEY)
     s = _KEY_LINE.sub("", s)
+    s = _TABLE_OPTS.sub(")", s)
+    # Clean up trailing commas before closing paren left by removed KEY lines
+    s = _TRAILING_COMMA.sub(r"\1", s)
+    s = re.sub(r"\n{3,}", "\n", s)
 
-    # Remove table-level options after closing paren
-    # Match ) followed by table options at end of statement
-    s = re.sub(
-        r"\)\s*(?:ENGINE\s*=\s*\w+|AUTO_INCREMENT\s*=\s*\d+|DEFAULT\s+CHARSET\s*=\s*\w+|"
-        r"COLLATE\s*=\s*\w+|ROW_FORMAT\s*=\s*\w+|COMMENT\s*=\s*'[^']*'|\s)+\s*$",
-        ")",
-        s,
-        flags=re.IGNORECASE,
-    )
-
-    # Clean up trailing commas before )
-    s = _TRAILING_COMMA.sub(")", s)
-
-    # Collapse multiple blank lines
-    s = re.sub(r"\n{3,}", "\n\n", s)
+    # Ensure CREATE TABLE uses IF NOT EXISTS so re-runs don't error
+    s = re.sub(r"\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)",
+               "CREATE TABLE IF NOT EXISTS ", s, flags=re.IGNORECASE)
+    # Use INSERT OR IGNORE to skip duplicate primary keys on re-run
+    s = re.sub(r"\bINSERT\s+INTO\b", "INSERT OR IGNORE INTO", s, flags=re.IGNORECASE)
 
     return s.strip()
 
 
+# ── Transpilation ─────────────────────────────────────────────────────────────
+
 def transpile_statement(stmt: str) -> str | None:
-    """MySQL → SQLite. Returns None if statement should be skipped entirely."""
+    """Return a SQLite-compatible statement, or None to skip entirely."""
     upper = stmt.upper().lstrip()
 
-    if upper.startswith(("ALTER TABLE", "CREATE DATABASE", "CREATE SCHEMA", "USE ")):
+    # Skip statements SQLite has no equivalent for
+    if upper.startswith(("ALTER TABLE", "CREATE DATABASE", "CREATE SCHEMA", "USE ",
+                          "DROP DATABASE", "CREATE INDEX", "CREATE UNIQUE INDEX")):
         return None
 
-    # Try sqlglot first
+    # Try sqlglot first (handles most well-formed MySQL syntax)
     try:
         results = sqlglot.transpile(
             stmt, read="mysql", write="sqlite", error_level=sqlglot.ErrorLevel.WARN
         )
         if results and results[0].strip():
-            return results[0]
+            out = results[0]
+            # Patch IF NOT EXISTS and INSERT OR IGNORE even on sqlglot output
+            out = re.sub(r"\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)",
+                         "CREATE TABLE IF NOT EXISTS ", out, flags=re.IGNORECASE)
+            out = re.sub(r"\bINSERT\s+INTO\b", "INSERT OR IGNORE INTO", out, flags=re.IGNORECASE)
+            return out
     except Exception:
         pass
 
-    # sqlglot failed — fall back to manual regex cleanup
+    # sqlglot failed — use regex cleanup
     return manual_cleanup(stmt)
 
+
+# ── Loader ────────────────────────────────────────────────────────────────────
 
 def load(dump_path: Path) -> None:
     print(f"Reading {dump_path} …")
     raw = dump_path.read_text(encoding="utf-8", errors="replace")
 
-    print("Pre-processing MySQL-specific syntax …")
+    print("Pre-processing …")
     cleaned = preprocess(raw)
+
+    print("Splitting statements (quote-aware) …")
     statements = split_statements(cleaned)
     print(f"  {len(statements)} statements found")
 
@@ -177,7 +190,7 @@ def load(dump_path: Path) -> None:
     con = sqlite3.connect(DB_PATH)
 
     ok = skipped = errors = 0
-    failed_stmts: list[tuple[str, str]] = []
+    error_summary: dict[str, int] = {}   # error message → count
 
     with con:
         for stmt in statements:
@@ -190,22 +203,22 @@ def load(dump_path: Path) -> None:
                 ok += 1
             except sqlite3.OperationalError as e:
                 errors += 1
-                preview = stmt[:100].replace("\n", " ")
-                failed_stmts.append((str(e), preview))
+                key = str(e)[:80]
+                error_summary[key] = error_summary.get(key, 0) + 1
 
     con.close()
 
     print(f"\nDone. Loaded into {DB_PATH}")
     print(f"  ✓ executed : {ok}")
-    print(f"  ⊘ skipped  : {skipped}  (ALTER TABLE / CREATE DATABASE)")
+    print(f"  ⊘ skipped  : {skipped}  (ALTER TABLE / CREATE DATABASE / etc.)")
     print(f"  ✗ errors   : {errors}")
 
-    if failed_stmts:
-        print("\nFailed statements:")
-        for err, preview in failed_stmts[:20]:
-            print(f"  [{err:.80}] {preview!r:.100}")
+    if error_summary:
+        print("\nDistinct errors (with counts):")
+        for msg, count in sorted(error_summary.items(), key=lambda x: -x[1]):
+            print(f"  [{count:>4}×] {msg}")
 
-    # Sanity check — list tables and row counts
+    # Summary table
     con = sqlite3.connect(DB_PATH)
     tables = con.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -221,10 +234,8 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python scripts/load_mysql_dump.py path/to/dump.sql")
         sys.exit(1)
-
     dump_path = Path(sys.argv[1])
     if not dump_path.exists():
         print(f"File not found: {dump_path}")
         sys.exit(1)
-
     load(dump_path)
