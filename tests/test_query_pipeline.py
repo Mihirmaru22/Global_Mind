@@ -172,12 +172,8 @@ async def test_query_pipeline_pins_sql_result_and_appends_exact_table(
     sql_retrieved = RetrievedChunk(chunk=sql_chunk, score=1.0, retrieval_method="text-to-sql")
     vector_retrieved = RetrievedChunk(chunk=vector_chunk, score=0.9)
 
-    async def mock_chat(*args, **kwargs):
-        captured["messages"] = kwargs["messages"]
-        return "This is a mock answer based on the context."
-
     captured: dict[str, list[dict]] = {}
-    mock_router.chat = mock_chat
+    mock_router.chat = AsyncMock(return_value="This is a mock answer based on the context.")
 
     mock_store.search_hybrid = AsyncMock(return_value=[vector_retrieved])
     pipeline = QueryPipeline(
@@ -193,5 +189,5 @@ async def test_query_pipeline_pins_sql_result_and_appends_exact_table(
 
     assert isinstance(result, QueryResult)
     assert sql_table in result.answer
-    assert "The exact table will be appended automatically" in captured["messages"][-1]["content"]
-    assert sql_table not in captured["messages"][-1]["content"]
+    assert result.model_used == "sql/direct"
+    assert mock_router.chat.await_count == 0

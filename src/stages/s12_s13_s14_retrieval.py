@@ -247,6 +247,18 @@ class Generator:
         # Only the best chunks go into the prompt; citations are drawn from the
         # same trimmed set so we never cite a source the model didn't see.
         context_chunks = _limit_context_chunks(chunks, context_limit)
+        sql_table_md = _extract_sql_table(context_chunks)
+        if sql_table_md:
+            return QueryResult(
+                query=query,
+                answer=sql_table_md,
+                citations=[],
+                model_used="sql/direct",
+                reasoning_task=task,
+                chunks_retrieved=len(chunks),
+                chunks_after_rerank=len(chunks),
+                usage=self._router.usage.model_copy(),
+            )
         context = _build_context(context_chunks)
 
         # Build the prompt. The fixed answer rules live in the system prompt
@@ -274,9 +286,6 @@ Question: {query}"""
 
         # Extract citations and format the answer text
         citations, clean_answer = _extract_and_format_citations(response, context_chunks)
-        sql_table_md = _extract_sql_table(context_chunks)
-        if sql_table_md:
-            clean_answer = f"{clean_answer.rstrip()}\n\n{sql_table_md}"
 
         return QueryResult(
             query=query,
@@ -328,6 +337,20 @@ Question: {query}"""
         # trimmed set. The fixed answer rules are in the system prompt, so the
         # user message carries only the volatile context + question.
         context_chunks = _limit_context_chunks(chunks, context_limit)
+        sql_table_md = _extract_sql_table(context_chunks)
+        if sql_table_md:
+            yield sql_table_md
+            yield QueryResult(
+                query=query,
+                answer=sql_table_md,
+                citations=[],
+                model_used="sql/direct",
+                reasoning_task=task,
+                chunks_retrieved=len(chunks),
+                chunks_after_rerank=len(chunks),
+                usage=self._router.usage.model_copy(),
+            )
+            return
         context = _build_context(context_chunks)
         system_prompt = _build_system_prompt(task)
         user_prompt = f"""Context (retrieved document chunks):
@@ -352,11 +375,6 @@ Question: {query}"""
 
         full_answer = "".join(full_answer_parts)
         citations, clean_answer = _extract_and_format_citations(full_answer, context_chunks)
-        sql_table_md = _extract_sql_table(context_chunks)
-        if sql_table_md:
-            appended = f"\n\n{sql_table_md}"
-            yield appended
-            clean_answer = f"{clean_answer.rstrip()}{appended}"
 
         yield QueryResult(
             query=query,
