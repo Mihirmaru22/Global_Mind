@@ -1,9 +1,10 @@
 """SQL dialect facts for the Text-to-SQL retrieval layer.
 
 This intentionally stays data, not an interface: SQLite and MySQL differ mainly
-in three facts (what to call the dialect in the NL2SQL prompt, which sqlglot
-dialect to parse/serialize with, and how to introspect the schema). Adding a
-new engine means adding one entry here.
+in four facts (what to call the dialect in the NL2SQL prompt, which sqlglot
+dialect to parse/serialize with, how to introspect the schema, and which date
+syntax examples to show in prompt hints). Adding a new engine means adding one
+entry here.
 
 Connection handling is NOT unified here — the aiosqlite/aiomysql driver APIs
 differ enough (context-managed connection vs. explicit cursor) that forcing a
@@ -32,6 +33,9 @@ class SQLDialectProfile:
     schema_query: str
     """Read-only query used to introspect available tables/columns for this engine."""
 
+    date_functions: str
+    """Dialect-specific date/time examples appended to the NL2SQL prompt."""
+
 
 DIALECTS: dict[str, SQLDialectProfile] = {
     "sqlite": SQLDialectProfile(
@@ -39,17 +43,33 @@ DIALECTS: dict[str, SQLDialectProfile] = {
         name="SQLite",
         sqlglot_dialect="sqlite",
         schema_query="SELECT name, sql FROM sqlite_master WHERE type='table';",
+        date_functions="""
+Today: date('now')
+This month: strftime('%Y-%m', 'now')
+Last N days: date('now', '-N days')
+Last month: date('now', '-1 month')
+This year: strftime('%Y', 'now')
+Between two dates: column BETWEEN date('now','-1 month') AND date('now')
+""",
     ),
     "mysql": SQLDialectProfile(
         key="mysql",
         name="MySQL",
         sqlglot_dialect="mysql",
         schema_query="""
-            SELECT table_name, column_name, data_type
+            SELECT table_name, column_name, data_type, column_comment
             FROM information_schema.columns
             WHERE table_schema = DATABASE()
             ORDER BY table_name, ordinal_position;
         """,
+        date_functions="""
+Today: CURDATE()
+This month: DATE_FORMAT(CURDATE(), '%Y-%m')
+Last N days: CURDATE() - INTERVAL N DAY
+Last month: CURDATE() - INTERVAL 1 MONTH
+This year: YEAR(CURDATE())
+Between two dates: column BETWEEN CURDATE() - INTERVAL 1 MONTH AND CURDATE()
+""",
     ),
     # SQL Server, if/when needed: add an entry here (sqlglot_dialect="tsql",
     # schema_query against INFORMATION_SCHEMA.COLUMNS or sys.columns). Not

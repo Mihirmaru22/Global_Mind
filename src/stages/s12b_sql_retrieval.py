@@ -6,7 +6,9 @@ executes it, and returns the results formatted as a context chunk.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import sqlglot
@@ -39,8 +41,10 @@ def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -
     if profile.key == "mysql":
         tables: dict[str, list[str]] = {}
         for row in rows:
+            comment = row.get("column_comment") or ""
+            suffix = f"  -- {comment}" if comment else ""
             tables.setdefault(row["table_name"], []).append(
-                f"  {row['column_name']} {row['data_type']}"
+                f"  {row['column_name']} {row['data_type']}{suffix}"
             )
         return "\n\n".join(
             f"TABLE {name} (\n" + ",\n".join(cols) + "\n)"
@@ -61,6 +65,31 @@ class SQLRetriever:
         self._router = router
         self._schema_cache: str | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
+        self._glossary = self._load_glossary()
+
+    @staticmethod
+    def _load_glossary() -> str:
+        path = Path(__file__).resolve().parents[2] / "config" / "sql_glossary.json"
+        try:
+            groups = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(groups, dict) or not groups:
+                return ""
+
+            lines: list[str] = []
+            for concept, syns in groups.items():
+                if isinstance(syns, str):
+                    synonym_text = syns
+                elif isinstance(syns, list):
+                    synonym_text = ", ".join(str(item) for item in syns if str(item).strip())
+                else:
+                    synonym_text = str(syns)
+
+                synonym_text = synonym_text.strip()
+                if synonym_text:
+                    lines.append(f"- {concept}: {synonym_text}")
+            return "\n".join(lines)
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            return ""
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
@@ -134,6 +163,17 @@ Return ONLY the raw SQL query, no markdown formatting, no explanations, no backt
 Schema:
 {schema}
 """
+        if self._glossary:
+            system_prompt += (
+                "\n\nBusiness term glossary (user may use these informal terms):\n"
+                f"{self._glossary}"
+            )
+        if self._dialect.date_functions:
+            system_prompt += (
+                f"\n\nDate/time syntax for {self._dialect.name} "
+                "(use these exact forms for relative dates like 'last month', 'this year'):\n"
+                f"{self._dialect.date_functions}"
+            )
         if last_error:
             system_prompt += f"\n\nWARNING: Your previous attempt failed with this error: {last_error}\nPlease fix the SQL query and try again."
         
