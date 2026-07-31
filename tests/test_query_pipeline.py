@@ -137,3 +137,61 @@ async def test_query_pipeline_stream_success(mock_router, mock_store, mock_embed
     # a computed total, so the UI can show a breakdown per answer.
     assert final_result.usage.total_tokens == 165
     assert final_result.usage.model_dump()["total_tokens"] == 165
+
+
+@pytest.mark.asyncio
+async def test_query_pipeline_pins_sql_result_and_appends_exact_table(
+    mock_router, mock_store, mock_embeddings, monkeypatch
+):
+    sql_table = (
+        "SQL Query Executed: `SELECT model, units FROM gpu_sales`\n\n"
+        "| model | units |\n"
+        "| --- | --- |\n"
+        "| A100 | 12 |"
+    )
+
+    sql_chunk = Chunk(
+        chunk_id="live_sql_001",
+        document_id="live_db",
+        content=sql_table,
+        chunk_type=ChunkType.SQL_RESULT,
+        page_number=0,
+        document_type=DocumentType.GENERAL,
+        source_file="live_database (gpu_sales table)",
+    )
+    vector_chunk = Chunk(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        content="Paris is the capital of France.",
+        chunk_type=ChunkType.PROSE,
+        page_number=1,
+        document_type=DocumentType.GENERAL,
+        source_file="test.txt",
+    )
+
+    sql_retrieved = RetrievedChunk(chunk=sql_chunk, score=1.0, retrieval_method="text-to-sql")
+    vector_retrieved = RetrievedChunk(chunk=vector_chunk, score=0.9)
+
+    async def mock_chat(*args, **kwargs):
+        captured["messages"] = kwargs["messages"]
+        return "This is a mock answer based on the context."
+
+    captured: dict[str, list[dict]] = {}
+    mock_router.chat = mock_chat
+
+    mock_store.search_hybrid = AsyncMock(return_value=[vector_retrieved])
+    pipeline = QueryPipeline(
+        router=mock_router,
+        vector_store=mock_store,
+        embedding_service=mock_embeddings,
+    )
+    pipeline._sql_retriever.retrieve = AsyncMock(return_value=[sql_retrieved])
+    pipeline._reranker.rerank = AsyncMock(return_value=[vector_retrieved])
+    monkeypatch.setattr("src.pipeline.query._classify_sql_intent", AsyncMock(return_value="SQL"))
+
+    result = await pipeline.query("Show me the live database results")
+
+    assert isinstance(result, QueryResult)
+    assert sql_table in result.answer
+    assert "The exact table will be appended automatically" in captured["messages"][-1]["content"]
+    assert sql_table not in captured["messages"][-1]["content"]
