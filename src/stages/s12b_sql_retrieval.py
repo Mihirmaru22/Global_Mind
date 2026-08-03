@@ -130,15 +130,31 @@ class SQLRetriever:
 
                 # Execute
                 rows = await run_readonly_query(sql)
-                
-                if not rows:
-                    return []
+
+                # An empty result is ambiguous: it can mean the query is correct
+                # and the true answer is "none", or that a wrong JOIN/WHERE
+                # silently matched nothing (MySQL doesn't error on that, it just
+                # returns 0 rows). Give the model one retry with that context on
+                # the first attempt. On the final attempt, trust the result and
+                # return it as a legitimate zero-row answer instead of silently
+                # falling back to document search.
+                if not rows and attempt == 0:
+                    last_error = (
+                        "Query executed successfully but returned 0 rows. If that's "
+                        "surprising given the question, double-check your JOIN "
+                        "conditions reference the correct foreign key columns."
+                    )
+                    continue
 
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
-                    
+
                 # Format to Markdown table
-                formatted_table = self._format_rows_as_markdown(rows, sql)
+                formatted_table = (
+                    self._format_rows_as_markdown(rows, sql)
+                    if rows
+                    else "Query executed successfully — no matching records were found."
+                )
                 
                 # Wrap in a RetrievedChunk
                 chunk = Chunk(
