@@ -97,5 +97,38 @@
   "status_active": ["active", "open", "pending", "in progress", "ongoing", "live"],
   "status_closed": ["closed", "completed", "done", "finished", "fulfilled", "delivered"],
   "status_cancelled": ["cancelled", "void", "rejected", "declined", "failed"],
-  "status_draft": ["draft", "unconfirmed", "not finalized"]
+  "status_draft": ["draft", "unconfirmed", "not finalized"],
+
+  "proforma_invoice": ["PI", "proforma invoice", "performa invoice", "pro forma invoice"],
+  "delivery_challan": ["DC", "delivery challan", "delivery note", "dispatch note", "challan"],
+  "raw_material_code": ["RM", "raw material"],
+  "opening_stock": ["ProductOs", "opening stock", "product opening stock", "beginning inventory", "starting stock"],
+  "stock_adjustment_type": ["StockAdjustment", "stock adjustment", "manual adjustment", "stock correction"],
+
+  "carton_verify_pending": ["P", "pending verification", "unverified carton", "not verified", "awaiting verification"],
+  "carton_verify_verified": ["V", "verified carton", "checked carton", "confirmed carton"],
+
+  "round_off_up": ["+", "rounded up", "round up"],
+  "round_off_down": ["-", "rounded down", "round down"],
+
+  "email_trigger_create": ["Create", "new record", "just created"],
+  "email_trigger_update": ["Update", "edited", "updated record"],
+  "email_trigger_manual": ["Button", "manual resend", "resent manually"],
+
+  "sample_requested": ["Yes", "sample request", "sample requested", "requested a sample"],
+
+  "location_log_organize": ["Organize", "warehouse organization", "reorganized", "location reorganize"],
+
+  "auto_send": ["Y", "auto-send enabled", "automatically sent"],
+  "manual_send": ["N", "manual send only", "not auto-sent"],
+
+  "current_financial_year": ["Y", "current year", "active financial year", "this year"],
+
+  "soft_deleted": ["Y", "deleted", "soft-deleted", "removed"],
+
+  "can_edit": ["Y", "editable", "edit access", "can edit"],
+  "view_only": ["N", "view only", "read only", "no edit access"],
+
+  "auto_assign_so": ["Y", "auto assigned", "automatically assigned"],
+  "manual_assign_so": ["N", "manually assigned", "manual assignment"]
 }
