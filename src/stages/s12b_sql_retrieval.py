@@ -146,6 +146,7 @@ class SQLRetriever:
                     )
                     continue
 
+
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
 
