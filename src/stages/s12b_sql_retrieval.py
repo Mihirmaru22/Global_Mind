@@ -53,9 +53,29 @@ def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -
 
     raise ValueError(f"Unsupported dialect key {profile.key!r}")
 
+
+def format_fk_rows(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+
+    lines = [
+        f"  {r['table_name']}.{r['column_name']} -> {r['referenced_table_name']}.{r['referenced_column_name']}"
+        for r in rows
+    ]
+    return "Foreign Keys:\n" + "\n".join(lines)
+
+
 class UnsafeQueryError(Exception):
     """Raised when sqlglot rejects a query (e.g. not a SELECT). Never retried."""
     pass
+
+
+def _extract_table_names(sql: str, dialect: str) -> list[str]:
+    try:
+        ast = sqlglot.parse_one(sql, read=dialect)
+        return sorted({t.name for t in ast.find_all(exp.Table)})
+    except Exception:
+        return []
 
 
 class SQLRetriever:
@@ -113,6 +133,9 @@ class SQLRetriever:
                 
                 if not rows:
                     return []
+
+                tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
+                label = f"live_database ({', '.join(tables)})" if tables else "live_database"
                     
                 # Format to Markdown table
                 formatted_table = self._format_rows_as_markdown(rows, sql)
@@ -124,7 +147,7 @@ class SQLRetriever:
                     chunk_type=ChunkType.SQL_RESULT,
                     content=formatted_table,
                     document_type=DocumentType.GENERAL,
-                    source_file="live_database (gpu_sales table)",
+                    source_file=label,
                 )
                 
                 return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
@@ -148,7 +171,19 @@ class SQLRetriever:
 
         try:
             rows = await run_readonly_query(self._dialect.schema_query)
-            self._schema_cache = format_schema_rows(self._dialect, rows)
+            schema = format_schema_rows(self._dialect, rows)
+
+            if self._dialect.key == "mysql" and self._dialect.fk_query:
+                fk_rows = await run_readonly_query(self._dialect.fk_query)
+            elif self._dialect.key == "sqlite":
+                fk_rows = await self._fetch_sqlite_foreign_keys()
+            else:
+                fk_rows = []
+
+            fk_text = format_fk_rows(fk_rows)
+            schema = schema + ("\n\n" + fk_text if fk_text else "")
+
+            self._schema_cache = schema
             return self._schema_cache
         except Exception as e:
             logger.error(f"Failed to fetch schema: {e}")
@@ -251,6 +286,24 @@ Schema:
                 return False
 
         return True
+
+    async def _fetch_sqlite_foreign_keys(self) -> list[dict]:
+        tables = await run_readonly_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
+        )
+        fks = []
+        for row in tables:
+            table = row["name"]
+            escaped_table = table.replace('"', '""')
+            cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
+            for c in cols:
+                fks.append({
+                    "table_name": table,
+                    "column_name": c["from"],
+                    "referenced_table_name": c["table"],
+                    "referenced_column_name": c["to"],
+                })
+        return fks
 
     def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
         """Format dictionary rows into a markdown table."""

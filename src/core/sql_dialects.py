@@ -36,6 +36,9 @@ class SQLDialectProfile:
     date_functions: str
     """Dialect-specific date/time examples appended to the NL2SQL prompt."""
 
+    fk_query: str
+    """Read-only query to introspect FK constraints, where a single query suffices (MySQL). Empty for engines that need per-table introspection (SQLite) — see s12b's _fetch_sqlite_foreign_keys."""
+
 
 DIALECTS: dict[str, SQLDialectProfile] = {
     "sqlite": SQLDialectProfile(
@@ -44,13 +47,14 @@ DIALECTS: dict[str, SQLDialectProfile] = {
         sqlglot_dialect="sqlite",
         schema_query="SELECT name, sql FROM sqlite_master WHERE type='table';",
         date_functions="""
-Today: date('now')
-This month: strftime('%Y-%m', 'now')
-Last N days: date('now', '-N days')
-Last month: date('now', '-1 month')
-This year: strftime('%Y', 'now')
-Between two dates: column BETWEEN date('now','-1 month') AND date('now')
-""",
+        Today: date('now')
+        This month: strftime('%Y-%m', 'now')
+        Last N days: date('now', '-N days')
+        Last month: date('now', '-1 month')
+        This year: strftime('%Y', 'now')
+        Between two dates: column BETWEEN date('now','-1 month') AND date('now')
+        """,
+        fk_query="",
     ),
     "mysql": SQLDialectProfile(
         key="mysql",
@@ -62,14 +66,19 @@ Between two dates: column BETWEEN date('now','-1 month') AND date('now')
             WHERE table_schema = DATABASE()
             ORDER BY table_name, ordinal_position;
         """,
+        fk_query="""
+            SELECT table_name, column_name, referenced_table_name, referenced_column_name
+            FROM information_schema.key_column_usage
+            WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL;
+        """,
         date_functions="""
-Today: CURDATE()
-This month: DATE_FORMAT(CURDATE(), '%Y-%m')
-Last N days: CURDATE() - INTERVAL N DAY
-Last month: CURDATE() - INTERVAL 1 MONTH
-This year: YEAR(CURDATE())
-Between two dates: column BETWEEN CURDATE() - INTERVAL 1 MONTH AND CURDATE()
-""",
+        Today: CURDATE()
+        This month: DATE_FORMAT(CURDATE(), '%Y-%m')
+        Last N days: CURDATE() - INTERVAL N DAY
+        Last month: CURDATE() - INTERVAL 1 MONTH
+        This year: YEAR(CURDATE())
+        Between two dates: column BETWEEN CURDATE() - INTERVAL 1 MONTH AND CURDATE()
+        """,
     ),
     # SQL Server, if/when needed: add an entry here (sqlglot_dialect="tsql",
     # schema_query against INFORMATION_SCHEMA.COLUMNS or sys.columns). Not
