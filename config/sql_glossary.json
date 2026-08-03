@@ -43,7 +43,7 @@
   "machine": ["machine", "equipment", "line", "station"],
   "recipe": ["recipe", "BOM", "bill of materials", "formulation"],
 
-  "shipment": ["shipment", "delivery", "dispatch", "consignment", "freight"],
+  "shipment": ["shipment", "delivery", "dispatch", "consignment", "freight", "Dispatched"],
   "tracking": ["tracking", "status", "shipment status", "delivery status"],
   "carrier": ["carrier", "courier", "logistics partner", "transporter"],
   "route": ["route", "trip", "delivery route"],

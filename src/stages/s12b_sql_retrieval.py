@@ -198,6 +198,8 @@ Return ONLY the raw SQL query, no markdown formatting, no explanations, no backt
 Schema:
 {schema}
 """
+        system_prompt += self._OUTPUT_READABILITY_RULES
+
         if self._glossary:
             system_prompt += (
                 "\n\nBusiness term glossary (user may use these informal terms):\n"
@@ -243,6 +245,14 @@ Schema:
         "sys_eval", "sys_exec", "sys_get",    # MySQL sys UDFs: shell execution
         "lo_import", "lo_export",             # Postgres large-object file I/O
     })
+
+    _OUTPUT_READABILITY_RULES = """
+Output readability rules:
+- Never return a raw ID column (e.g. customer_id, product_id, order_id) by itself if a related table has a human-readable name, title, or label for it. JOIN to that table and return the readable value instead of, or alongside, the ID.
+- Give every selected column a clear, descriptive alias using AS, so the result is understandable on its own without needing to see the query (e.g. SELECT c.name AS customer_name, SUM(o.amount) AS total_revenue — not SELECT c.name, SUM(o.amount)).
+- Name each alias based on what the user actually asked for, not the raw column or table name (e.g. if the user asked "who spent the most", alias the result as top_customer or total_spent, not c1 or col2).
+- Include any extra column that adds useful context to the answer (name, category, date, status) even if not strictly required to answer narrowly — the goal is a result a person can read and understand directly, not just the minimum data needed.
+"""
 
     def _is_safe_read_query(self, sql: str) -> bool:
         """Parse the AST and confirm it's a single, side-effect-free read SELECT.
