@@ -131,3 +131,15 @@ async def test_all_providers_exhausted_raises_cleanly():
 
     with pytest.raises(RuntimeError, match="All providers exhausted"):
         await router.chat("general_qa", messages=[{"role": "user", "content": "hi"}])
+
+
+def test_default_routes_include_openrouter_for_sql_generation():
+    router = ProviderRouter(preferred_provider="auto")
+    reasoning = [(opt.provider_name, opt.model) for opt in router._get_route("reasoning").options]
+    classification = [
+        (opt.provider_name, opt.model)
+        for opt in router._get_route("semantic_classification").options
+    ]
+
+    assert ("openrouter", "meta-llama/llama-3.3-70b-instruct:free") in reasoning
+    assert ("openrouter", "meta-llama/llama-3.3-70b-instruct:free") in classification
