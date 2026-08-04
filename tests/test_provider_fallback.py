@@ -18,7 +18,7 @@ from src.core.provider_client import (
     TaskRoute,
     _rate_limit_retry_after,
 )
-from src.core.rate_limiter import ProviderLimits, RateLimiter
+from src.core.rate_limiter import ProviderLimits, RateLimiter, get_shared_rate_limiter
 
 
 class _Err429(Exception):
@@ -143,3 +143,39 @@ def test_default_routes_include_openrouter_for_sql_generation():
 
     assert ("openrouter", "meta-llama/llama-3.3-70b-instruct:free") in reasoning
     assert ("openrouter", "meta-llama/llama-3.3-70b-instruct:free") in classification
+
+
+# ---------------------------------------------------------------------------
+# Process-scoped shared limiter — quota/backoff must span requests
+# ---------------------------------------------------------------------------
+
+def test_shared_rate_limiter_is_a_singleton():
+    assert get_shared_rate_limiter() is get_shared_rate_limiter()
+
+
+def test_routers_share_one_rate_limiter_across_requests():
+    """Two routers (two 'requests') must consult the same limiter, so a 429
+    backoff recorded by one is seen by the next — the crux of the ARCH-1 fix."""
+    r1 = ProviderRouter(preferred_provider="auto")
+    r2 = ProviderRouter(preferred_provider="auto")
+    assert r1._rate_limiter is r2._rate_limiter is get_shared_rate_limiter()
+
+    # A cooldown recorded via one router's limiter is visible to the other.
+    r1._rate_limiter.report_429("gemini", retry_after=30.0)
+    assert r2._rate_limiter._get_state("gemini").backoff_until > time.time()
+    # Clean up shared state so the cooldown doesn't leak into other tests.
+    r1._rate_limiter._get_state("gemini").backoff_until = 0.0
+
+
+def test_usage_snapshot_includes_unused_providers_with_zeros():
+    rl = RateLimiter(limits={"gemini": ProviderLimits(rpm=10, rpd=1500)})
+    snap = rl.usage_snapshot(["gemini", "groq"])
+    assert snap["gemini"] == {
+        "rpm_used": 0,
+        "rpm_limit": 10,
+        "rpd_used": 0,
+        "rpd_limit": 1500,
+        "backoff_seconds": 0.0,
+    }
+    # A provider with no explicit limits still appears (default limits).
+    assert "groq" in snap

@@ -544,6 +544,44 @@ async def get_providers() -> dict[str, Any]:
     return {"providers": options, "default": default}
 
 
+@router.get("/providers/usage")
+async def get_provider_usage() -> dict[str, Any]:
+    """Live per-provider quota usage for the settings usage meter.
+
+    Reads the process-wide RateLimiter (shared across all requests), so the
+    RPM/RPD figures reflect real, cumulative traffic rather than a single
+    request. Only providers with a configured API key are reported; each entry
+    carries used/limit for both the per-minute and per-day windows plus any
+    remaining 429 backoff.
+    """
+    from src.core.rate_limiter import get_shared_rate_limiter
+
+    provider_router = ProviderRouter()
+    available = [
+        name for name, provider in provider_router._providers.items() if provider.is_available
+    ]
+    snapshot = get_shared_rate_limiter().usage_snapshot(available)
+
+    ordered = [n for n in _PROVIDER_ORDER if n in available] + [
+        n for n in sorted(available) if n not in _PROVIDER_ORDER
+    ]
+    providers = []
+    for name in ordered:
+        s = snapshot.get(name, {})
+        providers.append(
+            {
+                "id": name,
+                "label": _PROVIDER_LABELS.get(name, name),
+                "rpmUsed": s.get("rpm_used", 0),
+                "rpmLimit": s.get("rpm_limit", 0),
+                "rpdUsed": s.get("rpd_used", 0),
+                "rpdLimit": s.get("rpd_limit", 0),
+                "backoffSeconds": s.get("backoff_seconds", 0),
+            }
+        )
+    return {"providers": providers}
+
+
 @router.get("/settings")
 async def get_settings() -> dict[str, Any]:
     """Get UI settings."""

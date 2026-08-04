@@ -1,6 +1,17 @@
-import { Check, Server, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { useEffect } from 'react'
+import { Check, Gauge, RotateCw, Server, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '../store/store.js'
+
+// Clamp a used/limit pair into a 0–100% width and a severity band so the meter
+// fill shifts from calm → warning → critical as a free-tier window fills up.
+function meter(used, limit) {
+  const capacity = Number(limit) || 0
+  const consumed = Number(used) || 0
+  const pct = capacity > 0 ? Math.min(100, Math.round((consumed / capacity) * 100)) : 0
+  const level = pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : 'ok'
+  return { pct, level }
+}
 
 const themeOptions = [
   {
@@ -62,6 +73,14 @@ export default function Settings() {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const providers = useAppStore((state) => state.providers)
+  const providerUsage = useAppStore((state) => state.providerUsage)
+  const refreshProviderUsage = useAppStore((state) => state.refreshProviderUsage)
+
+  // Refresh the quota meters whenever the Settings page is opened, so the
+  // numbers reflect the current window rather than whatever was loaded at boot.
+  useEffect(() => {
+    refreshProviderUsage()
+  }, [refreshProviderUsage])
 
   const current = settings || {
     endpoint: '/api',
@@ -135,6 +154,94 @@ export default function Settings() {
               )
             })}
           </div>
+        </div>
+      </motion.section>
+
+      <motion.section
+        className="settings-panel"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+      >
+        <div className="settings-panel__heading">
+          <div className="settings-panel__title-wrap">
+            <Gauge size={16} />
+            <h3 className="settings-panel__title">Provider Usage</h3>
+          </div>
+          <button
+            type="button"
+            className="usage-refresh"
+            onClick={() => refreshProviderUsage()}
+            aria-label="Refresh usage"
+            title="Refresh usage"
+          >
+            <RotateCw size={13} />
+          </button>
+          <span className="settings-panel__rule" />
+        </div>
+
+        <div className="setting-row">
+          <p className="setting-help">
+            Live free-tier consumption per provider, tracked across every request
+            in this session. Each provider falls back automatically when its
+            per-minute or per-day window fills up.
+          </p>
+
+          {providerUsage?.length ? (
+            <div className="usage-list">
+              {providerUsage.map((p) => {
+                const rpm = meter(p.rpmUsed, p.rpmLimit)
+                const rpd = meter(p.rpdUsed, p.rpdLimit)
+                const cooling = Number(p.backoffSeconds) > 0
+                return (
+                  <div key={p.id} className="usage-card">
+                    <div className="usage-card__head">
+                      <span className="usage-card__name">{p.label}</span>
+                      {cooling ? (
+                        <span className="usage-card__cooldown">
+                          cooling down {Math.ceil(p.backoffSeconds)}s
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="usage-meter">
+                      <div className="usage-meter__label">
+                        <span>Per minute</span>
+                        <span className="usage-meter__count">
+                          {p.rpmUsed} / {p.rpmLimit}
+                        </span>
+                      </div>
+                      <div className="usage-track">
+                        <div
+                          className={`usage-fill usage-fill--${rpm.level}`}
+                          style={{ width: `${rpm.pct}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="usage-meter">
+                      <div className="usage-meter__label">
+                        <span>Per day</span>
+                        <span className="usage-meter__count">
+                          {p.rpdUsed} / {p.rpdLimit}
+                        </span>
+                      </div>
+                      <div className="usage-track">
+                        <div
+                          className={`usage-fill usage-fill--${rpd.level}`}
+                          style={{ width: `${rpd.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="usage-empty">
+              No providers configured, or usage isn't available yet.
+            </p>
+          )}
         </div>
       </motion.section>
 
