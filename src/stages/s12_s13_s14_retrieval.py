@@ -20,7 +20,7 @@ import httpx
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
 from src.core.rate_limiter import RateLimiter
-from src.models.schemas import Citation, Chunk, QueryResult, RetrievedChunk
+from src.models.schemas import Citation, Chunk, ChunkType, QueryResult, RetrievedChunk
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
 
@@ -247,6 +247,18 @@ class Generator:
         # Only the best chunks go into the prompt; citations are drawn from the
         # same trimmed set so we never cite a source the model didn't see.
         context_chunks = _limit_context_chunks(chunks, context_limit)
+        sql_table_md = _extract_sql_table(context_chunks)
+        if sql_table_md:
+            return QueryResult(
+                query=query,
+                answer=sql_table_md,
+                citations=[],
+                model_used="sql/direct",
+                reasoning_task=task,
+                chunks_retrieved=len(chunks),
+                chunks_after_rerank=len(chunks),
+                usage=self._router.usage.model_copy(),
+            )
         context = _build_context(context_chunks)
 
         # Build the prompt. The fixed answer rules live in the system prompt
@@ -325,6 +337,20 @@ Question: {query}"""
         # trimmed set. The fixed answer rules are in the system prompt, so the
         # user message carries only the volatile context + question.
         context_chunks = _limit_context_chunks(chunks, context_limit)
+        sql_table_md = _extract_sql_table(context_chunks)
+        if sql_table_md:
+            yield sql_table_md
+            yield QueryResult(
+                query=query,
+                answer=sql_table_md,
+                citations=[],
+                model_used="sql/direct",
+                reasoning_task=task,
+                chunks_retrieved=len(chunks),
+                chunks_after_rerank=len(chunks),
+                usage=self._router.usage.model_copy(),
+            )
+            return
         context = _build_context(context_chunks)
         system_prompt = _build_system_prompt(task)
         user_prompt = f"""Context (retrieved document chunks):
@@ -677,6 +703,18 @@ def _limit_context_chunks(
     return chunks[: max(limit, 2)]
 
 
+def _extract_sql_table(chunks: list[RetrievedChunk]) -> str | None:
+    """Return the exact SQL markdown table if one is present."""
+    sql_tables = [
+        c.chunk.content
+        for c in chunks
+        if c.chunk.chunk_type == ChunkType.SQL_RESULT and c.chunk.content
+    ]
+    if not sql_tables:
+        return None
+    return "\n\n".join(sql_tables)
+
+
 def _build_context(chunks: list[RetrievedChunk]) -> str:
     """Format retrieved chunks into a context string, bounded by a token limit."""
     parts: list[str] = []
@@ -686,7 +724,15 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
     for chunk in chunks:
         c = chunk.chunk
         header = f"[{c.chunk_id}] (page {c.page_number}, type: {c.chunk_type.value})"
-        chunk_text = f"{header}\n{c.content}"
+        if c.chunk_type == ChunkType.SQL_RESULT:
+            chunk_text = (
+                f"{header}\nA live database query already ran and returned matching "
+                "rows. Do not reproduce the table or invent new numbers. Write one "
+                "short natural-language sentence introducing the result. The exact "
+                "table will be appended automatically after your reply."
+            )
+        else:
+            chunk_text = f"{header}\n{c.content}"
         
         # Rough token estimate
         est_tokens = len(chunk_text) // 4

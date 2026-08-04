@@ -6,7 +6,9 @@ executes it, and returns the results formatted as a context chunk.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import sqlglot
@@ -39,8 +41,10 @@ def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -
     if profile.key == "mysql":
         tables: dict[str, list[str]] = {}
         for row in rows:
+            comment = row.get("column_comment") or ""
+            suffix = f"  -- {comment}" if comment else ""
             tables.setdefault(row["table_name"], []).append(
-                f"  {row['column_name']} {row['data_type']}"
+                f"  {row['column_name']} {row['data_type']}{suffix}"
             )
         return "\n\n".join(
             f"TABLE {name} (\n" + ",\n".join(cols) + "\n)"
@@ -49,9 +53,29 @@ def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -
 
     raise ValueError(f"Unsupported dialect key {profile.key!r}")
 
+
+def format_fk_rows(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+
+    lines = [
+        f"  {r['table_name']}.{r['column_name']} -> {r['referenced_table_name']}.{r['referenced_column_name']}"
+        for r in rows
+    ]
+    return "Foreign Keys:\n" + "\n".join(lines)
+
+
 class UnsafeQueryError(Exception):
     """Raised when sqlglot rejects a query (e.g. not a SELECT). Never retried."""
     pass
+
+
+def _extract_table_names(sql: str, dialect: str) -> list[str]:
+    try:
+        ast = sqlglot.parse_one(sql, read=dialect)
+        return sorted({t.name for t in ast.find_all(exp.Table)})
+    except Exception:
+        return []
 
 
 class SQLRetriever:
@@ -61,6 +85,31 @@ class SQLRetriever:
         self._router = router
         self._schema_cache: str | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
+        self._glossary = self._load_glossary()
+
+    @staticmethod
+    def _load_glossary() -> str:
+        path = Path(__file__).resolve().parents[2] / "config" / "sql_glossary.json"
+        try:
+            groups = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(groups, dict) or not groups:
+                return ""
+
+            lines: list[str] = []
+            for concept, syns in groups.items():
+                if isinstance(syns, str):
+                    synonym_text = syns
+                elif isinstance(syns, list):
+                    synonym_text = ", ".join(str(item) for item in syns if str(item).strip())
+                else:
+                    synonym_text = str(syns)
+
+                synonym_text = synonym_text.strip()
+                if synonym_text:
+                    lines.append(f"- {concept}: {synonym_text}")
+            return "\n".join(lines)
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            return ""
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
@@ -81,12 +130,32 @@ class SQLRetriever:
 
                 # Execute
                 rows = await run_readonly_query(sql)
-                
-                if not rows:
-                    return []
-                    
+
+                # An empty result is ambiguous: it can mean the query is correct
+                # and the true answer is "none", or that a wrong JOIN/WHERE
+                # silently matched nothing (MySQL doesn't error on that, it just
+                # returns 0 rows). Give the model one retry with that context on
+                # the first attempt. On the final attempt, trust the result and
+                # return it as a legitimate zero-row answer instead of silently
+                # falling back to document search.
+                if not rows and attempt == 0:
+                    last_error = (
+                        "Query executed successfully but returned 0 rows. If that's "
+                        "surprising given the question, double-check your JOIN "
+                        "conditions reference the correct foreign key columns."
+                    )
+                    continue
+
+
+                tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
+                label = f"live_database ({', '.join(tables)})" if tables else "live_database"
+
                 # Format to Markdown table
-                formatted_table = self._format_rows_as_markdown(rows, sql)
+                formatted_table = (
+                    self._format_rows_as_markdown(rows, sql)
+                    if rows
+                    else "Query executed successfully — no matching records were found."
+                )
                 
                 # Wrap in a RetrievedChunk
                 chunk = Chunk(
@@ -95,7 +164,7 @@ class SQLRetriever:
                     chunk_type=ChunkType.SQL_RESULT,
                     content=formatted_table,
                     document_type=DocumentType.GENERAL,
-                    source_file="live_database (gpu_sales table)",
+                    source_file=label,
                 )
                 
                 return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
@@ -119,7 +188,19 @@ class SQLRetriever:
 
         try:
             rows = await run_readonly_query(self._dialect.schema_query)
-            self._schema_cache = format_schema_rows(self._dialect, rows)
+            schema = format_schema_rows(self._dialect, rows)
+
+            if self._dialect.key == "mysql" and self._dialect.fk_query:
+                fk_rows = await run_readonly_query(self._dialect.fk_query)
+            elif self._dialect.key == "sqlite":
+                fk_rows = await self._fetch_sqlite_foreign_keys()
+            else:
+                fk_rows = []
+
+            fk_text = format_fk_rows(fk_rows)
+            schema = schema + ("\n\n" + fk_text if fk_text else "")
+
+            self._schema_cache = schema
             return self._schema_cache
         except Exception as e:
             logger.error(f"Failed to fetch schema: {e}")
@@ -134,6 +215,19 @@ Return ONLY the raw SQL query, no markdown formatting, no explanations, no backt
 Schema:
 {schema}
 """
+        system_prompt += self._OUTPUT_READABILITY_RULES
+
+        if self._glossary:
+            system_prompt += (
+                "\n\nBusiness term glossary (user may use these informal terms):\n"
+                f"{self._glossary}"
+            )
+        if self._dialect.date_functions:
+            system_prompt += (
+                f"\n\nDate/time syntax for {self._dialect.name} "
+                "(use these exact forms for relative dates like 'last month', 'this year'):\n"
+                f"{self._dialect.date_functions}"
+            )
         if last_error:
             system_prompt += f"\n\nWARNING: Your previous attempt failed with this error: {last_error}\nPlease fix the SQL query and try again."
         
@@ -168,6 +262,14 @@ Schema:
         "sys_eval", "sys_exec", "sys_get",    # MySQL sys UDFs: shell execution
         "lo_import", "lo_export",             # Postgres large-object file I/O
     })
+
+    _OUTPUT_READABILITY_RULES = """
+Output readability rules:
+- Never return a raw ID column (e.g. customer_id, product_id, order_id) by itself if a related table has a human-readable name, title, or label for it. JOIN to that table and return the readable value instead of, or alongside, the ID.
+- Give every selected column a clear, descriptive alias using AS, so the result is understandable on its own without needing to see the query (e.g. SELECT c.name AS customer_name, SUM(o.amount) AS total_revenue — not SELECT c.name, SUM(o.amount)).
+- Name each alias based on what the user actually asked for, not the raw column or table name (e.g. if the user asked "who spent the most", alias the result as top_customer or total_spent, not c1 or col2).
+- Include any extra column that adds useful context to the answer (name, category, date, status) even if not strictly required to answer narrowly — the goal is a result a person can read and understand directly, not just the minimum data needed.
+"""
 
     def _is_safe_read_query(self, sql: str) -> bool:
         """Parse the AST and confirm it's a single, side-effect-free read SELECT.
@@ -211,6 +313,24 @@ Schema:
                 return False
 
         return True
+
+    async def _fetch_sqlite_foreign_keys(self) -> list[dict]:
+        tables = await run_readonly_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
+        )
+        fks = []
+        for row in tables:
+            table = row["name"]
+            escaped_table = table.replace('"', '""')
+            cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
+            for c in cols:
+                fks.append({
+                    "table_name": table,
+                    "column_name": c["from"],
+                    "referenced_table_name": c["table"],
+                    "referenced_column_name": c["to"],
+                })
+        return fks
 
     def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
         """Format dictionary rows into a markdown table."""

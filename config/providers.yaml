@@ -18,6 +18,9 @@ tasks:
       - provider: groq
         model: llama-3.1-8b-instant
         priority: 2
+      - provider: openrouter
+        model: meta-llama/llama-3.3-70b-instruct:free
+        priority: 3
 
   # Stages 4/5 — Vision-LLM OCR and layout analysis
   ocr_vision:
@@ -83,6 +86,9 @@ tasks:
       - provider: nvidia_nim
         model: qwen/qwen3.5-397b-a17b
         priority: 3
+      - provider: openrouter
+        model: meta-llama/llama-3.3-70b-instruct:free
+        priority: 4
 
   reasoning:
     providers:
@@ -95,6 +101,9 @@ tasks:
       - provider: nvidia_nim
         model: meta/llama3-70b-instruct
         priority: 3
+      - provider: openrouter
+        model: meta-llama/llama-3.3-70b-instruct:free
+        priority: 4
 
   extraction:
     providers:
@@ -134,3 +143,6 @@ tasks:
       - provider: gemini
         model: gemini-2.5-flash-lite
         priority: 2
+      - provider: openrouter
+        model: meta-llama/llama-3.3-70b-instruct:free
+        priority: 3

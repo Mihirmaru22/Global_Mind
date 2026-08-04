@@ -12,7 +12,7 @@ from pathlib import Path
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
 from src.core.rate_limiter import RateLimiter
-from src.models.schemas import QueryResult, ThinkingStep
+from src.models.schemas import QueryResult, RetrievedChunk, ThinkingStep
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
 from src.stages.s12_s13_s14_retrieval import (
@@ -26,6 +26,23 @@ from src.stages.s12_s13_s14_retrieval import (
 from src.stages.s12b_sql_retrieval import SQLRetriever
 
 logger = logging.getLogger(__name__)
+
+
+def _pin_sql_result_chunks(
+    chunks: list[RetrievedChunk],
+    sql_chunks: list[RetrievedChunk],
+) -> list[RetrievedChunk]:
+    """Keep live SQL result chunks at the front of the final context."""
+    if not sql_chunks:
+        return chunks
+
+    sql_ids = {chunk.chunk.chunk_id for chunk in sql_chunks}
+    pinned = [chunk for chunk in chunks if chunk.chunk.chunk_id in sql_ids]
+    if not pinned:
+        return sql_chunks + chunks
+
+    remainder = [chunk for chunk in chunks if chunk.chunk.chunk_id not in sql_ids]
+    return pinned + remainder
 
 
 class QueryPipeline:
@@ -158,8 +175,8 @@ class QueryPipeline:
                 reasoning_task="no_results",
             )
 
-        # Stage 13 — Reranking (skipped for exhaustive queries to preserve recall breadth)
-        if exhaustive:
+        # Stage 13 — Reranking (skipped for SQL answers and exhaustive queries)
+        if intent == "SQL" or exhaustive:
             reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
         else:
             logger.info("[Stage 13] Reranking")
@@ -167,6 +184,7 @@ class QueryPipeline:
                 search_query, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+        reranked = _pin_sql_result_chunks(reranked, sql_chunks)
         logger.info("Final context: %d chunks", len(reranked))
 
         # Stage 14 — Generation (the user's original question + conversation,
@@ -310,14 +328,15 @@ class QueryPipeline:
             )
             return
 
-        # Stage 13 — Reranking (skipped for exhaustive queries)
-        if exhaustive:
+        # Stage 13 — Reranking (skipped for SQL answers and exhaustive queries)
+        if intent == "SQL" or exhaustive:
             reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
         else:
             reranked = await self._reranker.rerank(
                 search_query, retrieved, top_k=settings.rerank_top_k
             )
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+        reranked = _pin_sql_result_chunks(reranked, sql_chunks)
         top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
         rank_detail = f"kept the {len(reranked)} best — top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
         yield _think("Ranked the most relevant sources", rank_detail)

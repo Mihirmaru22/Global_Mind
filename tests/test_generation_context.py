@@ -9,6 +9,8 @@ from src.models.schemas import Chunk, ChunkType, DocumentType, RetrievedChunk
 from src.stages.s12_s13_s14_retrieval import (
     _ANSWER_RULES,
     _build_system_prompt,
+    _build_context,
+    _extract_sql_table,
     _limit_context_chunks,
 )
 
@@ -55,6 +57,35 @@ def test_limit_is_floored_at_two():
 def test_limit_larger_than_available_returns_all():
     chunks = _chunks(3)
     assert len(_limit_context_chunks(chunks, 5)) == 3
+
+
+def test_sql_result_is_hidden_from_prompt_but_preserved_exactly():
+    sql_table = (
+        "SQL Query Executed: `SELECT * FROM gpu_sales`\n\n"
+        "| model | units |\n"
+        "| --- | --- |\n"
+        "| A100 | 12 |"
+    )
+    chunks = [
+        RetrievedChunk(
+            chunk=Chunk(
+                chunk_id="live_sql_001",
+                document_id="live_db",
+                chunk_type=ChunkType.SQL_RESULT,
+                content=sql_table,
+                page_number=0,
+                document_type=DocumentType.GENERAL,
+                source_file="live_database (gpu_sales table)",
+            ),
+            score=1.0,
+        )
+    ]
+
+    context = _build_context(chunks)
+
+    assert sql_table not in context
+    assert "The exact table will be appended automatically" in context
+    assert _extract_sql_table(chunks) == sql_table
 
 
 # ---------------------------------------------------------------------------

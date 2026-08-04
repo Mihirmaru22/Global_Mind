@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,22 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     model_config = {"env_file": str(PROJECT_ROOT / ".env"), "env_file_encoding": "utf-8"}
+
+    @field_validator("db_engine", mode="before")
+    @classmethod
+    def normalize_db_engine(cls, value: Any) -> Any:
+        """Accept case/whitespace variants from .env without changing behavior."""
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("db_host", "db_name", "db_readonly_user", mode="before")
+    @classmethod
+    def strip_db_fields(cls, value: Any) -> Any:
+        """Trim accidental whitespace from connection fields."""
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
     @property
     def cors_allow_origins_list(self) -> list[str]:

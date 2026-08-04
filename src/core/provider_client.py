@@ -561,6 +561,7 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
     "semantic_classification": TaskRoute([
         ProviderOption("gemini", "gemini-2.5-flash-lite", 1),
         ProviderOption("groq", "llama-3.1-8b-instant", 2),
+        ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 3),
     ]),
     "ocr_vision": TaskRoute([
         ProviderOption("gemini", "gemini-2.5-flash", 1),
@@ -587,11 +588,13 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
         ProviderOption("gemini", "gemini-2.5-flash", 1),
         ProviderOption("groq", "llama-3.3-70b-versatile", 2),
         ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 3),
+        ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
     "reasoning": TaskRoute([
         ProviderOption("groq", "llama-3.3-70b-versatile", 1),
         ProviderOption("gemini", "gemini-2.5-flash", 2),
         ProviderOption("nvidia_nim", "meta/llama3-70b-instruct", 3),
+        ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
     "extraction": TaskRoute([
         ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 1),

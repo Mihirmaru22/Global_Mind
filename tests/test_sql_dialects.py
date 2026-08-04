@@ -143,7 +143,7 @@ class TestFormatSchemaRows:
 
     def test_unsupported_dialect_key_raises(self) -> None:
         bogus = SQLDialectProfile(
-            key="oracle", name="Oracle", sqlglot_dialect="oracle", schema_query="",
+            key="oracle", name="Oracle", sqlglot_dialect="oracle", schema_query="", date_functions="", fk_query="",
         )
         with pytest.raises(ValueError, match="Unsupported dialect key"):
             format_schema_rows(bogus, [])
