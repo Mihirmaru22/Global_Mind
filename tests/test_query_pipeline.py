@@ -191,3 +191,4 @@ async def test_query_pipeline_pins_sql_result_and_appends_exact_table(
     assert sql_table in result.answer
     assert result.model_used == "sql/direct"
     assert mock_router.chat.await_count == 0
+    pipeline._reranker.rerank.assert_not_called()

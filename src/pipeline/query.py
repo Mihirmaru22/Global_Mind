@@ -175,8 +175,8 @@ class QueryPipeline:
                 reasoning_task="no_results",
             )
 
-        # Stage 13 — Reranking (skipped for exhaustive queries to preserve recall breadth)
-        if exhaustive:
+        # Stage 13 — Reranking (skipped for SQL answers and exhaustive queries)
+        if intent == "SQL" or exhaustive:
             reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
         else:
             logger.info("[Stage 13] Reranking")
@@ -328,8 +328,8 @@ class QueryPipeline:
             )
             return
 
-        # Stage 13 — Reranking (skipped for exhaustive queries)
-        if exhaustive:
+        # Stage 13 — Reranking (skipped for SQL answers and exhaustive queries)
+        if intent == "SQL" or exhaustive:
             reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
         else:
             reranked = await self._reranker.rerank(
