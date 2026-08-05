@@ -719,7 +719,7 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
     """Format retrieved chunks into a context string, bounded by a token limit."""
     parts: list[str] = []
     current_tokens = 0
-    MAX_CONTEXT_TOKENS = 6000
+    max_context_tokens = settings.max_context_tokens
 
     for chunk in chunks:
         c = chunk.chunk
@@ -733,11 +733,15 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
             )
         else:
             chunk_text = f"{header}\n{c.content}"
-        
-        # Rough token estimate
-        est_tokens = len(chunk_text) // 4
-        
-        if current_tokens + est_tokens > MAX_CONTEXT_TOKENS and parts:
+
+        # Rough token estimate. 3 chars/token (not the more common 4) —
+        # deliberately conservative: this budget also has to cover markdown
+        # tables and non-English text, which tokenize denser than plain
+        # English prose, and this codebase routes across several providers
+        # with different real tokenizers.
+        est_tokens = len(chunk_text) // 3
+
+        if current_tokens + est_tokens > max_context_tokens and parts:
             logger.info("Context length bounded to %d tokens (dropped %d lower-ranked chunks)", 
                        current_tokens, len(chunks) - len(parts))
             break

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = DATA_DIR / "live_data.db"
 
 # Safety limits
-QUERY_TIMEOUT_SECONDS = 10.0
+QUERY_TIMEOUT_SECONDS = settings.db_query_timeout_seconds
 MAX_ROWS = 500
 
 

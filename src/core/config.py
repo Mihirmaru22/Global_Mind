@@ -79,6 +79,27 @@ class Settings(BaseSettings):
     # queries bypass this cap to preserve recall. Floored at 2 so short-document
     # answers never starve.
     generation_context_k: int = 5
+    # Rough token budget for the context block placed in the generation
+    # prompt (see _build_context). Estimated at ~3 chars/token — deliberately
+    # conservative since content varies (markdown tables and non-English text
+    # tokenize denser than plain English prose), and this must hold across
+    # several providers (Gemini, Groq, NVIDIA NIM, OpenRouter) with different
+    # tokenizers and different real context-window sizes. Lower this if you're
+    # hitting provider context-window errors; raise it only if you've
+    # confirmed headroom on every provider in your routing chain.
+    max_context_tokens: int = 6000
+    # Hard timeout for a single live-DB query (src/core/db_client.py). 10s was
+    # too tight for real aggregation queries (JOIN + GROUP BY over a view) on
+    # non-trivial data volume — raised to 25s. If queries are still timing out,
+    # the fix is indexing the join/filter columns on your DB, not raising this
+    # further; a large flat timeout just makes every failure slower to surface.
+    db_query_timeout_seconds: float = 25.0
+    # How long a SQL retrieval result is cached (keyed on exact question text,
+    # per-process — see SQLRetriever._result_cache). Avoids re-running an
+    # expensive query for every user asking the same question, which matters
+    # most when you can't add DB-side indexes yourself (e.g. a third-party
+    # client DB with no DDL access granted). 0 disables caching entirely.
+    sql_result_cache_ttl_seconds: float = 300.0
     # Near-duplicate suppression: boilerplate shared across documents (a company
     # motto, a repeated project preamble, a standard disclaimer) is stored once
     # per document, so a query matching it can retrieve the same passage many

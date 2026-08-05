@@ -32,7 +32,13 @@ def _pin_sql_result_chunks(
     chunks: list[RetrievedChunk],
     sql_chunks: list[RetrievedChunk],
 ) -> list[RetrievedChunk]:
-    """Keep live SQL result chunks at the front of the final context."""
+    """Keep live SQL result chunks at the front of the final context.
+
+    sql_chunks only ever contains a chunk when the query returned real rows
+    (see SQLRetriever.retrieve — a genuine zero-row result returns an empty
+    list instead of a placeholder), so pinning here is always safe: there's
+    nothing but confirmed data to pin.
+    """
     if not sql_chunks:
         return chunks
 
