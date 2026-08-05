@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from src.core.config import settings
-from src.core.rate_limiter import RateLimiter
+from src.core.rate_limiter import RateLimiter, get_shared_rate_limiter
 from src.models.schemas import Chunk
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class EmbeddingService:
     """
 
     def __init__(self, rate_limiter: RateLimiter | None = None) -> None:
-        self._rate_limiter = rate_limiter or RateLimiter()
+        self._rate_limiter = rate_limiter or get_shared_rate_limiter()
         self._http: httpx.AsyncClient | None = None
 
     def _get_http(self) -> httpx.AsyncClient:

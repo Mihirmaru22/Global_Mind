@@ -22,7 +22,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from src.core.config import settings
-from src.core.rate_limiter import RateLimiter
+from src.core.rate_limiter import RateLimiter, get_shared_rate_limiter
 from src.models.schemas import TokenUsage
 
 logger = logging.getLogger(__name__)
@@ -613,6 +613,67 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
 
 
 # ---------------------------------------------------------------------------
+# Process-wide shared infrastructure
+# ---------------------------------------------------------------------------
+# The rate limiter, the provider instances, and the parsed YAML routes are all
+# process-scoped: they carry no per-request state and are expensive to rebuild
+# (the routes require a YAML parse; the limiter's quota tracking is only
+# meaningful when shared). A ProviderRouter is still constructed per request,
+# but it is now a thin handle over this shared infrastructure — the only state
+# it owns per request is token accounting (``usage``), ``last_used``, and the
+# soft-pin preference. This is what makes 429 backoff and RPM/RPD limits span
+# requests while keeping per-answer cost isolated.
+
+_shared_providers: dict[str, "LLMProvider"] | None = None
+_shared_routes: dict[str, TaskRoute] | None = None
+
+
+def _build_providers(rate_limiter: RateLimiter) -> dict[str, "LLMProvider"]:
+    """Construct every provider whose API key is configured."""
+    providers: dict[str, LLMProvider] = {}
+    if settings.gemini_api_key:
+        providers["gemini"] = GeminiProvider(rate_limiter)
+    if settings.nvidia_nim_api_key:
+        providers["nvidia_nim"] = OpenAICompatibleProvider(
+            name="nvidia_nim",
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=settings.nvidia_nim_api_key,
+            rate_limiter=rate_limiter,
+        )
+    if settings.groq_api_key:
+        providers["groq"] = OpenAICompatibleProvider(
+            name="groq",
+            base_url="https://api.groq.com/openai/v1",
+            api_key=settings.groq_api_key,
+            rate_limiter=rate_limiter,
+        )
+    if settings.openrouter_api_key:
+        providers["openrouter"] = OpenAICompatibleProvider(
+            name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.openrouter_api_key,
+            rate_limiter=rate_limiter,
+        )
+    return providers
+
+
+def get_shared_providers() -> dict[str, "LLMProvider"]:
+    """Return the process-wide provider instances, built once against the shared limiter."""
+    global _shared_providers
+    if _shared_providers is None:
+        _shared_providers = _build_providers(get_shared_rate_limiter())
+    return _shared_providers
+
+
+def get_shared_routes() -> dict[str, TaskRoute]:
+    """Return the task→fallback-chain routes, parsed once from YAML (or defaults)."""
+    global _shared_routes
+    if _shared_routes is None:
+        _shared_routes = ProviderRouter._load_yaml_routes() or DEFAULT_ROUTES
+    return _shared_routes
+
+
+# ---------------------------------------------------------------------------
 # Router — the main entry point for all LLM/vision calls
 # ---------------------------------------------------------------------------
 
@@ -630,24 +691,29 @@ class ProviderRouter:
         routes: dict[str, TaskRoute] | None = None,
         preferred_provider: str | None = None,
     ) -> None:
-        self._rate_limiter = RateLimiter()
-        self._routes = routes or self._load_yaml_routes() or DEFAULT_ROUTES
+        # Shared, process-scoped infrastructure. The limiter is the important
+        # one: quota tracking and 429 backoff must span requests, so every
+        # router points at the *same* limiter rather than minting a fresh one.
+        # Providers and routes are shared too — they carry no per-request state
+        # and rebuilding them (a YAML parse, provider construction) every request
+        # was pure waste. Tests still override these instance attributes.
+        self._rate_limiter = get_shared_rate_limiter()
+        self._routes = routes or get_shared_routes()
+        self._providers: dict[str, LLMProvider] = get_shared_providers()
         # A soft pin: the caller's preferred provider is promoted to the front
         # of every task chain, but the rest of the chain stays intact as
         # fallback. "auto" (or empty) means no pin — use the routes as authored.
         pref = (preferred_provider or "").strip().lower()
         self._preferred_provider: str | None = pref if pref and pref != "auto" else None
         # The provider/model that served the most recent successful call, e.g.
-        # "gemini/gemini-2.5-flash". Callers read this to report which model
-        # actually answered (after fallback), instead of the task name.
+        # "gemini/gemini-2.5-flash". Per-request state — callers read this to
+        # report which model actually answered (after fallback).
         self.last_used: str = ""
-        # Running token total for every LLM call made through this router. A
-        # router is created fresh per request, so this naturally scopes to one
+        # Running token total for every LLM call made through this router. Held
+        # per router instance (created fresh per request), so it scopes to one
         # query — contextualize + intent + generation all fold in here, giving
         # the true cost of producing the answer. Callers read it at the end.
         self.usage: TokenUsage = TokenUsage()
-        self._providers: dict[str, LLMProvider] = {}
-        self._init_providers()
 
     @staticmethod
     def _load_yaml_routes() -> dict[str, TaskRoute] | None:
@@ -682,35 +748,6 @@ class ProviderRouter:
         except Exception as e:
             logger.warning("Failed to parse providers.yaml: %s — using defaults", e)
             return None
-
-    def _init_providers(self) -> None:
-        """Initialize all provider instances."""
-        if settings.gemini_api_key:
-            self._providers["gemini"] = GeminiProvider(self._rate_limiter)
-
-        if settings.nvidia_nim_api_key:
-            self._providers["nvidia_nim"] = OpenAICompatibleProvider(
-                name="nvidia_nim",
-                base_url="https://integrate.api.nvidia.com/v1",
-                api_key=settings.nvidia_nim_api_key,
-                rate_limiter=self._rate_limiter,
-            )
-
-        if settings.groq_api_key:
-            self._providers["groq"] = OpenAICompatibleProvider(
-                name="groq",
-                base_url="https://api.groq.com/openai/v1",
-                api_key=settings.groq_api_key,
-                rate_limiter=self._rate_limiter,
-            )
-
-        if settings.openrouter_api_key:
-            self._providers["openrouter"] = OpenAICompatibleProvider(
-                name="openrouter",
-                base_url="https://openrouter.ai/api/v1",
-                api_key=settings.openrouter_api_key,
-                rate_limiter=self._rate_limiter,
-            )
 
     def _get_route(self, task: str) -> TaskRoute:
         """Get the fallback chain for a task, falling back to general_qa.

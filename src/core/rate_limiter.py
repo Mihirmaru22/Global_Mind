@@ -135,3 +135,60 @@ class RateLimiter:
                 "rpd_limit": limits.rpd,
             }
         return stats
+
+    def usage_snapshot(
+        self, providers: list[str] | None = None
+    ) -> dict[str, dict[str, int | float]]:
+        """Per-provider quota usage — including providers not yet used (zeros).
+
+        Unlike :meth:`get_stats`, which only reports providers that have already
+        made a request, this fills in every requested provider so the UI can
+        render the full roster with live headroom (like a usage meter). Also
+        reports remaining 429 backoff so the UI can flag a cooling-down provider.
+        """
+        now = time.time()
+        names = set(providers or []) | set(self._states.keys())
+        out: dict[str, dict[str, int | float]] = {}
+        for provider in sorted(names):
+            limits = self._get_limits(provider)
+            state = self._states.get(provider)
+            if state is not None:
+                cutoff = now - 60.0
+                rpm_used = len([t for t in state.request_timestamps if t > cutoff])
+                # The daily counter resets lazily inside acquire(); reflect a
+                # rollover here too so a snapshot taken after midnight reads 0.
+                rpd_used = 0 if (now - state.day_start > 86400) else state.daily_count
+                backoff = max(0.0, state.backoff_until - now)
+            else:
+                rpm_used = 0
+                rpd_used = 0
+                backoff = 0.0
+            out[provider] = {
+                "rpm_used": rpm_used,
+                "rpm_limit": limits.rpm,
+                "rpd_used": rpd_used,
+                "rpd_limit": limits.rpd,
+                "backoff_seconds": round(backoff, 1),
+            }
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Process-wide shared limiter
+# ---------------------------------------------------------------------------
+# Rate limiting only works if every request consults the *same* limiter: RPM/RPD
+# counters and 429 backoff must span requests. Constructing a fresh RateLimiter
+# per request (the previous behavior) reset all quota state on every call, so
+# under concurrency each request believed it was the first and the free-tier
+# protection was effectively absent. A single shared instance makes the limits
+# real — and lets a usage endpoint report true, live headroom.
+
+_shared_rate_limiter: RateLimiter | None = None
+
+
+def get_shared_rate_limiter() -> RateLimiter:
+    """Return the process-wide :class:`RateLimiter` singleton (lazily created)."""
+    global _shared_rate_limiter
+    if _shared_rate_limiter is None:
+        _shared_rate_limiter = RateLimiter()
+    return _shared_rate_limiter
