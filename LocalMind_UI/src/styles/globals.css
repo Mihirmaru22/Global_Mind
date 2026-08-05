@@ -3055,3 +3055,112 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
     align-items: flex-start;
   }
 }
+
+/* --- Provider usage meters (Settings › Provider Usage) ------------------- */
+/* Semantic severity colours are intentionally separate from --accent: they
+   encode how full a free-tier window is, not brand. They are chosen to stay
+   legible on both the light and dark grounds. */
+.usage-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.usage-refresh:hover {
+  color: var(--accent-strong);
+  border-color: var(--panel-border-strong);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.usage-list {
+  display: grid;
+  gap: 12px;
+}
+
+.usage-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
+}
+
+.usage-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.usage-card__name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.usage-card__cooldown {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: #d9822b;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #d9822b 16%, transparent);
+}
+
+.usage-meter {
+  display: grid;
+  gap: 5px;
+}
+
+.usage-meter__label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.usage-meter__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.usage-track {
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 320ms ease;
+  min-width: 2px;
+}
+
+.usage-fill--ok {
+  background: var(--accent);
+}
+
+.usage-fill--warn {
+  background: #e0a021;
+}
+
+.usage-fill--crit {
+  background: #d1483a;
+}
+
+.usage-empty {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}

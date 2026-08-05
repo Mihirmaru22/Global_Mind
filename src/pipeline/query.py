@@ -11,7 +11,7 @@ from pathlib import Path
 
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
-from src.core.rate_limiter import RateLimiter
+from src.core.rate_limiter import get_shared_rate_limiter
 from src.models.schemas import QueryResult, RetrievedChunk, ThinkingStep
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
@@ -61,7 +61,9 @@ class QueryPipeline:
         vector_store: QdrantStore | None = None,
         preferred_provider: str | None = None,
     ) -> None:
-        self._rate_limiter = RateLimiter()
+        # Shared process-wide limiter so embedding/rerank quota (Jina) and 429
+        # backoff span requests, exactly like the LLM providers.
+        self._rate_limiter = get_shared_rate_limiter()
         # A single router drives retrieval, reranking, and generation, so the
         # soft pin applies uniformly across the whole query.
         self._router = router or ProviderRouter(preferred_provider=preferred_provider)

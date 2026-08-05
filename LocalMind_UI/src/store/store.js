@@ -10,6 +10,7 @@ import {
   getMessages,
   getOverview,
   getProviders,
+  getProviderUsage,
   getSettings,
   persistIngestionCard,
   renameChat as renameChatApi,
@@ -303,6 +304,7 @@ export const useAppStore = create((set, get) => ({
   overview: null,
   settings: null,
   providers: [],
+  providerUsage: [],
   loading: false,
   sidebarOpen: false,
   sidebarCollapsed: readStoredBoolean('localmind-sidebar-collapsed', false),
@@ -370,6 +372,20 @@ export const useAppStore = create((set, get) => ({
     // Fire-and-forget: on first app load, scan the server's inbox folder and
     // show a side popup with the outcome. Never block the UI on it.
     get().runInboxScan()
+
+    // Load the provider quota meters in the background — never block startup.
+    get().refreshProviderUsage()
+  },
+
+  // Pull the live per-provider quota usage (RPM/RPD) from the shared limiter.
+  // Best-effort: a failure just leaves the meters empty rather than erroring.
+  refreshProviderUsage: async () => {
+    try {
+      const data = await getProviderUsage()
+      set({ providerUsage: normalizeList(data?.providers, []) })
+    } catch {
+      // Leave whatever we had; the usage meter is non-critical.
+    }
   },
 
   // Scan the watched drop-folder once and surface the result as a persistent

@@ -234,6 +234,14 @@ export async function getProviders() {
   return response.data
 }
 
+// Live per-provider quota usage (RPM/RPD used vs. limit) from the shared,
+// process-wide rate limiter. Returns { providers: [{ id, label, rpmUsed,
+// rpmLimit, rpdUsed, rpdLimit, backoffSeconds }] }.
+export async function getProviderUsage() {
+  const response = await http.get('/providers/usage')
+  return response.data
+}
+
 // Scan the server's watched drop-folder (data/inbox) and ingest any new files.
 // Idempotent — already-ingested files are reported as duplicates, not re-ingested.
 // Returns { scanned, ingested, skipped, failed, message, ... }.

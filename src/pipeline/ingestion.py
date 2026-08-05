@@ -19,7 +19,7 @@ from typing import Any, AsyncGenerator
 from src.core.config import settings
 from src.core.ingestion_registry import IngestionRegistry, RegistryStatus
 from src.core.provider_client import ProviderRouter
-from src.core.rate_limiter import RateLimiter
+from src.core.rate_limiter import get_shared_rate_limiter
 from src.models.schemas import Chunk, ParsedDocument
 from src.stages.s01_file_detection import detect_file
 from src.stages.s02_classification import classify_semantic, classify_structure
@@ -101,7 +101,7 @@ class IngestionPipeline:
         vector_store: QdrantStore | None = None,
         registry: IngestionRegistry | None = None,
     ) -> None:
-        self._rate_limiter = RateLimiter()
+        self._rate_limiter = get_shared_rate_limiter()
         self._router = router or ProviderRouter()
         self._embeddings = embedding_service or EmbeddingService(self._rate_limiter)
         self._store = vector_store or QdrantStore()
