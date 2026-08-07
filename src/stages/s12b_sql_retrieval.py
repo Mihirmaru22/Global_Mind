@@ -1,4 +1,4 @@
-"""Stage 12b — Text-to-SQL Retrieval.
+"""Stage 12b Ã¢â¬â Text-to-SQL Retrieval.
 
 Dynamically translates natural language into SQL against the live database,
 executes it, and returns the results formatted as a context chunk.
@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -> str:
     """Turn an engine's raw introspection rows into schema text for the NL2SQL prompt.
 
-    Pure function of (dialect profile, rows) — no instance state, no global
-    settings — so it can be unit tested directly for each engine.
+    Pure function of (dialect profile, rows) Ã¢â¬â no instance state, no global
+    settings Ã¢â¬â so it can be unit tested directly for each engine.
 
     SQLite's sqlite_master query already returns one full CREATE TABLE
     statement per row. MySQL's information_schema.columns query returns
@@ -90,12 +90,12 @@ class SQLRetriever:
         # Caches the full retrieve() result, keyed on the normalized question
         # text. Without DDL access on the client's DB to add indexes, a slow
         # aggregation query (e.g. a multi-table JOIN view) would otherwise
-        # re-run in full for every single question — this means it only
+        # re-run in full for every single question Ã¢â¬â this means it only
         # actually hits the DB once per settings.sql_result_cache_ttl_seconds,
         # and every other identically-worded question in that window gets an
         # instant answer instead. Per-process only (not shared across workers
         # or restarts) and keyed on exact question text, not semantic
-        # similarity — differently-worded questions still each pay full cost.
+        # similarity Ã¢â¬â differently-worded questions still each pay full cost.
         self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
 
     @staticmethod
@@ -171,16 +171,16 @@ class SQLRetriever:
 
 
                 # An empty result on the FINAL attempt is treated as "the SQL
-                # path found nothing" and falls through to document search —
+                # path found nothing" and falls through to document search Ã¢â¬â
                 # not returned as an answer chunk. A wrong JOIN/WHERE also
                 # produces 0 rows (MySQL doesn't error on that), so trusting an
                 # empty result as authoritative risks a confident "no data"
                 # answer overriding a correct document-based one. Returning []
                 # here mirrors the UnsafeQueryError and exhausted-retry paths
-                # below — SQL only ever contributes a chunk when it found rows.
+                # below Ã¢â¬â SQL only ever contributes a chunk when it found rows.
                 if not rows:
                     logger.info(
-                        "SQL query returned 0 rows after retry — falling back "
+                        "SQL query returned 0 rows after retry Ã¢â¬â falling back "
                         "to document search."
                     )
                     return []
@@ -226,11 +226,11 @@ class SQLRetriever:
             return self._schema_cache
 
         try:
-            rows = await run_readonly_query(self._dialect.schema_query)
+            rows = await run_readonly_query(self._dialect.schema_query, max_rows=20000)
             schema = format_schema_rows(self._dialect, rows)
 
             if self._dialect.key == "mysql" and self._dialect.fk_query:
-                fk_rows = await run_readonly_query(self._dialect.fk_query)
+                fk_rows = await run_readonly_query(self._dialect.fk_query, max_rows=20000)
             elif self._dialect.key == "sqlite":
                 fk_rows = await self._fetch_sqlite_foreign_keys()
             else:
@@ -241,7 +241,7 @@ class SQLRetriever:
 
             if len(schema) > self._MAX_SCHEMA_CHARS:
                 logger.warning(
-                    "Schema text (%d chars) exceeds cap — truncating to %d chars "
+                    "Schema text (%d chars) exceeds cap Ã¢â¬â truncating to %d chars "
                     "for the SQL-generation prompt.",
                     len(schema), self._MAX_SCHEMA_CHARS,
                 )
@@ -257,6 +257,16 @@ class SQLRetriever:
         """Prompt the reasoning LLM to generate SQL."""
         system_prompt = f"""You are a {self._dialect.name} expert. 
 Given the following database schema, generate a highly optimized {self._dialect.name} SELECT statement to answer the user's question.
+
+If nothing in this schema - no table or column - answers ANY part of the
+question, respond with exactly the single word NO_SQL and nothing else.
+
+If the question has multiple parts and only SOME relate to this schema,
+IGNORE the unrelated parts and write a query for only the part(s) this
+schema can answer. Do not try to combine unrelated concepts into one query,
+and do not abstain just because part of the question is out of scope -
+only respond NO_SQL if NONE of the parts are answerable here.
+
 Return ONLY the raw SQL query, no markdown formatting, no explanations, no backticks.
 
 Schema:
@@ -290,6 +300,8 @@ Schema:
             
             # Clean up markdown formatting if the LLM ignored instructions
             sql = response.strip()
+            if sql.upper() == "NO_SQL":
+                return ""
             if sql.startswith("```sql"):
                 sql = sql[6:]
             if sql.startswith("```"):
@@ -313,15 +325,16 @@ Schema:
     _OUTPUT_READABILITY_RULES = """
 Output readability rules:
 - Never return a raw ID column (e.g. customer_id, product_id, order_id) by itself if a related table has a human-readable name, title, or label for it. JOIN to that table and return the readable value instead of, or alongside, the ID.
-- Give every selected column a clear, descriptive alias using AS, so the result is understandable on its own without needing to see the query (e.g. SELECT c.name AS customer_name, SUM(o.amount) AS total_revenue — not SELECT c.name, SUM(o.amount)).
-- Name each alias based on what the user actually asked for, not the raw column or table name (e.g. if the user asked "who spent the most", alias the result as top_customer or total_spent, not c1 or col2).
-- Include any extra column that adds useful context to the answer (name, category, date, status) even if not strictly required to answer narrowly — the goal is a result a person can read and understand directly, not just the minimum data needed.
+- Give every selected column a clear, descriptive alias using AS, so the result is understandable on its own without needing to see the query (e.g. SELECT c.name AS customer_name, SUM(o.amount) AS total_revenue - not SELECT c.name, SUM(o.amount)).
+- Name each alias based on what the user actually asked for, ONLY when that wording accurately describes what the column holds (e.g. if the user asked "who spent the most", alias the result as top_customer or total_spent, not c1 or col2). Never invent a label that misrepresents the data - e.g. do not call a product_type_id column "technology_used" just because the word "technology" appeared in the question.
+- Include any extra column that adds useful context to the answer (name, category, date, status) even if not strictly required to answer narrowly - the goal is a result a person can read and understand directly, not just the minimum data needed.
+- "Most"/"highest"/"best" used in singular form (no number given) means exactly ONE result - apply LIMIT 1. "Top N" means LIMIT N. If the question asks to rank/list multiple items without a specific count, use a sensible default limit (e.g. LIMIT 20) rather than returning every row unbounded.
 """
 
     def _is_safe_read_query(self, sql: str) -> bool:
         """Parse the AST and confirm it's a single, side-effect-free read SELECT.
 
-        ``isinstance(ast, exp.Select)`` is necessary but NOT sufficient — several
+        ``isinstance(ast, exp.Select)`` is necessary but NOT sufficient Ã¢â¬â several
         write/exfiltration primitives are still SELECTs:
 
           * ``SELECT ... INTO OUTFILE/DUMPFILE '/path'`` (MySQL) writes to disk;
@@ -347,7 +360,7 @@ Output readability rules:
         if not isinstance(ast, exp.Select):
             return False
 
-        # SELECT ... INTO OUTFILE/DUMPFILE (or INTO @var) — a disk/variable write.
+        # SELECT ... INTO OUTFILE/DUMPFILE (or INTO @var) Ã¢â¬â a disk/variable write.
         if ast.args.get("into") is not None:
             logger.warning("Blocked SELECT ... INTO (file/variable write): %s", sql)
             return False

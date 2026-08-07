@@ -1,10 +1,11 @@
-"""Query Pipeline — orchestrates Stages 12–14.
+"""Query Pipeline Ã¢â¬â orchestrates Stages 12Ã¢â¬â14.
 
 Takes a question, retrieves relevant chunks, reranks, and generates an answer.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -21,11 +22,12 @@ from src.stages.s12_s13_s14_retrieval import (
     Retriever,
     _enforce_document_diversity,
     _is_exhaustive_query,
-    _is_visualization_query,
 )
 from src.stages.s12b_sql_retrieval import SQLRetriever
 
 logger = logging.getLogger(__name__)
+
+_MIN_RELEVANCE_SCORE = 0.15
 
 
 def _pin_sql_result_chunks(
@@ -35,7 +37,7 @@ def _pin_sql_result_chunks(
     """Keep live SQL result chunks at the front of the final context.
 
     sql_chunks only ever contains a chunk when the query returned real rows
-    (see SQLRetriever.retrieve — a genuine zero-row result returns an empty
+    (see SQLRetriever.retrieve Ã¢â¬â a genuine zero-row result returns an empty
     list instead of a placeholder), so pinning here is always safe: there's
     nothing but confirmed data to pin.
     """
@@ -52,7 +54,7 @@ def _pin_sql_result_chunks(
 
 
 class QueryPipeline:
-    """Orchestrates the query flow: retrieve → rerank → generate."""
+    """Orchestrates the query flow: retrieve Ã¢â â rerank Ã¢â â generate."""
 
     def __init__(
         self,
@@ -80,7 +82,7 @@ class QueryPipeline:
         filters: dict | None = None,
         history: list[dict] | None = None,
     ) -> QueryResult:
-        """Run a full RAG query: retrieve → rerank → generate.
+        """Run a full RAG query: retrieve Ã¢â â rerank Ã¢â â generate.
 
         Args:
             question: The user's natural-language question.
@@ -92,7 +94,7 @@ class QueryPipeline:
         """
         logger.info("=== Query: %s ===", question[:100])
 
-        # Short-circuit: "what files/documents do you have?" — answer from registry
+        # Short-circuit: "what files/documents do you have?" Ã¢â¬â answer from registry
         if _is_document_listing_query(question):
             answer = _build_document_list_answer()
             return QueryResult(
@@ -104,7 +106,7 @@ class QueryPipeline:
 
         # Consult the conversation ONLY when the message looks like it depends on
         # it. A self-contained or new-topic question skips history entirely and is
-        # answered exactly as it would be with no conversation — so history never
+        # answered exactly as it would be with no conversation Ã¢â¬â so history never
         # biases an unrelated question. When it is a follow-up, rewrite it into a
         # standalone query so retrieval continues the current thread.
         needs_context = bool(history) and _looks_like_followup(question)
@@ -117,47 +119,14 @@ class QueryPipeline:
 
         exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
-            logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
+            logger.info("Exhaustive query detected Ã¢â¬â boosting top_k and skipping rerank")
 
-        # Step: Intent Classification
-        intent = await _classify_sql_intent(search_query, self._router)
-        # An exhaustive enumeration ("list every X across all documents") is
-        # inherently a document-wide scan. If the router sent it down the
-        # SQL-only path it would answer from one structured table and miss the
-        # documents entirely — so guarantee vector retrieval runs alongside.
-        if exhaustive and intent == "SQL":
-            logger.info("Exhaustive query classified SQL-only — upgrading to BOTH for document coverage")
-            intent = "BOTH"
-        # A visualization request ("bar chart of total units") often trips a
-        # metric keyword like "total" and gets routed to SQL-only, but the
-        # values to chart may live in the documents. Keep both sources in play.
-        elif _is_visualization_query(search_query) and intent == "SQL":
-            logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
-            intent = "BOTH"
-        logger.info(f"Query intent classified as: {intent}")
+        # Both retrieval paths always run Ã¢â¬â never gated on a pre-guessed intent.
+        # SQL retrieval can abstain on its own (see SQLRetriever._generate_sql,
+        # NO_SQL) using the real schema, which is more reliable than a keyword/
+        # LLM guess made before either path has run.
+        sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
 
-        retrieved = []
-        sql_chunks = []
-
-        # Stage 12b — SQL Retrieval (additive: precise figures from the live DB)
-        if intent in ["SQL", "BOTH"]:
-            logger.info("[Stage 12b] Executing Text-to-SQL")
-            sql_chunks = await self._sql_retriever.retrieve(search_query)
-            if sql_chunks:
-                logger.info("SQL query succeeded and returned rows.")
-            else:
-                logger.info("SQL query returned no results or failed.")
-
-        # Stage 12 — Vector Retrieval (always runs)
-        # Document retrieval is never skipped. SQL augments answers with exact
-        # figures, but it must never *replace* document knowledge: the live DB
-        # has only the gpu_sales table, so a question whose answer lives solely
-        # in the documents ("cheapest iPhone") would otherwise be hijacked by
-        # whatever rows that table returns. Non-deterministic intent
-        # classification made this worse — regenerating the same question would
-        # flip between a correct document answer and a wrong SQL-only one.
-        # Retrieving documents unconditionally and letting the reranker pick the
-        # relevant chunks makes the outcome consistent and correct.
         logger.info("[Stage 12] Retrieving vector chunks")
         vector_chunks = await self._retriever.retrieve(
             search_query,
@@ -166,14 +135,14 @@ class QueryPipeline:
             exhaustive=exhaustive,
         )
         logger.info("Retrieved %d vector chunks", len(vector_chunks))
-        retrieved.extend(vector_chunks)
 
-        # Merge SQL results into the context (prepended; the reranker re-scores
-        # everything by relevance, so an off-topic SQL result is demoted).
+        sql_chunks = await sql_task
         if sql_chunks:
-            retrieved = sql_chunks + retrieved
+            logger.info("SQL query succeeded and returned rows.")
+        else:
+            logger.info("SQL query returned no results or failed.")
 
-        if not retrieved:
+        if not vector_chunks and not sql_chunks:
             fallback_msg = "No relevant documents found. Please upload documents first."
 
             return QueryResult(
@@ -183,19 +152,24 @@ class QueryPipeline:
                 reasoning_task="no_results",
             )
 
-        # Stage 13 — Reranking (skipped for SQL answers and exhaustive queries)
-        if intent == "SQL" or exhaustive:
-            reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
+        # Stage 13 Ã¢â¬â Reranking. SQL chunks NEVER go here Ã¢â¬â solo or blended.
+        # A live-db table shouldn't leave your infra via the reranker's API call,
+        # and there's only ever one SQL chunk, so ranking it is meaningless.
+        # Only vector_chunks go to the reranker; _pin_sql_result_chunks (below)
+        # re-attaches the SQL chunk to the front unconditionally afterward, so
+        # it always survives to generation regardless of what the reranker did
+        # with the documents.
+        if exhaustive or not vector_chunks:
+            reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
         else:
             logger.info("[Stage 13] Reranking")
-            reranked = await self._reranker.rerank(
-                search_query, retrieved, top_k=settings.rerank_top_k
-            )
+            reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+        reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
         logger.info("Final context: %d chunks", len(reranked))
 
-        # Stage 14 — Generation (the user's original question + conversation,
+        # Stage 14 Ã¢â¬â Generation (the user's original question + conversation,
         # but only when the question actually depends on it)
         logger.info("[Stage 14] Generating answer")
         # Exhaustive queries keep every reranked chunk (recall matters); normal
@@ -204,7 +178,7 @@ class QueryPipeline:
         result = await self._generator.generate(
             question, reranked, history=gen_history, context_limit=context_limit
         )
-        result.chunks_retrieved = len(retrieved)
+        result.chunks_retrieved = len(vector_chunks + sql_chunks)
         result.chunks_after_rerank = len(reranked)
 
         logger.info("=== Query complete ===")
@@ -225,7 +199,7 @@ class QueryPipeline:
 
         logger.info("=== Query Stream: %s ===", question[:100])
 
-        # Short-circuit: document listing question — answer from registry
+        # Short-circuit: document listing question Ã¢â¬â answer from registry
         if _is_document_listing_query(question):
             answer = _build_document_list_answer()
             yield answer
@@ -237,7 +211,7 @@ class QueryPipeline:
             )
             return
 
-        # Reasoning trace ("thinking") — each step is streamed live to the UI as
+        # Reasoning trace ("thinking") Ã¢â¬â each step is streamed live to the UI as
         # it happens and collected onto the final QueryResult so it persists.
         thinking: list[ThinkingStep] = []
 
@@ -247,7 +221,7 @@ class QueryPipeline:
             return step
 
         # Consult the conversation ONLY when the message looks like a follow-up
-        # (see query()) — a self-contained/new-topic question stays stateless so
+        # (see query()) Ã¢â¬â a self-contained/new-topic question stays stateless so
         # history can't bias it.
         needs_context = bool(history) and _looks_like_followup(question)
         search_query = question
@@ -260,44 +234,13 @@ class QueryPipeline:
 
         exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
-            logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
+            logger.info("Exhaustive query detected Ã¢â¬â boosting top_k and skipping rerank")
 
-        # Step: Intent Classification
-        intent = await _classify_sql_intent(search_query, self._router)
-        # See query(): an exhaustive enumeration must always scan documents,
-        # never answer from the SQL table alone.
-        if exhaustive and intent == "SQL":
-            logger.info("Exhaustive query classified SQL-only — upgrading to BOTH for document coverage")
-            intent = "BOTH"
-        # See query(): a chart request must keep document retrieval in play even
-        # when a metric keyword routed it to SQL.
-        elif _is_visualization_query(search_query) and intent == "SQL":
-            logger.info("Visualization query classified SQL-only — upgrading to BOTH so charts can use document data")
-            intent = "BOTH"
-        logger.info(f"Query intent classified as: {intent}")
-        _intent_detail = {
-            "SQL": "needs figures from the live database",
-            "VECTOR": "needs context from the documents",
-            "BOTH": "needs both live data and documents",
-        }.get(intent, intent)
-        yield _think("Understanding the question", _intent_detail)
+        yield _think("Understanding the question", "checking live database and documents in parallel")
 
-        retrieved = []
-        sql_chunks = []
+        sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
 
-        # Stage 12b — SQL Retrieval (additive)
-        if intent in ["SQL", "BOTH"]:
-            sql_chunks = await self._sql_retriever.retrieve(search_query)
-            if sql_chunks:
-                # Surface the actual generated SQL, not a canned phrase — every
-                # question produces a different query.
-                sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
-                sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
-                yield _think("Queried the live database", sql_detail)
-            else:
-                yield _think("Queried the live database", "no matching rows — checking documents instead")
-
-        # Stage 12 — Vector Retrieval (always runs; see query() for rationale).
+        # Stage 12 Ã¢â¬â Vector Retrieval (always runs; see query() for rationale).
         # Document context is never skipped so a document-only answer can't be
         # hijacked by the gpu_sales table, and regenerating stays consistent.
         vector_chunks = await self._retriever.retrieve(
@@ -306,7 +249,6 @@ class QueryPipeline:
             filters=filters,
             exhaustive=exhaustive,
         )
-        retrieved.extend(vector_chunks)
         # Name the actual source files this question matched against, so two
         # different questions never show the same trace.
         doc_names = list(dict.fromkeys(
@@ -320,10 +262,17 @@ class QueryPipeline:
             doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
         yield _think("Searched the documents", doc_detail)
 
+        sql_chunks = await sql_task
         if sql_chunks:
-            retrieved = sql_chunks + retrieved
+            # Surface the actual generated SQL, not a canned phrase Ã¢â¬â every
+            # question produces a different query.
+            sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
+            sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
+            yield _think("Queried the live database", sql_detail)
+        else:
+            yield _think("Queried the live database", "no matching rows Ã¢â¬â checking documents instead")
 
-        if not retrieved:
+        if not vector_chunks and not sql_chunks:
             fallback_msg = "No relevant documents found. Please upload documents first."
 
             yield fallback_msg
@@ -336,22 +285,21 @@ class QueryPipeline:
             )
             return
 
-        # Stage 13 — Reranking (skipped for SQL answers and exhaustive queries)
-        if intent == "SQL" or exhaustive:
-            reranked = _enforce_document_diversity(retrieved, settings.rerank_top_k)
+        # Stage 13 Ã¢â¬â Reranking. SQL chunks NEVER go here Ã¢â¬â solo or blended.
+        if exhaustive or not vector_chunks:
+            reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
         else:
-            reranked = await self._reranker.rerank(
-                search_query, retrieved, top_k=settings.rerank_top_k
-            )
+            reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+        reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
         top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
-        rank_detail = f"kept the {len(reranked)} best — top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
+        rank_detail = f"kept the {len(reranked)} best Ã¢â¬â top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
         yield _think("Ranked the most relevant sources", rank_detail)
         yield _think("Writing the answer")
 
-        # Stage 14 — Generation. generate_stream yields answer text chunks and,
-        # finally, the QueryResult — attach the collected thinking to it and
+        # Stage 14 Ã¢â¬â Generation. generate_stream yields answer text chunks and,
+        # finally, the QueryResult Ã¢â¬â attach the collected thinking to it and
         # note which provider/model actually answered, so the trace closes out
         # with a real, per-question detail rather than a static label. The
         # user's original question drives the answer; history is included only
@@ -377,12 +325,13 @@ class QueryPipeline:
 
 _LISTING_KEYWORDS = [
     "what files", "which files", "what documents", "which documents",
-    "list files", "list documents", "list all", "show files", "show documents",
+    "list files", "list documents", "list all documents", "list all files",
+    "list all docs", "show files", "show documents",
     "what have you", "what do you have", "what have you ingested",
     "what documents do you", "what files do you", "documents uploaded",
     "files uploaded", "ingested files", "available documents", "available files",
     "what is in your", "what's in your", "knowledge base",
-    # "doc"/"docs" phrasings — the colloquial shorthand for the above. Without
+    # "doc"/"docs" phrasings Ã¢â¬â the colloquial shorthand for the above. Without
     # these, "what docs you have" falls through to RAG retrieval and only
     # describes the handful of chunks that happened to match, contradicting the
     # authoritative registry listing.
@@ -405,7 +354,7 @@ def _build_document_list_answer() -> str:
     import datetime
 
     registry = IngestionRegistry()
-    # Only the current (active) version of each document — superseded versions
+    # Only the current (active) version of each document Ã¢â¬â superseded versions
     # are history, not part of the live knowledge base.
     entries = registry.get_active()
 
@@ -417,7 +366,7 @@ def _build_document_list_answer() -> str:
         file_name = entry.get("filename", "Unknown")
         chunks = entry.get("total_chunks", "?")
         ingested_at = entry.get("created_at", "")
-        # Format date nicely — convert to IST (UTC+5:30)
+        # Format date nicely Ã¢â¬â convert to IST (UTC+5:30)
         try:
             dt = datetime.datetime.fromisoformat(ingested_at)
             ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -425,7 +374,7 @@ def _build_document_list_answer() -> str:
             date_str = dt_ist.strftime("%Y-%m-%d %I:%M %p IST")
         except Exception:
             date_str = ingested_at[:10] if ingested_at else "unknown"
-        lines.append(f"{i}. **{file_name}** — {chunks} chunks (ingested {date_str})")
+        lines.append(f"{i}. **{file_name}** Ã¢â¬â {chunks} chunks (ingested {date_str})")
 
     return "\n".join(lines)
 
@@ -439,8 +388,8 @@ _CONTEXTUALIZE_PROMPT = """You rewrite a user's follow-up message into a standal
 Rules:
 - If the message depends on the conversation (pronouns like "it"/"that"/"them", or continuations like "compare", "make a table", "the second one", "why is it better"), rewrite it into a self-contained question by pulling in the missing subject from the conversation.
 - If the message is ALREADY self-contained, or introduces a NEW topic not discussed above, return it EXACTLY unchanged. Do not force the earlier subject onto an unrelated question.
-- Never add facts or assumptions — only resolve references.
-- Keep it concise. Output ONLY the resulting question — no preamble, no quotes.
+- Never add facts or assumptions Ã¢â¬â only resolve references.
+- Keep it concise. Output ONLY the resulting question Ã¢â¬â no preamble, no quotes.
 
 Conversation:
 {history}
@@ -467,7 +416,7 @@ def _looks_like_followup(question: str) -> bool:
     Very short messages and referential/continuation cues suggest a follow-up.
     Anything else is treated as self-contained, so history is never consulted
     and a fresh, unrelated question is answered exactly as it would be with no
-    conversation at all — no bias toward earlier topics.
+    conversation at all Ã¢â¬â no bias toward earlier topics.
     """
     q = question.strip()
     if not q:
@@ -519,7 +468,7 @@ async def _contextualize_query(
         if rewritten and len(rewritten) <= 400:
             return rewritten
     except Exception as e:
-        logger.warning("Query contextualization failed: %s — using original question", e)
+        logger.warning("Query contextualization failed: %s Ã¢â¬â using original question", e)
     return question
 
 
