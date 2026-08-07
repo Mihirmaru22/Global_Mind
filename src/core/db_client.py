@@ -24,11 +24,13 @@ logger = logging.getLogger(__name__)
 DB_PATH = DATA_DIR / "live_data.db"
 
 # Safety limits
-QUERY_TIMEOUT_SECONDS = 10.0
+QUERY_TIMEOUT_SECONDS = settings.db_query_timeout_seconds
 MAX_ROWS = 500
 
 
-async def run_readonly_query(sql: str, params: dict | None = None) -> list[dict[str, Any]]:
+async def run_readonly_query(
+    sql: str, params: dict | None = None, max_rows: int | None = None
+) -> list[dict[str, Any]]:
     """Execute a read-only SQL query with hard timeouts and row caps.
 
     Args:
@@ -44,6 +46,7 @@ async def run_readonly_query(sql: str, params: dict | None = None) -> list[dict[
     """
     engine = settings.db_engine
     profile = get_dialect_profile(engine)
+    row_cap = max_rows if max_rows is not None else MAX_ROWS
 
     if engine == "sqlite" and not DB_PATH.exists():
         logger.warning(f"Database file not found at {DB_PATH}")
@@ -60,12 +63,12 @@ async def run_readonly_query(sql: str, params: dict | None = None) -> list[dict[
         if isinstance(tree, exp.Select):
             existing = tree.args.get("limit")
             if existing is None:
-                tree.set("limit", exp.Limit(expression=exp.Literal.number(MAX_ROWS)))
+                tree.set("limit", exp.Limit(expression=exp.Literal.number(row_cap)))
             else:
                 try:
-                    # If there's already a limit > MAX_ROWS, clamp it down
-                    if int(existing.expression.this) > MAX_ROWS:
-                        existing.set("expression", exp.Literal.number(MAX_ROWS))
+                    # If there's already a limit > row_cap, clamp it down
+                    if int(existing.expression.this) > row_cap:
+                        existing.set("expression", exp.Literal.number(row_cap))
                 except (TypeError, ValueError, AttributeError):
                     pass
 
@@ -79,8 +82,8 @@ async def run_readonly_query(sql: str, params: dict | None = None) -> list[dict[
         async with asyncio.timeout(QUERY_TIMEOUT_SECONDS):
             results = await _execute(engine, sql, params)
 
-            if len(results) >= MAX_ROWS:
-                logger.warning(f"Query results capped at {MAX_ROWS} rows to protect context window.")
+            if len(results) >= row_cap:
+                logger.warning(f"Query results capped at {row_cap} rows to protect context window.")
 
             return results
 

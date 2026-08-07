@@ -248,7 +248,8 @@ class Generator:
         # same trimmed set so we never cite a source the model didn't see.
         context_chunks = _limit_context_chunks(chunks, context_limit)
         sql_table_md = _extract_sql_table(context_chunks)
-        if sql_table_md:
+        has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
+        if sql_table_md and not has_other_chunks:
             return QueryResult(
                 query=query,
                 answer=sql_table_md,
@@ -286,6 +287,8 @@ Question: {query}"""
 
         # Extract citations and format the answer text
         citations, clean_answer = _extract_and_format_citations(response, context_chunks)
+        if sql_table_md:
+            clean_answer = f"{clean_answer}\n\n{sql_table_md}"
 
         return QueryResult(
             query=query,
@@ -338,7 +341,8 @@ Question: {query}"""
         # user message carries only the volatile context + question.
         context_chunks = _limit_context_chunks(chunks, context_limit)
         sql_table_md = _extract_sql_table(context_chunks)
-        if sql_table_md:
+        has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
+        if sql_table_md and not has_other_chunks:
             yield sql_table_md
             yield QueryResult(
                 query=query,
@@ -375,6 +379,8 @@ Question: {query}"""
 
         full_answer = "".join(full_answer_parts)
         citations, clean_answer = _extract_and_format_citations(full_answer, context_chunks)
+        if sql_table_md:
+            clean_answer = f"{clean_answer}\n\n{sql_table_md}"
 
         yield QueryResult(
             query=query,
@@ -648,7 +654,10 @@ _ANSWER_RULES = (
     'inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% '
     '[a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a '
     'separate column or heading for them and do NOT refer to them as "chunks" in '
-    "your prose."
+    "your prose. A chunk that merely shares a word with the question is not the same "
+    "as actually answering it â€” if the retrieved context is only tangentially or "
+    "coincidentally related, treat it as not containing the answer and say so rather "
+    "than stretching it into a response."
 )
 
 
@@ -685,6 +694,8 @@ def _history_messages(history: list[dict] | None, *, max_turns: int = 6, max_cha
         role = turn.get("role")
         content = (turn.get("content") or "").strip()
         if role in ("user", "assistant") and content:
+            if role == "assistant" and "SQL Query Executed:" in content:
+                content = content.split("SQL Query Executed:")[0].strip()
             messages.append({"role": role, "content": content[:max_chars]})
     return messages
 
@@ -719,7 +730,7 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
     """Format retrieved chunks into a context string, bounded by a token limit."""
     parts: list[str] = []
     current_tokens = 0
-    MAX_CONTEXT_TOKENS = 6000
+    max_context_tokens = settings.max_context_tokens
 
     for chunk in chunks:
         c = chunk.chunk
@@ -733,11 +744,15 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
             )
         else:
             chunk_text = f"{header}\n{c.content}"
-        
-        # Rough token estimate
-        est_tokens = len(chunk_text) // 4
-        
-        if current_tokens + est_tokens > MAX_CONTEXT_TOKENS and parts:
+
+        # Rough token estimate. 3 chars/token (not the more common 4) —
+        # deliberately conservative: this budget also has to cover markdown
+        # tables and non-English text, which tokenize denser than plain
+        # English prose, and this codebase routes across several providers
+        # with different real tokenizers.
+        est_tokens = len(chunk_text) // 3
+
+        if current_tokens + est_tokens > max_context_tokens and parts:
             logger.info("Context length bounded to %d tokens (dropped %d lower-ranked chunks)", 
                        current_tokens, len(chunks) - len(parts))
             break
