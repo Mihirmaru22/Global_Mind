@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # the fix is indexing the join/filter columns on your DB, not raising this
     # further; a large flat timeout just makes every failure slower to surface.
     db_query_timeout_seconds: float = 25.0
+    # Max number of query embeddings held in the process-scoped LRU cache.
+    # Covers the same question asked repeatedly (e.g. repeated SQL queries
+    # on analytical dashboards). Each entry is one dense vector (~4 KB for
+    # 1024-d float32) plus a sparse vector — 256 entries ≈ 1 MB.
+    embedding_cache_size: int = 256
+
     # How long a SQL retrieval result is cached (keyed on exact question text,
     # per-process — see SQLRetriever._result_cache). Avoids re-running an
     # expensive query for every user asking the same question, which matters

@@ -24,7 +24,12 @@ import logging
 import httpx
 
 from src.core.config import settings
-from src.core.embeddings import DimensionMismatchError, EmbeddingAdapter, SparseVector
+from src.core.embeddings import (
+    DimensionMismatchError,
+    EmbeddingAdapter,
+    QueryEmbeddingCache,
+    SparseVector,
+)
 from src.core.rate_limiter import RateLimiter, get_shared_rate_limiter
 from src.models.schemas import Chunk
 
@@ -42,8 +47,27 @@ __all__ = [
     "EmbeddingService",
     "GeminiEmbeddingAdapter",
     "JinaEmbeddingAdapter",
+    "QueryEmbeddingCache",
     "SparseVector",
+    "get_query_embedding_cache",
 ]
+
+# ---------------------------------------------------------------------------
+# Process-scoped query embedding cache (ARCH-10)
+# ---------------------------------------------------------------------------
+
+_query_cache: QueryEmbeddingCache | None = None
+
+
+def get_query_embedding_cache() -> QueryEmbeddingCache:
+    """Return the process-scoped singleton query embedding cache.
+
+    Lazily initialised on first call so settings are fully loaded first.
+    """
+    global _query_cache
+    if _query_cache is None:
+        _query_cache = QueryEmbeddingCache(max_size=settings.embedding_cache_size)
+    return _query_cache
 
 
 def _empty_sparse(n: int) -> list[SparseVector]:
@@ -273,9 +297,24 @@ class EmbeddingService:
         return await self._fallback.embed(texts)
 
     async def embed_query(self, query: str) -> tuple[list[float], SparseVector]:
-        """Embed a single query string. Returns (dense_vector, sparse_vector)."""
+        """Embed a single query string. Returns (dense_vector, sparse_vector).
+
+        ARCH-10: checks the process-scoped QueryEmbeddingCache before calling
+        the embedding API. A cache hit skips the network round-trip entirely —
+        especially valuable for SQL queries, where the same analytical question
+        is asked repeatedly and the SQL result is already cached by
+        SQLRetriever._result_cache.
+        """
+        cache = get_query_embedding_cache()
+        cached = cache.get(query)
+        if cached is not None:
+            logger.debug("Embedding cache hit (len=%d chars)", len(query))
+            return cached
+
         dense_list, sparse_list = await self.embed_texts([query])
-        return dense_list[0], sparse_list[0]
+        result = dense_list[0], sparse_list[0]
+        cache.put(query, result[0], result[1])
+        return result
 
     async def embed_queries(self, queries: list[str]) -> list[list[float]]:
         """Embed multiple queries (dense only). Used for batch retrieval tests."""

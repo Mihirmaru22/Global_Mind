@@ -6,6 +6,7 @@ executes it, and returns the results formatted as a context chunk.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import time
@@ -79,6 +80,32 @@ def _extract_table_names(sql: str, dialect: str) -> list[str]:
         return []
 
 
+@functools.lru_cache(maxsize=1)
+def _load_glossary() -> str:
+    """Load SQL glossary from disk, cached for process lifetime. ARCH-9."""
+    path = Path(__file__).resolve().parents[2] / "config" / "sql_glossary.json"
+    try:
+        groups = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(groups, dict) or not groups:
+            return ""
+
+        lines: list[str] = []
+        for concept, syns in groups.items():
+            if isinstance(syns, str):
+                synonym_text = syns
+            elif isinstance(syns, list):
+                synonym_text = ", ".join(str(item) for item in syns if str(item).strip())
+            else:
+                synonym_text = str(syns)
+
+            synonym_text = synonym_text.strip()
+            if synonym_text:
+                lines.append(f"- {concept}: {synonym_text}")
+        return "\n".join(lines)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return ""
+
+
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
 
@@ -86,7 +113,7 @@ class SQLRetriever:
         self._router = router
         self._schema_cache: str | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
-        self._glossary = self._load_glossary()
+        self._glossary = _load_glossary()
         # Caches the full retrieve() result, keyed on the normalized question
         # text. Without DDL access on the client's DB to add indexes, a slow
         # aggregation query (e.g. a multi-table JOIN view) would otherwise
@@ -97,30 +124,6 @@ class SQLRetriever:
         # or restarts) and keyed on exact question text, not semantic
         # similarity Ã¢â¬â differently-worded questions still each pay full cost.
         self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
-
-    @staticmethod
-    def _load_glossary() -> str:
-        path = Path(__file__).resolve().parents[2] / "config" / "sql_glossary.json"
-        try:
-            groups = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(groups, dict) or not groups:
-                return ""
-
-            lines: list[str] = []
-            for concept, syns in groups.items():
-                if isinstance(syns, str):
-                    synonym_text = syns
-                elif isinstance(syns, list):
-                    synonym_text = ", ".join(str(item) for item in syns if str(item).strip())
-                else:
-                    synonym_text = str(syns)
-
-                synonym_text = synonym_text.strip()
-                if synonym_text:
-                    lines.append(f"- {concept}: {synonym_text}")
-            return "\n".join(lines)
-        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
-            return ""
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""

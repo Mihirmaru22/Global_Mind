@@ -124,7 +124,9 @@ class IngestionPipeline:
         logger.info("=== Ingesting: %s ===", path.name)
 
         # ── Deduplication check ──────────────────────────────────────────────
-        check = self._registry.check(path)
+        # ARCH-9: registry.check() hashes the file (blocking for large PDFs)
+        # and reads the JSON/Qdrant registry — both must run off the event loop.
+        check = await asyncio.to_thread(self._registry.check, path)
 
         if check.status == RegistryStatus.ALREADY_INGESTED:
             entry = check.old_entry or {}
@@ -147,7 +149,9 @@ class IngestionPipeline:
         # same bytes; re-check inside it so a race that committed while we waited
         # is detected and skipped instead of double-ingested.
         async with _lock_for_hash(check.sha256):
-            dupe = self._registry.active_entry_for_hash(check.sha256)
+            dupe = await asyncio.to_thread(
+                self._registry.active_entry_for_hash, check.sha256
+            )
             if dupe is not None:
                 logger.info(
                     "Skipping '%s' — identical content ingested concurrently", path.name
@@ -197,12 +201,15 @@ class IngestionPipeline:
         For a brand-new document (``supersedes is None``) only the first step
         runs.
         """
-        self._registry.create_version(
-            file_path=path,
-            content_hash=content_hash,
-            total_chunks=total_chunks,
-            document_id=document_id,
-            supersedes=supersedes,
+        # ARCH-9: registry writes (JSON file I/O or Qdrant upsert) must not
+        # block the event loop — run them in the default thread-pool executor.
+        await asyncio.to_thread(
+            self._registry.create_version,
+            path,
+            content_hash,
+            total_chunks,
+            document_id,
+            supersedes,
         )
         if not supersedes:
             return
@@ -215,7 +222,7 @@ class IngestionPipeline:
                 "is live but stale chunks may linger",
                 supersedes,
             )
-        self._registry.supersede(supersedes, document_id)
+        await asyncio.to_thread(self._registry.supersede, supersedes, document_id)
         logger.info("Cutover complete: %s → %s", supersedes, document_id)
 
     async def ingest_with_progress(
@@ -236,7 +243,8 @@ class IngestionPipeline:
         # Content-addressed: identical content is skipped; anything else is a
         # new, distinct document (a same-name file never displaces an existing
         # one), so there is nothing to delete first.
-        check = self._registry.check(path)
+        # ARCH-9: SHA-256 hashing blocks; run off the event loop.
+        check = await asyncio.to_thread(self._registry.check, path)
         if check.status == RegistryStatus.ALREADY_INGESTED:
             entry = check.old_entry or {}
             _discard_redundant_upload(path)
@@ -258,7 +266,9 @@ class IngestionPipeline:
         # inside the lock so a race that committed while we waited is skipped
         # rather than double-ingested.
         async with _lock_for_hash(check.sha256):
-            dupe = self._registry.active_entry_for_hash(check.sha256)
+            dupe = await asyncio.to_thread(
+                self._registry.active_entry_for_hash, check.sha256
+            )
             if dupe is not None:
                 _discard_redundant_upload(path)
                 yield {"type": "skipped", "file": path.name, "reason": "Already ingested (identical content)"}
