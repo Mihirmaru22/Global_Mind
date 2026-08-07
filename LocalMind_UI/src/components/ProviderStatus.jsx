@@ -80,7 +80,15 @@ export default function ProviderStatus() {
     options.find((o) => o.id === activeId)?.label ||
     (activeId === 'auto' ? 'Auto' : activeId)
 
-  const { level, cooling } = summarize(providerUsage)
+  // Auto pins nothing, so its dot/meters reflect every provider. A specific
+  // pin narrows the view to just that provider — the only one a request will
+  // actually hit while the pin holds.
+  const visibleUsage =
+    activeId === 'auto'
+      ? providerUsage || []
+      : (providerUsage || []).filter((p) => p.id === activeId)
+
+  const { level, cooling } = summarize(visibleUsage)
 
   const selectProvider = (id) => {
     updateSettings({ provider: id })
@@ -183,9 +191,9 @@ export default function ProviderStatus() {
                 </button>
               </div>
 
-              {providerUsage?.length ? (
+              {visibleUsage.length ? (
                 <div className="provider-pop__list">
-                  {providerUsage.map((p) => {
+                  {visibleUsage.map((p) => {
                     const rpm = meter(p.rpmUsed, p.rpmLimit)
                     const rpd = meter(p.rpdUsed, p.rpdLimit)
                     const isCooling = Number(p.backoffSeconds) > 0
@@ -234,7 +242,11 @@ export default function ProviderStatus() {
                   })}
                 </div>
               ) : (
-                <p className="usage-empty">Usage isn't available yet.</p>
+                <p className="usage-empty">
+                  {activeId === 'auto'
+                    ? "Usage isn't available yet."
+                    : `No usage data for ${activeLabel} yet.`}
+                </p>
               )}
             </motion.div>
           ) : null}
