@@ -11,6 +11,7 @@ const InputBox = forwardRef(function InputBox(
     disabled = false,
     loading = false,
     placeholder = 'Write a message...',
+    footer = null,
   },
   ref,
 ) {
@@ -40,26 +41,29 @@ const InputBox = forwardRef(function InputBox(
         maxRows={5}
         disabled={disabled || loading}
       />
-      <div className="composer__actions">
-        {loading ? (
-          <button
-            type="button"
-            className="composer__stop"
-            onClick={onStop}
-            aria-label="Stop generating"
-          >
-            <Square size={14} fill="currentColor" />
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="composer__send"
-            disabled={!canSubmit}
-            aria-label="Send message"
-          >
-            <ArrowUp size={18} strokeWidth={2.5} />
-          </button>
-        )}
+      <div className="composer__footer">
+        <div className="composer__footer-left">{footer}</div>
+        <div className="composer__actions">
+          {loading ? (
+            <button
+              type="button"
+              className="composer__stop"
+              onClick={onStop}
+              aria-label="Stop generating"
+            >
+              <Square size={14} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="composer__send"
+              disabled={!canSubmit}
+              aria-label="Send message"
+            >
+              <ArrowUp size={18} strokeWidth={2.5} />
+            </button>
+          )}
+        </div>
       </div>
     </form>
   )
