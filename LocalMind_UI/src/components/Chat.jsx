@@ -5,6 +5,7 @@ import { useAppStore } from '../store/store.js'
 import InputBox from './InputBox.jsx'
 import Loader from './Loader.jsx'
 import Message from './Message.jsx'
+import ProviderStatus from './ProviderStatus.jsx'
 
 export default function Chat() {
   const activeChatId = useAppStore((state) => state.activeChatId)
@@ -124,6 +125,7 @@ export default function Chat() {
           }}
           loading={isGenerating}
           disabled={isGenerating}
+          footer={<ProviderStatus />}
         />
       </div>
     </section>

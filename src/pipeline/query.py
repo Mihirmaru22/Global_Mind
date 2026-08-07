@@ -96,7 +96,8 @@ class QueryPipeline:
 
         # Short-circuit: "what files/documents do you have?" Ã¢â¬â answer from registry
         if _is_document_listing_query(question):
-            answer = _build_document_list_answer()
+            # ARCH-9: registry reads block; run off the event loop.
+            answer = await asyncio.to_thread(_build_document_list_answer)
             return QueryResult(
                 query=question,
                 answer=answer,
@@ -201,7 +202,8 @@ class QueryPipeline:
 
         # Short-circuit: document listing question Ã¢â¬â answer from registry
         if _is_document_listing_query(question):
-            answer = _build_document_list_answer()
+            # ARCH-9: registry reads block; run off the event loop.
+            answer = await asyncio.to_thread(_build_document_list_answer)
             yield answer
             yield QueryResult(
                 query=question,
