@@ -104,7 +104,7 @@ class IngestionPipeline:
         self._rate_limiter = get_shared_rate_limiter()
         self._router = router or ProviderRouter()
         self._embeddings = embedding_service or EmbeddingService(self._rate_limiter)
-        self._store = vector_store or QdrantStore()
+        self._store = vector_store or QdrantStore(embedding_service=self._embeddings)
         self._registry = registry or IngestionRegistry()
 
     async def ingest(self, file_path: str | Path) -> "IngestionResult":

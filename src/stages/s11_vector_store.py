@@ -10,11 +10,14 @@ Reciprocal Rank Fusion (RRF), replacing the previous BM25-lite heuristic.
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.core.config import settings
+from src.core.embeddings import DimensionMismatchError, SparseVector
 from src.models.schemas import Chunk, RetrievedChunk
-from src.stages.s10_embeddings import SparseVector
+
+if TYPE_CHECKING:
+    from src.stages.s10_embeddings import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +60,26 @@ class VectorStore(Protocol):
 
 
 class QdrantStore:
-    """Qdrant Cloud vector store with true hybrid dense+sparse search."""
+    """Qdrant Cloud vector store with true hybrid dense+sparse search.
+
+    ARCH-4: Pass an EmbeddingService so the collection is created with exactly
+    the right vector_size for the active embedding model. If no service is
+    provided the legacy default (1024) is used, which matches Jina v3.
+    """
 
     def __init__(
         self,
         collection_name: str = "globle_mind",
         vector_size: int = 1024,
+        embedding_service: EmbeddingService | None = None,
     ) -> None:
         self._collection_name = collection_name
-        self._vector_size = vector_size
+        if embedding_service is not None:
+            self._vector_size = embedding_service.vector_dim
+            self._embedding_model = embedding_service.model_id
+        else:
+            self._vector_size = vector_size
+            self._embedding_model = "unknown"
         self._has_sparse: bool = False  # Set True once sparse collection is confirmed
 
     async def _get_client(self) -> Any:
@@ -150,8 +164,9 @@ class QdrantStore:
         _global_has_sparse = True
         self._has_sparse = True
         logger.info(
-            "Created Qdrant collection '%s' (vector_size=%d, sparse=True)",
+            "Created Qdrant collection '%s' (model=%s, vector_size=%d, sparse=True)",
             self._collection_name,
+            self._embedding_model,
             self._vector_size,
         )
         await self._ensure_payload_indexes(client)
@@ -195,6 +210,18 @@ class QdrantStore:
         import hashlib
 
         from qdrant_client.models import PointStruct
+
+        # ARCH-4: validate every vector matches the collection's configured size
+        # before touching the network. Catches a dim-mismatch from a wrong
+        # fallback adapter before it corrupts the collection.
+        for idx, vec in enumerate(vectors):
+            if len(vec) != self._vector_size:
+                raise DimensionMismatchError(
+                    f"Vector at index {idx} has {len(vec)} dimensions but "
+                    f"collection '{self._collection_name}' expects "
+                    f"{self._vector_size} (model: {self._embedding_model}). "
+                    f"Re-create the collection or align your embedding model."
+                )
 
         client = await self._get_client()
 

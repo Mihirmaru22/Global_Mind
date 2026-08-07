@@ -1,21 +1,30 @@
 """Stage 10 — Embeddings.
 
-Jina v3/v4 as primary (genuinely permanent free tier), Gemini embeddings
+Jina v3 as primary (genuinely permanent free tier), Gemini text-embedding-004
 as overflow when Jina's RPM is exhausted.
 
-Sparse vector support: when using Jina, we request both dense AND sparse
-embeddings in a single API call (return_sparse=true). This powers true
-hybrid dense+sparse retrieval in Stage 11, replacing the BM25-lite heuristic.
+ARCH-3: Jina and Gemini are concrete EmbeddingAdapter implementations.
+        Swap or add adapters without touching EmbeddingService.
+
+ARCH-4: EmbeddingService refuses to fall back to an adapter whose vector_dim
+        differs from the primary's. A mismatch would silently write wrong-sized
+        vectors into the Qdrant collection, corrupting search. We raise
+        DimensionMismatchError instead.
+
+Sparse vector support: JinaEmbeddingAdapter requests return_sparse=true, giving
+both dense (1024-d) and sparse vectors in one API call. GeminiEmbeddingAdapter
+returns empty sparse vectors; the retrieval layer degrades gracefully to
+dense-only search.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 
 import httpx
 
 from src.core.config import settings
+from src.core.embeddings import DimensionMismatchError, EmbeddingAdapter, SparseVector
 from src.core.rate_limiter import RateLimiter, get_shared_rate_limiter
 from src.models.schemas import Chunk
 
@@ -24,36 +33,39 @@ logger = logging.getLogger(__name__)
 _JINA_EMBED_URL = "https://api.jina.ai/v1/embeddings"
 _GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-
-@dataclass
-class SparseVector:
-    """A sparse embedding represented as parallel index/value arrays.
-
-    Qdrant accepts sparse vectors in this format for its named sparse
-    vector collections.
-    """
-    indices: list[int] = field(default_factory=list)
-    values: list[float] = field(default_factory=list)
-
-    def is_empty(self) -> bool:
-        return len(self.indices) == 0
+# Re-export so existing callers that do
+#   from src.stages.s10_embeddings import SparseVector
+# keep working without changes.
+__all__ = [
+    "DimensionMismatchError",
+    "EmbeddingAdapter",
+    "EmbeddingService",
+    "GeminiEmbeddingAdapter",
+    "JinaEmbeddingAdapter",
+    "SparseVector",
+]
 
 
-def _empty_sparse_vectors(n: int) -> list[SparseVector]:
-    """Return a list of n empty SparseVector objects (fallback when sparse is unavailable)."""
+def _empty_sparse(n: int) -> list[SparseVector]:
     return [SparseVector() for _ in range(n)]
 
 
-class EmbeddingService:
-    """Embeds chunks using Jina (primary) with Gemini overflow.
+# ---------------------------------------------------------------------------
+# Concrete adapters
+# ---------------------------------------------------------------------------
 
-    Returns both dense and sparse vectors. Sparse vectors are populated
-    by Jina (return_sparse=true). Gemini fallback returns empty sparse vectors
-    and the retrieval layer gracefully degrades to dense-only search.
-    """
+class JinaEmbeddingAdapter:
+    """Jina Embeddings v3 — 1024-dimensional dense + sparse."""
 
-    def __init__(self, rate_limiter: RateLimiter | None = None) -> None:
-        self._rate_limiter = rate_limiter or get_shared_rate_limiter()
+    model_id = "jina-embeddings-v3"
+    vector_dim = 1024
+    supports_sparse = True
+
+    _BATCH_SIZE = 64
+
+    def __init__(self, api_key: str, rate_limiter: RateLimiter) -> None:
+        self._api_key = api_key
+        self._rate_limiter = rate_limiter
         self._http: httpx.AsyncClient | None = None
 
     def _get_http(self) -> httpx.AsyncClient:
@@ -61,129 +73,211 @@ class EmbeddingService:
             self._http = httpx.AsyncClient(timeout=60.0)
         return self._http
 
-    async def embed_chunks(
-        self, chunks: list[Chunk]
+    async def embed(
+        self,
+        texts: list[str],
+        task: str = "retrieval.passage",
     ) -> tuple[list[list[float]], list[SparseVector]]:
-        """Embed a list of chunks. Returns (dense_vectors, sparse_vectors)."""
-        texts = [c.content for c in chunks]
-        return await self.embed_texts(texts)
-
-    async def embed_texts(
-        self, texts: list[str]
-    ) -> tuple[list[list[float]], list[SparseVector]]:
-        """Embed a list of texts. Returns (dense_vectors, sparse_vectors).
-
-        Sparse vectors will be empty if Gemini fallback is used.
-        """
-        if not texts:
-            return [], []
-
-        # Try Jina first (returns both dense + sparse)
-        if settings.jina_api_key:
-            try:
-                return await self._embed_jina(texts)
-            except Exception as e:
-                logger.warning("Jina embedding failed: %s — falling back to Gemini", e)
-
-        # Fallback to Gemini (dense only, empty sparse)
-        if settings.gemini_api_key:
-            try:
-                dense = await self._embed_gemini(texts)
-                sparse = _empty_sparse_vectors(len(texts))
-                return dense, sparse
-            except Exception as e:
-                logger.error("Gemini embedding also failed: %s", e)
-                raise
-
-        raise RuntimeError("No embedding provider available — set JINA_API_KEY or GEMINI_API_KEY")
-
-    async def embed_query(self, query: str) -> tuple[list[float], SparseVector]:
-        """Embed a single query string. Returns (dense_vector, sparse_vector)."""
-        dense_list, sparse_list = await self.embed_texts([query])
-        return dense_list[0], sparse_list[0]
-
-    async def embed_queries(
-        self, queries: list[str]
-    ) -> list[list[float]]:
-        """Embed multiple queries (dense only). Used for batch retrieval tests."""
-        dense_list, _ = await self.embed_texts(queries)
-        return dense_list
-
-    async def _embed_jina(
-        self, texts: list[str]
-    ) -> tuple[list[list[float]], list[SparseVector]]:
-        """Embed via Jina Embeddings API, requesting both dense and sparse."""
-        await self._rate_limiter.acquire("jina")
         http = self._get_http()
-
         all_dense: list[list[float]] = []
         all_sparse: list[SparseVector] = []
-        batch_size = 64  # Increased for faster ingestion
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        for i in range(0, len(texts), self._BATCH_SIZE):
+            batch = texts[i : i + self._BATCH_SIZE]
+            await self._rate_limiter.acquire("jina")
 
             response = await http.post(
                 _JINA_EMBED_URL,
                 headers={
-                    "Authorization": f"Bearer {settings.jina_api_key}",
+                    "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "jina-embeddings-v3",
+                    "model": self.model_id,
                     "input": batch,
-                    "task": "retrieval.passage",
-                    "return_sparse": True,  # Request sparse vectors alongside dense
+                    "task": task,
+                    "return_sparse": True,
                 },
             )
             response.raise_for_status()
             data = response.json()
 
-            # Sort by index to preserve order
-            embeddings = sorted(data["data"], key=lambda x: x["index"])
-
-            for emb in embeddings:
+            for emb in sorted(data["data"], key=lambda x: x["index"]):
                 all_dense.append(emb["embedding"])
-
-                # Parse sparse embedding — Jina returns {"index": int, "value": float} pairs
                 sparse_raw = emb.get("sparse_embedding")
                 if sparse_raw:
-                    indices = [int(k) for k in sparse_raw.keys()]
-                    values = [float(v) for v in sparse_raw.values()]
-                    all_sparse.append(SparseVector(indices=indices, values=values))
+                    all_sparse.append(SparseVector(
+                        indices=[int(k) for k in sparse_raw.keys()],
+                        values=[float(v) for v in sparse_raw.values()],
+                    ))
                 else:
                     all_sparse.append(SparseVector())
 
-            if i + batch_size < len(texts):
-                await self._rate_limiter.acquire("jina")
-
         return all_dense, all_sparse
 
-    async def _embed_gemini(self, texts: list[str]) -> list[list[float]]:
-        """Embed via Gemini Embedding API (dense only)."""
-        await self._rate_limiter.acquire("gemini")
+
+class GeminiEmbeddingAdapter:
+    """Gemini text-embedding-004 — 768-dimensional dense only.
+
+    Note: 768 ≠ 1024 (Jina). This adapter cannot safely substitute for Jina
+    once the Qdrant collection has been created with 1024-d vectors.
+    EmbeddingService enforces this at runtime via DimensionMismatchError.
+    """
+
+    model_id = "text-embedding-004"
+    vector_dim = 768
+    supports_sparse = False
+
+    _BATCH_SIZE = 100
+
+    def __init__(self, api_key: str, rate_limiter: RateLimiter) -> None:
+        self._api_key = api_key
+        self._rate_limiter = rate_limiter
+        self._http: httpx.AsyncClient | None = None
+
+    def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=60.0)
+        return self._http
+
+    async def embed(
+        self,
+        texts: list[str],
+        task: str = "retrieval.passage",
+    ) -> tuple[list[list[float]], list[SparseVector]]:
         http = self._get_http()
-
         all_vectors: list[list[float]] = []
-        batch_size = 100  # Gemini supports batch embedding
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        for i in range(0, len(texts), self._BATCH_SIZE):
+            batch = texts[i : i + self._BATCH_SIZE]
+            await self._rate_limiter.acquire("gemini")
 
-            url = f"{_GEMINI_EMBED_URL}/text-embedding-004:batchEmbedContents?key={settings.gemini_api_key}"
-            requests_body = [
+            url = f"{_GEMINI_EMBED_URL}/text-embedding-004:batchEmbedContents?key={self._api_key}"
+            body = [
                 {"model": "models/text-embedding-004", "content": {"parts": [{"text": t}]}}
                 for t in batch
             ]
-
-            response = await http.post(url, json={"requests": requests_body})
+            response = await http.post(url, json={"requests": body})
             response.raise_for_status()
             data = response.json()
 
             for emb in data.get("embeddings", []):
                 all_vectors.append(emb["values"])
 
-            if i + batch_size < len(texts):
-                await self._rate_limiter.acquire("gemini")
+        return all_vectors, _empty_sparse(len(all_vectors))
 
-        return all_vectors
+
+# ---------------------------------------------------------------------------
+# Service — adapter orchestration + ARCH-4 guard
+# ---------------------------------------------------------------------------
+
+class EmbeddingService:
+    """Orchestrates embedding adapters: primary first, fallback only when safe.
+
+    ARCH-4: The fallback adapter is never used when its vector_dim differs from
+    the primary's. Mixing dimensions would silently write incompatible vectors
+    into the Qdrant collection, breaking cosine similarity. We raise
+    DimensionMismatchError instead, surfacing the misconfiguration immediately.
+
+    Public API is unchanged from the previous monolithic implementation so all
+    callers (IngestionPipeline, QueryPipeline, Retriever) work without change.
+    """
+
+    def __init__(
+        self,
+        rate_limiter: RateLimiter | None = None,
+        primary: EmbeddingAdapter | None = None,
+        fallback: EmbeddingAdapter | None = None,
+    ) -> None:
+        rl = rate_limiter or get_shared_rate_limiter()
+        self._primary: EmbeddingAdapter = primary or self._default_primary(rl)
+        self._fallback: EmbeddingAdapter | None = fallback if fallback is not None else self._default_fallback(rl)
+
+    # ------------------------------------------------------------------
+    # Adapter factories
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _default_primary(rl: RateLimiter) -> EmbeddingAdapter:
+        if settings.jina_api_key:
+            return JinaEmbeddingAdapter(settings.jina_api_key, rl)
+        if settings.gemini_api_key:
+            return GeminiEmbeddingAdapter(settings.gemini_api_key, rl)
+        raise RuntimeError(
+            "No embedding provider available — set JINA_API_KEY or GEMINI_API_KEY"
+        )
+
+    @staticmethod
+    def _default_fallback(rl: RateLimiter) -> EmbeddingAdapter | None:
+        if settings.jina_api_key and settings.gemini_api_key:
+            return GeminiEmbeddingAdapter(settings.gemini_api_key, rl)
+        return None
+
+    # ------------------------------------------------------------------
+    # Properties (ARCH-4 — collection creation reads these)
+    # ------------------------------------------------------------------
+
+    @property
+    def vector_dim(self) -> int:
+        """Dimensionality of vectors produced by the primary adapter."""
+        return self._primary.vector_dim
+
+    @property
+    def model_id(self) -> str:
+        """Model identifier of the primary adapter."""
+        return self._primary.model_id
+
+    # ------------------------------------------------------------------
+    # Public embed interface
+    # ------------------------------------------------------------------
+
+    async def embed_chunks(
+        self, chunks: list[Chunk]
+    ) -> tuple[list[list[float]], list[SparseVector]]:
+        return await self.embed_texts([c.content for c in chunks])
+
+    async def embed_texts(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], list[SparseVector]]:
+        """Embed texts. Returns (dense_vectors, sparse_vectors).
+
+        Falls back to the secondary adapter only when its vector_dim matches
+        the primary's. Raises DimensionMismatchError otherwise.
+        """
+        if not texts:
+            return [], []
+
+        try:
+            return await self._primary.embed(texts)
+        except Exception as exc:
+            logger.warning(
+                "Primary adapter %s failed: %s", self._primary.model_id, exc
+            )
+
+        if self._fallback is None:
+            raise RuntimeError(
+                f"Embedding failed and no fallback configured "
+                f"(primary: {self._primary.model_id})"
+            )
+
+        if self._fallback.vector_dim != self._primary.vector_dim:
+            raise DimensionMismatchError(
+                f"Cannot fall back from {self._primary.model_id} "
+                f"({self._primary.vector_dim}d) to {self._fallback.model_id} "
+                f"({self._fallback.vector_dim}d) — dimension mismatch would "
+                f"corrupt the Qdrant collection. Either fix the primary adapter "
+                f"or configure a same-dimension fallback."
+            )
+
+        logger.warning("Falling back to %s", self._fallback.model_id)
+        return await self._fallback.embed(texts)
+
+    async def embed_query(self, query: str) -> tuple[list[float], SparseVector]:
+        """Embed a single query string. Returns (dense_vector, sparse_vector)."""
+        dense_list, sparse_list = await self.embed_texts([query])
+        return dense_list[0], sparse_list[0]
+
+    async def embed_queries(self, queries: list[str]) -> list[list[float]]:
+        """Embed multiple queries (dense only). Used for batch retrieval tests."""
+        dense_list, _ = await self.embed_texts(queries)
+        return dense_list
