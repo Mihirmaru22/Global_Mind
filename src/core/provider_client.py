@@ -592,8 +592,11 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
     ]),
     "reasoning": TaskRoute([
         ProviderOption("groq", "llama-3.3-70b-versatile", 1),
-        ProviderOption("gemini", "gemini-2.5-flash", 2),
-        ProviderOption("nvidia_nim", "meta/llama3-70b-instruct", 3),
+        # qwen3.5 on NVIDIA NIM: a known-good slug on this key, promoted ahead of
+        # gemini. Replaces the dead `meta/llama3-70b-instruct` (NVIDIA 404) that
+        # left reasoning with no working fallback once groq hit its daily cap.
+        ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 2),
+        ProviderOption("gemini", "gemini-2.5-flash", 3),
         ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
     "extraction": TaskRoute([

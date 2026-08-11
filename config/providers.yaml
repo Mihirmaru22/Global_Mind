@@ -95,11 +95,17 @@ tasks:
       - provider: groq
         model: llama-3.3-70b-versatile
         priority: 1
+      # NVIDIA NIM is promoted to the first fallback (ahead of gemini) and uses
+      # qwen3.5 — a model already proven on this NVIDIA key elsewhere (extraction,
+      # general_qa) and strong at SQL. The previous slug `meta/llama3-70b-instruct`
+      # is dead (NVIDIA returns 404), which left reasoning with no working fallback
+      # whenever groq hit its daily token cap, so Text-to-SQL silently produced no
+      # query and every DB question fell back to "not in my documents".
+      - provider: nvidia_nim
+        model: qwen/qwen3.5-397b-a17b
+        priority: 2
       - provider: gemini
         model: gemini-2.5-flash
-        priority: 2
-      - provider: nvidia_nim
-        model: meta/llama3-70b-instruct
         priority: 3
       - provider: openrouter
         model: meta-llama/llama-3.3-70b-instruct:free
