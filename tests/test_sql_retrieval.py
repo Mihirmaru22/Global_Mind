@@ -20,6 +20,7 @@ from src.models.schemas import ChunkType
 from src.stages.s12b_sql_retrieval import (
     SQLRetriever,
     _is_all_null,
+    _load_relationships,
     _unwrap_sql,
 )
 
@@ -40,6 +41,41 @@ def test_is_all_null_preserves_count_zero_and_real_data():
     # Multi-row results are always real data.
     assert _is_all_null([{"x": None}, {"x": None}]) is False
     assert _is_all_null([]) is False
+
+
+def test_relationships_join_map_disambiguates_columns():
+    """The shipped join map must place product_color_id on the line-item tables
+    and NOT on `product` — the exact confusion behind the observed
+    'Unknown column p.product_color_id' join hallucination."""
+    rel = _load_relationships()
+    if not rel:
+        pytest.skip("config/sql_relationships.json not present in this deployment")
+    lines = {ln.split(":", 1)[0].lstrip("- ").strip(): ln for ln in rel.splitlines()}
+    # product has no product_color_id
+    assert "product_color_id" not in lines.get("product", "")
+    # sales_order_products does, joining to product_color
+    assert "product_color_id->product_color.id" in lines.get("sales_order_products", "")
+
+
+def test_relationships_injected_into_prompt():
+    """When relationships are configured, the SQL-generation prompt must carry the
+    join map so the model doesn't guess joins."""
+    from unittest.mock import AsyncMock
+    r = SQLRetriever(AsyncMock())
+    r._relationships = "- sales_order_products: product_color_id->product_color.id"
+
+    captured = {}
+
+    async def chat(task=None, messages=None, **kw):
+        captured["system"] = messages[0]["content"]
+        return "SELECT 1"
+
+    r._router.chat = chat
+
+    import asyncio
+    asyncio.run(r._generate_sql("q", "TABLE product (...)"))
+    assert "Table relationships" in captured["system"]
+    assert "product_color_id->product_color.id" in captured["system"]
 
 
 @pytest.mark.parametrize(

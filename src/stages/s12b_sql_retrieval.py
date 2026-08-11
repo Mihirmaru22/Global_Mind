@@ -120,6 +120,42 @@ def _extract_table_names(sql: str, dialect: str) -> list[str]:
 
 
 @functools.lru_cache(maxsize=1)
+def _load_relationships() -> str:
+    """Load the inferred join map from disk, cached for process lifetime.
+
+    Databases without explicit FOREIGN KEY constraints give the SQL-generation
+    model no way to know how tables join, so it guesses — producing errors like
+    `Unknown column 'p.product_color_id' in 'on clause'` (the column lives on the
+    line-item tables and joins to product_color, not on product). Feeding an
+    explicit join map into the prompt removes that guesswork.
+
+    Formatted one line per source table for compactness:
+        - sales_order_products: sales_order_id->sales_order.id, product_id->product.id, ...
+
+    Returns "" when no relationships file is present (e.g. a deployment whose DB
+    has real FK constraints and needs no inferred map), so injection is opt-in.
+    """
+    path = Path(__file__).resolve().parents[2] / "config" / "sql_relationships.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        rels = data.get("relationships") if isinstance(data, dict) else data
+        if not rels:
+            return ""
+        grouped: dict[str, list[str]] = {}
+        for r in rels:
+            frm, fcol = r.get("from_table"), r.get("from_column")
+            to, tcol = r.get("to_table"), r.get("to_column")
+            if not all((frm, fcol, to, tcol)):
+                continue
+            grouped.setdefault(frm, []).append(f"{fcol}->{to}.{tcol}")
+        return "\n".join(
+            f"- {table}: {', '.join(edges)}" for table, edges in sorted(grouped.items())
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return ""
+
+
+@functools.lru_cache(maxsize=1)
 def _load_glossary() -> str:
     """Load SQL glossary from disk, cached for process lifetime. ARCH-9."""
     path = Path(__file__).resolve().parents[2] / "config" / "sql_glossary.json"
@@ -153,6 +189,7 @@ class SQLRetriever:
         self._schema_cache: str | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
+        self._relationships = _load_relationships()
         # Caches the full retrieve() result, keyed on the normalized question
         # text. Without DDL access on the client's DB to add indexes, a slow
         # aggregation query (e.g. a multi-table JOIN view) would otherwise
@@ -327,6 +364,13 @@ Return ONLY the raw SQL query, no markdown formatting, no explanations, no backt
 Schema:
 {schema}
 """
+        if self._relationships:
+            system_prompt += (
+                "\n\nTable relationships (this database has NO foreign-key "
+                "constraints — use ONLY these join paths, and never join on or "
+                "select a column that a table's schema above does not list):\n"
+                f"{self._relationships}\n"
+            )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
         if self._glossary:
