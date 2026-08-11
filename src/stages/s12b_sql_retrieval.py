@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -72,12 +73,86 @@ class UnsafeQueryError(Exception):
     pass
 
 
+_ABSTAIN_RE = re.compile(r"^\W*no_sql\b", re.IGNORECASE)
+_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_SQL_START_RE = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
+
+
+def _unwrap_sql(text: str) -> str:
+    """Extract the SQL from an LLM response that may wrap it in a markdown code
+    fence or precede it with a prose line ("Here is the query: SELECT ...").
+
+    Only the minimal, safe extractions are performed:
+      * a fenced ```sql ... ``` (or bare ``` ... ```) block anywhere in the reply;
+      * otherwise, if a leading prose preamble sits before the first SELECT/WITH,
+        drop the preamble so the query still parses instead of being rejected as
+        unsafe and silently falling back to document search.
+
+    Without this, a well-formed query decorated with a stray sentence would fail
+    _is_safe_read_query and make a genuine SQL question answer document-only.
+    """
+    m = _FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    km = _SQL_START_RE.search(text)
+    if km and km.start() > 0:
+        return text[km.start():].strip()
+    return text.strip()
+
+
+def _is_all_null(rows: list[dict[str, Any]]) -> bool:
+    """True for a single row whose every column is NULL — the shape an aggregate
+    (SUM/MAX/MIN/AVG) returns when its WHERE clause matches nothing.
+
+    Multi-row results, or any row with at least one non-NULL value, are real
+    data and return False. COUNT(*) over no matches yields 0 (not NULL), so this
+    never collapses a legitimate "0 of X" answer.
+    """
+    return len(rows) == 1 and all(v is None for v in rows[0].values())
+
+
 def _extract_table_names(sql: str, dialect: str) -> list[str]:
     try:
         ast = sqlglot.parse_one(sql, read=dialect)
         return sorted({t.name for t in ast.find_all(exp.Table)})
     except Exception:
         return []
+
+
+@functools.lru_cache(maxsize=1)
+def _load_relationships() -> str:
+    """Load the inferred join map from disk, cached for process lifetime.
+
+    Databases without explicit FOREIGN KEY constraints give the SQL-generation
+    model no way to know how tables join, so it guesses — producing errors like
+    `Unknown column 'p.product_color_id' in 'on clause'` (the column lives on the
+    line-item tables and joins to product_color, not on product). Feeding an
+    explicit join map into the prompt removes that guesswork.
+
+    Formatted one line per source table for compactness:
+        - sales_order_products: sales_order_id->sales_order.id, product_id->product.id, ...
+
+    Returns "" when no relationships file is present (e.g. a deployment whose DB
+    has real FK constraints and needs no inferred map), so injection is opt-in.
+    """
+    path = Path(__file__).resolve().parents[2] / "config" / "sql_relationships.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        rels = data.get("relationships") if isinstance(data, dict) else data
+        if not rels:
+            return ""
+        grouped: dict[str, list[str]] = {}
+        for r in rels:
+            frm, fcol = r.get("from_table"), r.get("from_column")
+            to, tcol = r.get("to_table"), r.get("to_column")
+            if not all((frm, fcol, to, tcol)):
+                continue
+            grouped.setdefault(frm, []).append(f"{fcol}->{to}.{tcol}")
+        return "\n".join(
+            f"- {table}: {', '.join(edges)}" for table, edges in sorted(grouped.items())
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return ""
 
 
 @functools.lru_cache(maxsize=1)
@@ -114,6 +189,7 @@ class SQLRetriever:
         self._schema_cache: str | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
+        self._relationships = _load_relationships()
         # Caches the full retrieve() result, keyed on the normalized question
         # text. Without DDL access on the client's DB to add indexes, a slow
         # aggregation query (e.g. a multi-table JOIN view) would otherwise
@@ -157,6 +233,19 @@ class SQLRetriever:
 
                 # Execute
                 rows = await run_readonly_query(sql)
+
+                # An aggregate over zero matching rows (SUM/MAX/MIN/AVG ... WHERE
+                # <no match>) does NOT come back empty — SQL returns a single row
+                # whose aggregate columns are all NULL (e.g. [{"total": None}]).
+                # Treating that as a real result surfaces a meaningless
+                # "total: None" answer AND suppresses the document fallback, so
+                # it reads as a confident (wrong) "no data" instead of deferring
+                # to the documents. Collapse it to the empty case so it takes the
+                # same retry-then-fallback path as a genuine 0-row result.
+                # COUNT(*) returns 0 (not NULL) for no matches, so a legitimate
+                # "there are 0 of X" answer is preserved and never collapsed.
+                if _is_all_null(rows):
+                    rows = []
 
                 # An empty result is ambiguous: it can mean the query is correct
                 # and the true answer is "none", or that a wrong JOIN/WHERE
@@ -275,6 +364,13 @@ Return ONLY the raw SQL query, no markdown formatting, no explanations, no backt
 Schema:
 {schema}
 """
+        if self._relationships:
+            system_prompt += (
+                "\n\nTable relationships (this database has NO foreign-key "
+                "constraints — use ONLY these join paths, and never join on or "
+                "select a column that a table's schema above does not list):\n"
+                f"{self._relationships}\n"
+            )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
         if self._glossary:
@@ -301,18 +397,22 @@ Schema:
                 max_tokens=512
             )
             
-            # Clean up markdown formatting if the LLM ignored instructions
-            sql = response.strip()
-            if sql.upper() == "NO_SQL":
+            raw = (response or "").strip()
+
+            # Abstention: the model may decorate the sentinel ("NO_SQL.",
+            # "NO_SQL - the schema has no ...", or fenced). Any reply whose first
+            # token is NO_SQL is an abstain, not a query to run.
+            if _ABSTAIN_RE.match(raw):
                 return ""
-            if sql.startswith("```sql"):
-                sql = sql[6:]
-            if sql.startswith("```"):
-                sql = sql[3:]
-            if sql.endswith("```"):
-                sql = sql[:-3]
-                
-            return sql.strip()
+
+            # Strip code fences / prose preamble so a well-formed query isn't
+            # discarded (and turned into a spurious document-only answer) just
+            # because the model wrapped or introduced it.
+            sql = _unwrap_sql(raw)
+            if not sql or _ABSTAIN_RE.match(sql):
+                return ""
+
+            return sql
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
             return ""
