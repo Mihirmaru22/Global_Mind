@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 
 _MIN_RELEVANCE_SCORE = 0.15
 
+# Shown when the live-database path found nothing NOT because the data is
+# missing, but because the LLM providers needed to generate the SQL were all
+# unreachable (rate-limited / dead models). Without this the user would see the
+# misleading "not in my documents", implying their data doesn't have the answer.
+_SQL_UNAVAILABLE_MSG = (
+    "I couldn't answer this from your live database right now: the AI models "
+    "needed to build the query are all unavailable at the moment (rate-limited "
+    "or unreachable). Your data may well contain the answer — please try again "
+    "shortly."
+)
+
 
 def _pin_sql_result_chunks(
     chunks: list[RetrievedChunk],
@@ -138,12 +149,20 @@ class QueryPipeline:
         logger.info("Retrieved %d vector chunks", len(vector_chunks))
 
         sql_chunks = await sql_task
+        sql_infra_error = self._sql_retriever.last_infra_error
         if sql_chunks:
             logger.info("SQL query succeeded and returned rows.")
         else:
             logger.info("SQL query returned no results or failed.")
 
         if not vector_chunks and not sql_chunks:
+            if sql_infra_error:
+                return QueryResult(
+                    query=question,
+                    answer=_SQL_UNAVAILABLE_MSG,
+                    model_used="none",
+                    reasoning_task="sql_unavailable",
+                )
             fallback_msg = "No relevant documents found. Please upload documents first."
 
             return QueryResult(
@@ -169,6 +188,17 @@ class QueryPipeline:
         reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
         logger.info("Final context: %d chunks", len(reranked))
+
+        # Everything the documents returned was filtered out as irrelevant, and
+        # the SQL path went silent only because its models were unreachable — so
+        # say that, instead of letting generation report "not in my documents".
+        if not reranked and sql_infra_error:
+            return QueryResult(
+                query=question,
+                answer=_SQL_UNAVAILABLE_MSG,
+                model_used="none",
+                reasoning_task="sql_unavailable",
+            )
 
         # Stage 14 Ã¢â¬â Generation (the user's original question + conversation,
         # but only when the question actually depends on it)
@@ -265,6 +295,7 @@ class QueryPipeline:
         yield _think("Searched the documents", doc_detail)
 
         sql_chunks = await sql_task
+        sql_infra_error = self._sql_retriever.last_infra_error
         if sql_chunks:
             # Surface the actual generated SQL, not a canned phrase Ã¢â¬â every
             # question produces a different query.
@@ -275,6 +306,16 @@ class QueryPipeline:
             yield _think("Queried the live database", "no matching rows Ã¢â¬â checking documents instead")
 
         if not vector_chunks and not sql_chunks:
+            if sql_infra_error:
+                yield _SQL_UNAVAILABLE_MSG
+                yield QueryResult(
+                    query=question,
+                    answer=_SQL_UNAVAILABLE_MSG,
+                    model_used="none",
+                    reasoning_task="sql_unavailable",
+                    thinking=thinking,
+                )
+                return
             fallback_msg = "No relevant documents found. Please upload documents first."
 
             yield fallback_msg
@@ -295,6 +336,21 @@ class QueryPipeline:
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
         reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
+
+        # Documents all filtered as irrelevant and SQL went silent only because
+        # its models were unreachable — tell the user that, don't imply the data
+        # is missing.
+        if not reranked and sql_infra_error:
+            yield _SQL_UNAVAILABLE_MSG
+            yield QueryResult(
+                query=question,
+                answer=_SQL_UNAVAILABLE_MSG,
+                model_used="none",
+                reasoning_task="sql_unavailable",
+                thinking=thinking,
+            )
+            return
+
         top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
         rank_detail = f"kept the {len(reranked)} best Ã¢â¬â top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
         yield _think("Ranked the most relevant sources", rank_detail)

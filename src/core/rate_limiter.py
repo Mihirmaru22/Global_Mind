@@ -110,6 +110,18 @@ class RateLimiter:
             state.request_timestamps.append(time.time())
             state.daily_count += 1
 
+    def seconds_until_available(self, provider: str) -> float:
+        """Remaining 429 backoff for a provider (0.0 if not backed off).
+
+        Lets the router decide whether a rate-limited provider is worth waiting a
+        moment for and retrying, instead of hard-failing the whole chain the
+        instant every provider has been tried once.
+        """
+        state = self._states.get(provider)
+        if state is None:
+            return 0.0
+        return max(0.0, state.backoff_until - time.time())
+
     def report_429(self, provider: str, retry_after: float = 5.0) -> None:
         """Report a 429 response — sets a backoff period for this provider."""
         state = self._get_state(provider)

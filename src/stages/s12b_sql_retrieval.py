@@ -200,9 +200,17 @@ class SQLRetriever:
         # or restarts) and keyed on exact question text, not semantic
         # similarity Ã¢â¬â differently-worded questions still each pay full cost.
         self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
+        # Set when a run returned no rows because the LLM providers needed to
+        # GENERATE the SQL were all unreachable (rate-limited / dead models) —
+        # NOT because the question had no DB answer. Lets the pipeline tell the
+        # user "the model was unavailable" instead of the misleading "not in my
+        # documents". One SQLRetriever exists per request (QueryPipeline is
+        # per-request), so this is not shared across concurrent queries.
+        self.last_infra_error: str | None = None
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
+        self.last_infra_error = None
         cache_key = query.strip().lower()
         cached = self._result_cache.get(cache_key)
         if cached is not None:
@@ -212,7 +220,11 @@ class SQLRetriever:
                 return cached_chunks
 
         result = await self._retrieve_uncached(query)
-        self._result_cache[cache_key] = (time.monotonic(), result)
+        # Never cache an empty result that was caused by a provider outage — the
+        # next attempt (once a model is reachable again) must be free to retry
+        # instead of being pinned to this transient failure for the cache TTL.
+        if self.last_infra_error is None:
+            self._result_cache[cache_key] = (time.monotonic(), result)
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
@@ -415,6 +427,13 @@ Schema:
             return sql
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
+            # Distinguish an infrastructure outage (every provider for the
+            # 'reasoning' task was unreachable) from an ordinary generation
+            # failure. The former means the DB was never actually consulted, so
+            # the pipeline should say the model was unavailable rather than
+            # implying the data doesn't exist.
+            if "All providers exhausted" in str(e):
+                self.last_infra_error = str(e)
             return ""
 
     # Functions that read/write files or execute code. Each is still a "SELECT"
