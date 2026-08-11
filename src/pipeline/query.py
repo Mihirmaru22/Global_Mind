@@ -344,10 +344,28 @@ _LISTING_KEYWORDS = [
 ]
 
 
+# A document-listing question is about the assistant's OWN ingested corpus. A
+# question scoped to a business entity — a customer's files, invoices per
+# product — is a live-data question even when it contains a listing phrase like
+# "how many files". Without this guard, "how many files did customer Acme
+# upload" substring-matches "how many files" and gets hijacked to the registry
+# instead of the SQL path (a "switch to doc" the user never asked for).
+_LISTING_ENTITY_SCOPE = re.compile(
+    r"\b(customer|client|vendor|supplier|employee|order|invoice|product|"
+    r"account|shipment|payment|transaction)s?\b",
+    re.IGNORECASE,
+)
+
+
 def _is_document_listing_query(question: str) -> bool:
-    """Return True if the question is asking to list ingested documents."""
+    """Return True if the question is asking to list the assistant's ingested documents."""
     q = question.lower().strip()
-    return any(kw in q for kw in _LISTING_KEYWORDS)
+    if not any(kw in q for kw in _LISTING_KEYWORDS):
+        return False
+    # Scoped to business data → it's a DB question, not a corpus listing.
+    if _LISTING_ENTITY_SCOPE.search(q):
+        return False
+    return True
 
 
 def _build_document_list_answer() -> str:
@@ -475,47 +493,22 @@ async def _contextualize_query(
 
 
 # ---------------------------------------------------------------------------
-# SQL Intent Helpers
+# SQL vs. document routing
 # ---------------------------------------------------------------------------
-
-_SQL_KEYWORDS = [
-    "total", "average", "sum", "count", "how many", "maximum", "minimum",
-    "top", "bottom", "last quarter", "revenue", "sales", "profit",
-]
-
-async def _classify_sql_intent(query: str, router: ProviderRouter) -> str:
-    """Classify if a query needs VECTOR, SQL, or BOTH.
-    
-    Uses a fast regex/keyword pre-filter. If unsure, falls back to the `classification` LLM.
-    """
-    q = query.lower()
-    
-    # 1. Heuristic Pre-filter: if it explicitly asks for metrics, default to SQL
-    if any(kw in q for kw in _SQL_KEYWORDS):
-        return "SQL"
-
-    # 2. LLM Fallback for ambiguous cases
-    system_prompt = """You are a query router.
-Classify the user's question into one of three categories:
-VECTOR: The user is asking about concepts, policies, explanations, or general text.
-SQL: The user is asking for exact numerical aggregations, counts, totals, or database metrics.
-BOTH: The question strictly requires BOTH conceptual text and exact data (e.g., "Based on the policy, what is our total revenue?"). Only use BOTH if you absolutely need document context in addition to numbers.
-
-Reply with EXACTLY one word: VECTOR, SQL, or BOTH."""
-
-    try:
-        response = await router.chat(
-            task="classification",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query},
-            ],
-            max_tokens=10
-        )
-        result = response.strip().upper()
-        if result in ["VECTOR", "SQL", "BOTH"]:
-            return result
-    except Exception as e:
-        logger.warning(f"Intent classification LLM failed, defaulting to VECTOR: {e}")
-        
-    return "VECTOR"
+#
+# There is deliberately NO upfront SQL-vs-document intent classifier here.
+#
+# An earlier version routed each question to VECTOR / SQL / BOTH before either
+# retrieval path had run, using a keyword pre-filter plus an LLM fallback. That
+# was removed (see the "fix intent routing" change) because a pre-guessed intent
+# is non-deterministic and misroutes: regenerating the same question could flip
+# between a correct document answer and a wrong SQL-only one, and a metric word
+# like "total" in a document question would starve it of document context.
+#
+# QueryPipeline.query()/query_stream() now run BOTH retrieval paths
+# unconditionally and concurrently, and let each abstain on its own signal:
+#   * SQL abstains via NO_SQL or an empty/no-data result, judged against the
+#     REAL schema — far more reliable than guessing before the query runs.
+#   * Vector results are dropped below the relevance floor (_MIN_RELEVANCE_SCORE).
+# The generator then blends whatever survived (see Generator.generate). This is
+# both deterministic and strictly more accurate than the old pre-routing.

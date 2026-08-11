@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,44 @@ def format_fk_rows(rows: list[dict]) -> str:
 class UnsafeQueryError(Exception):
     """Raised when sqlglot rejects a query (e.g. not a SELECT). Never retried."""
     pass
+
+
+_ABSTAIN_RE = re.compile(r"^\W*no_sql\b", re.IGNORECASE)
+_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_SQL_START_RE = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
+
+
+def _unwrap_sql(text: str) -> str:
+    """Extract the SQL from an LLM response that may wrap it in a markdown code
+    fence or precede it with a prose line ("Here is the query: SELECT ...").
+
+    Only the minimal, safe extractions are performed:
+      * a fenced ```sql ... ``` (or bare ``` ... ```) block anywhere in the reply;
+      * otherwise, if a leading prose preamble sits before the first SELECT/WITH,
+        drop the preamble so the query still parses instead of being rejected as
+        unsafe and silently falling back to document search.
+
+    Without this, a well-formed query decorated with a stray sentence would fail
+    _is_safe_read_query and make a genuine SQL question answer document-only.
+    """
+    m = _FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    km = _SQL_START_RE.search(text)
+    if km and km.start() > 0:
+        return text[km.start():].strip()
+    return text.strip()
+
+
+def _is_all_null(rows: list[dict[str, Any]]) -> bool:
+    """True for a single row whose every column is NULL — the shape an aggregate
+    (SUM/MAX/MIN/AVG) returns when its WHERE clause matches nothing.
+
+    Multi-row results, or any row with at least one non-NULL value, are real
+    data and return False. COUNT(*) over no matches yields 0 (not NULL), so this
+    never collapses a legitimate "0 of X" answer.
+    """
+    return len(rows) == 1 and all(v is None for v in rows[0].values())
 
 
 def _extract_table_names(sql: str, dialect: str) -> list[str]:
@@ -157,6 +196,19 @@ class SQLRetriever:
 
                 # Execute
                 rows = await run_readonly_query(sql)
+
+                # An aggregate over zero matching rows (SUM/MAX/MIN/AVG ... WHERE
+                # <no match>) does NOT come back empty — SQL returns a single row
+                # whose aggregate columns are all NULL (e.g. [{"total": None}]).
+                # Treating that as a real result surfaces a meaningless
+                # "total: None" answer AND suppresses the document fallback, so
+                # it reads as a confident (wrong) "no data" instead of deferring
+                # to the documents. Collapse it to the empty case so it takes the
+                # same retry-then-fallback path as a genuine 0-row result.
+                # COUNT(*) returns 0 (not NULL) for no matches, so a legitimate
+                # "there are 0 of X" answer is preserved and never collapsed.
+                if _is_all_null(rows):
+                    rows = []
 
                 # An empty result is ambiguous: it can mean the query is correct
                 # and the true answer is "none", or that a wrong JOIN/WHERE
@@ -301,18 +353,22 @@ Schema:
                 max_tokens=512
             )
             
-            # Clean up markdown formatting if the LLM ignored instructions
-            sql = response.strip()
-            if sql.upper() == "NO_SQL":
+            raw = (response or "").strip()
+
+            # Abstention: the model may decorate the sentinel ("NO_SQL.",
+            # "NO_SQL - the schema has no ...", or fenced). Any reply whose first
+            # token is NO_SQL is an abstain, not a query to run.
+            if _ABSTAIN_RE.match(raw):
                 return ""
-            if sql.startswith("```sql"):
-                sql = sql[6:]
-            if sql.startswith("```"):
-                sql = sql[3:]
-            if sql.endswith("```"):
-                sql = sql[:-3]
-                
-            return sql.strip()
+
+            # Strip code fences / prose preamble so a well-formed query isn't
+            # discarded (and turned into a spurious document-only answer) just
+            # because the model wrapped or introduced it.
+            sql = _unwrap_sql(raw)
+            if not sql or _ABSTAIN_RE.match(sql):
+                return ""
+
+            return sql
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
             return ""
