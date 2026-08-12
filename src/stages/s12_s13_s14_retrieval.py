@@ -222,6 +222,7 @@ class Generator:
         task: str | None = None,
         history: list[dict] | None = None,
         context_limit: int | None = None,
+        source_mode: str = "doc_only",
     ) -> QueryResult:
         """Generate an answer from retrieved chunks.
 
@@ -265,7 +266,7 @@ class Generator:
         # Build the prompt. The fixed answer rules live in the system prompt
         # (cacheable prefix), so the user message carries only the volatile
         # context + question.
-        system_prompt = _build_system_prompt(task)
+        system_prompt = _build_system_prompt(task, source_mode)
         user_prompt = f"""Context (retrieved document chunks):
 ---
 {context}
@@ -313,6 +314,7 @@ Question: {query}"""
         task: str | None = None,
         history: list[dict] | None = None,
         context_limit: int | None = None,
+        source_mode: str = "doc_only",
     ):
         """Stage 14: Answer generation via LLM stream.
 
@@ -356,7 +358,7 @@ Question: {query}"""
             )
             return
         context = _build_context(context_chunks)
-        system_prompt = _build_system_prompt(task)
+        system_prompt = _build_system_prompt(task, source_mode)
         user_prompt = f"""Context (retrieved document chunks):
 ---
 {context}
@@ -661,7 +663,30 @@ _ANSWER_RULES = (
 )
 
 
-def _build_system_prompt(task: str) -> str:
+def _source_mode(chunks: list[RetrievedChunk]) -> str:
+    has_sql = any(c.chunk.chunk_type == ChunkType.SQL_RESULT for c in chunks)
+    has_doc = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in chunks)
+    if has_sql and has_doc: return "both"
+    if has_sql: return "sql_only"
+    return "doc_only"
+
+_MODE_INSTRUCTIONS = {
+    "sql_only": (
+        "The context contains ONLY live database results. These numbers are "
+        "authoritative. Present them clearly with a brief natural-language "
+        "introduction. Do not speculate beyond what the data shows."
+    ),
+    "both": (
+        "The context contains BOTH live database results AND document passages. "
+        "For numerical/factual claims, prefer the database results (computed from "
+        "live data). For policies, explanations, or qualitative context, use the "
+        "documents. Cite both sources. If they contradict, note the discrepancy."
+    ),
+    "doc_only": "",  # existing prompt works as-is
+}
+
+
+def _build_system_prompt(task: str, source_mode: str = "doc_only") -> str:
     """Build a task-appropriate system prompt.
 
     Everything here is stable per task (no query-specific content), so it acts
@@ -676,7 +701,8 @@ def _build_system_prompt(task: str) -> str:
         "summarization": base + "Provide comprehensive summaries. Cover all key points from the context. Cite sources with their bracketed markers.",
     }
 
-    return prompts.get(task, prompts["general_qa"]) + _ANSWER_RULES + _VISUALIZATION_GUIDANCE
+    mode_instruction = " " + _MODE_INSTRUCTIONS[source_mode] if _MODE_INSTRUCTIONS.get(source_mode) else ""
+    return prompts.get(task, prompts["general_qa"]) + mode_instruction + _ANSWER_RULES + _VISUALIZATION_GUIDANCE
 
 
 def _history_messages(history: list[dict] | None, *, max_turns: int = 6, max_chars: int = 1500) -> list[dict]:

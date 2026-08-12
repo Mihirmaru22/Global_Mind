@@ -123,9 +123,9 @@ class UIStateManager:
         self.save_all_messages(all_messages)
 
     def set_message_feedback(
-        self, chat_id: str, message_id: str, feedback: str | None
+        self, chat_id: str, message_id: str, feedback: str | None, comment: str | None = None
     ) -> bool:
-        """Persist thumbs up/down (or clear it) on a stored message.
+        """Persist thumbs up/down (or clear it) and comment on a stored message.
 
         Returns True if the message was found and updated. ``feedback`` of None
         removes any existing rating (toggle-off).
@@ -135,8 +135,11 @@ class UIStateManager:
             if message.get("id") == message_id:
                 if feedback is None:
                     message.pop("feedback", None)
+                    message.pop("feedbackComment", None)
                 else:
                     message["feedback"] = feedback
+                    if comment:
+                        message["feedbackComment"] = comment
                 self.save_all_messages(all_messages)
                 return True
         return False

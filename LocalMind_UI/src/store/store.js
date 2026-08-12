@@ -5,6 +5,7 @@ import {
   deleteChat as deleteChatApi,
   generateChatTitle,
   setMessageFeedbackApi,
+  submitFeedbackComment,
   getChats,
   getDocuments,
   getMessages,
@@ -618,6 +619,24 @@ export const useAppStore = create((set, get) => ({
     // The UI already updated optimistically above.
     setMessageFeedbackApi(chatId, messageId, nextFeedback).catch((error) => {
       console.warn('Failed to persist message feedback:', error)
+    })
+  },
+
+  submitFeedbackComment: (chatId, messageId, comment) => {
+    if (!chatId || !messageId) return
+
+    set((state) => ({
+      messagesByChatId: {
+        ...state.messagesByChatId,
+        [chatId]: (state.messagesByChatId[chatId] || []).map((message) => {
+          if (message.id !== messageId) return message
+          return { ...message, feedbackComment: comment }
+        }),
+      },
+    }))
+
+    submitFeedbackComment(chatId, messageId, comment).catch((error) => {
+      console.warn('Failed to persist message feedback comment:', error)
     })
   },
 

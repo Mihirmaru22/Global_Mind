@@ -19,7 +19,9 @@ from sqlglot import exp
 
 from src.core.config import settings
 from src.core.db_client import run_readonly_query
+from src.core.pipeline_metrics import log_event as _log_pipeline_event
 from src.core.provider_client import ProviderRouter
+from src.core.sql_column_registry import ColumnRegistry
 from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
 
@@ -181,14 +183,39 @@ def _load_glossary() -> str:
         return ""
 
 
+@functools.lru_cache(maxsize=1)
+def _load_column_glossary() -> str:
+    """Load column-mapped glossary from disk, cached for process lifetime."""
+    path = Path(__file__).resolve().parents[2] / "config" / "sql_column_glossary.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not data:
+            return ""
+
+        lines: list[str] = []
+        for term, details in data.items():
+            maps_to = details.get("maps_to")
+            if not maps_to:
+                continue
+            note = details.get("note", "")
+            note_str = f" ({note})" if note else ""
+            lines.append(f'- "{term}" → {maps_to}{note_str}')
+
+        return "\n".join(lines)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        return ""
+
+
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
 
     def __init__(self, router: ProviderRouter) -> None:
         self._router = router
         self._schema_cache: str | None = None
+        self._column_registry: ColumnRegistry | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
+        self._column_glossary = _load_column_glossary()
         self._relationships = _load_relationships()
         # Caches the full retrieve() result, keyed on the normalized question
         # text. Without DDL access on the client's DB to add indexes, a slow
@@ -239,8 +266,40 @@ class SQLRetriever:
                 return []
 
             try:
-                # Validate safety (AST parsing)
+                # --- Column validation (catches hallucinated columns before DB) ---
+                if self._column_registry:
+                    validation = self._column_registry.validate_columns(sql)
+                    if not validation.is_valid:
+                        logger.warning("Column validation failed: %s", validation.errors)
+                        _log_pipeline_event(
+                            "column_hallucination_caught",
+                            {"sql": sql, "hallucinated": validation.hallucinated_columns,
+                             "errors": validation.errors},
+                            query=query,
+                        )
+                        last_error = "Column validation failed:\n" + "\n".join(validation.errors)
+                        continue  # retry with feedback
+
+                    # Alias validation (first attempt only — don't loop forever)
+                    if attempt == 0:
+                        alias_warnings = self._column_registry.validate_aliases(sql, query)
+                        if alias_warnings:
+                            logger.warning("Alias validation: %s", alias_warnings)
+                            _log_pipeline_event(
+                                "alias_hallucination_caught",
+                                {"sql": sql, "warnings": alias_warnings},
+                                query=query,
+                            )
+                            last_error = "Alias quality issue:\n" + "\n".join(alias_warnings)
+                            continue
+
+                # --- Safety validation (AST parsing) ---
                 if not self._is_safe_read_query(sql):
+                    _log_pipeline_event(
+                        "unsafe_sql_blocked",
+                        {"sql": sql},
+                        query=query,
+                    )
                     raise UnsafeQueryError(f"Unsafe or unparseable SQL generated: {sql}")
 
                 # Execute
@@ -275,16 +334,16 @@ class SQLRetriever:
 
 
                 # An empty result on the FINAL attempt is treated as "the SQL
-                # path found nothing" and falls through to document search Ã¢â¬â
+                # path found nothing" and falls through to document search —
                 # not returned as an answer chunk. A wrong JOIN/WHERE also
                 # produces 0 rows (MySQL doesn't error on that), so trusting an
                 # empty result as authoritative risks a confident "no data"
                 # answer overriding a correct document-based one. Returning []
                 # here mirrors the UnsafeQueryError and exhausted-retry paths
-                # below Ã¢â¬â SQL only ever contributes a chunk when it found rows.
+                # below — SQL only ever contributes a chunk when it found rows.
                 if not rows:
                     logger.info(
-                        "SQL query returned 0 rows after retry Ã¢â¬â falling back "
+                        "SQL query returned 0 rows after retry — falling back "
                         "to document search."
                     )
                     return []
@@ -304,6 +363,12 @@ class SQLRetriever:
                     source_file=label,
                 )
 
+                _log_pipeline_event(
+                    "sql_success",
+                    {"sql": sql, "row_count": len(rows), "tables": tables,
+                     "attempt": attempt + 1},
+                    query=query,
+                )
                 return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
 
             except UnsafeQueryError as e:
@@ -312,10 +377,16 @@ class SQLRetriever:
                 return []
             except Exception as e:
                 logger.error(f"SQL Execution failed on attempt {attempt + 1}: {e}")
+                _log_pipeline_event(
+                    "execution_error_caught",
+                    {"sql": sql, "error": str(e), "attempt": attempt + 1},
+                    query=query,
+                )
                 last_error = str(e)
                 
         # If we exhausted retries, fail cleanly
         logger.warning("SQL generation failed after retry loop. Returning empty results.")
+        _log_pipeline_event("retry_exhausted", {"last_error": last_error}, query=query)
         return []
 
     # Sent in full on EVERY SQL-generation call (both retry attempts), so an
@@ -352,6 +423,11 @@ class SQLRetriever:
                 schema = schema[: self._MAX_SCHEMA_CHARS] + "\n-- (schema truncated)"
 
             self._schema_cache = schema
+            # Build the column registry from the same schema text.
+            try:
+                self._column_registry = ColumnRegistry(schema, self._dialect.sqlglot_dialect)
+            except Exception as reg_err:
+                logger.warning("Failed to build column registry: %s", reg_err)
             return self._schema_cache
         except Exception as e:
             logger.error(f"Failed to fetch schema: {e}")
@@ -385,7 +461,12 @@ Schema:
             )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
-        if self._glossary:
+        if self._column_glossary:
+            system_prompt += (
+                "\n\nColumn mapping (use these exact paths — do NOT invent columns):\n"
+                f"{self._column_glossary}"
+            )
+        elif self._glossary:
             system_prompt += (
                 "\n\nBusiness term glossary (user may use these informal terms):\n"
                 f"{self._glossary}"
