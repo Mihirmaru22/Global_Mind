@@ -23,6 +23,7 @@ import {
   uploadDocumentStream,
   replaceDocumentStream,
   deleteDocument as deleteDocumentApi,
+  syncSchema,
 } from '../services/api.js'
 
 // Pluralization helper for the inbox-scan popup ("1 file" vs "2 files").
@@ -434,10 +435,31 @@ export const useAppStore = create((set, get) => ({
           duration: Infinity,
         })
       }
-    } catch {
+    } catch (error) {
       toast.error('Inbox scan failed', {
         id: toastId,
-        description: 'Could not scan the inbox folder. Please try again later.',
+        description: error.message || 'The server could not scan the inbox folder.',
+        duration: Infinity,
+      })
+    }
+  },
+
+  // Sync the live database schema into Qdrant for Schema RAG.
+  runSchemaSync: async () => {
+    const toastId = toast.loading('Syncing database schema...')
+    try {
+      const result = await syncSchema()
+      const tables = result?.tables_synced || 0
+      
+      toast.success('Schema sync complete', {
+        id: toastId,
+        description: `Successfully embedded ${tables} table${plural(tables)} into the vector store.`,
+        duration: 5000,
+      })
+    } catch (error) {
+      toast.error('Schema sync failed', {
+        id: toastId,
+        description: error.response?.data?.detail || error.message || 'Could not sync schema.',
         duration: Infinity,
       })
     }

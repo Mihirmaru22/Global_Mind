@@ -257,3 +257,8 @@ export async function scanIngestFolder() {
   const response = await http.post('/ingest/folder')
   return response.data
 }
+
+export async function syncSchema() {
+  const response = await http.post('/settings/sync-schema')
+  return response.data
+}

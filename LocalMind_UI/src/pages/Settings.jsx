@@ -1,4 +1,4 @@
-import { Check, Server, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { Check, Server, SlidersHorizontal, Sparkles, Database } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '../store/store.js'
 
@@ -62,6 +62,7 @@ export default function Settings() {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const providers = useAppStore((state) => state.providers)
+  const runSchemaSync = useAppStore((state) => state.runSchemaSync)
 
   const current = settings || {
     endpoint: '/api',
@@ -208,6 +209,38 @@ export default function Settings() {
                 </button>
               )
             })}
+          </div>
+        </div>
+      </motion.section>
+
+      <motion.section
+        className="settings-panel"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.12 }}
+      >
+        <div className="settings-panel__heading">
+          <div className="settings-panel__title-wrap">
+            <Database size={16} />
+            <h3 className="settings-panel__title">Data Management</h3>
+          </div>
+          <span className="settings-panel__rule" />
+        </div>
+
+        <div className="setting-row">
+          <label>Database Schema Sync</label>
+          <p className="setting-help">
+            Fetches your live database tables, chunks them, and embeds them into the vector store.
+            Run this whenever you add, alter, or drop tables in your database so the AI knows about them.
+          </p>
+          <div style={{ marginTop: '1rem' }}>
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => runSchemaSync()}
+            >
+              Sync Database Schema
+            </button>
           </div>
         </div>
       </motion.section>

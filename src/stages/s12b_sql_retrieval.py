@@ -24,6 +24,8 @@ from src.core.provider_client import ProviderRouter
 from src.core.sql_column_registry import ColumnRegistry
 from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
+from src.stages.s10_embeddings import EmbeddingService
+from src.stages.s11_vector_store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
@@ -234,9 +236,16 @@ def _build_column_glossary_for_query(query: str) -> str:
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
 
-    def __init__(self, router: ProviderRouter) -> None:
+    def __init__(
+        self,
+        router: ProviderRouter,
+        vector_store: QdrantStore | None = None,
+        embedding_service: EmbeddingService | None = None,
+    ) -> None:
         self._router = router
-        self._schema_cache: str | None = None
+        self._vector_store = vector_store
+        self._embeddings = embedding_service
+        self._full_schema_cache: str | None = None
         self._column_registry: ColumnRegistry | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
@@ -279,7 +288,7 @@ class SQLRetriever:
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
-        schema = await self._get_schema()
+        schema = await self._get_schema(query)
         if not schema:
             return []
 
@@ -413,16 +422,10 @@ class SQLRetriever:
         _log_pipeline_event("retry_exhausted", {"last_error": last_error}, query=query)
         return []
 
-    # Sent in full on EVERY SQL-generation call (both retry attempts), so an
-    # uncapped schema on a wide/many-table database silently inflates every
-    # single query's input tokens, not just one answer. Cap it the same way
-    # the result-row table is capped.
-    _MAX_SCHEMA_CHARS = 12000
-
-    async def _get_schema(self) -> str:
-        """Fetch the DB schema (cached, capped)."""
-        if self._schema_cache:
-            return self._schema_cache
+    async def _fetch_full_schema(self) -> str:
+        """Fetch the full, un-truncated DB schema to initialize the ColumnRegistry."""
+        if self._full_schema_cache is not None:
+            return self._full_schema_cache
 
         try:
             rows = await run_readonly_query(self._dialect.schema_query, max_rows=20000)
@@ -436,26 +439,63 @@ class SQLRetriever:
                 fk_rows = []
 
             fk_text = format_fk_rows(fk_rows)
-            schema = schema + ("\n\n" + fk_text if fk_text else "")
+            full_schema = schema + ("\n\n" + fk_text if fk_text else "")
 
-            if len(schema) > self._MAX_SCHEMA_CHARS:
-                logger.warning(
-                    "Schema text (%d chars) exceeds cap Ã¢â¬â truncating to %d chars "
-                    "for the SQL-generation prompt.",
-                    len(schema), self._MAX_SCHEMA_CHARS,
-                )
-                schema = schema[: self._MAX_SCHEMA_CHARS] + "\n-- (schema truncated)"
-
-            self._schema_cache = schema
-            # Build the column registry from the same schema text.
+            self._full_schema_cache = full_schema
+            # Build the column registry from the complete schema text so it can
+            # validate any generated SQL without truncation blindness.
             try:
-                self._column_registry = ColumnRegistry(schema, self._dialect.sqlglot_dialect)
+                self._column_registry = ColumnRegistry(
+                    full_schema, self._dialect.sqlglot_dialect
+                )
             except Exception as reg_err:
                 logger.warning("Failed to build column registry: %s", reg_err)
-            return self._schema_cache
+
+            return full_schema
         except Exception as e:
-            logger.error(f"Failed to fetch schema: {e}")
+            logger.error("Failed to fetch full schema: %s", e)
             return ""
+
+    async def _get_schema(self, query: str) -> str:
+        """Fetch relevant DB schema chunks for the prompt using Schema RAG.
+        
+        If vector_store is missing or fails, falls back to the legacy truncation method.
+        """
+        # Ensure the full schema is cached and registry is built.
+        full_schema = await self._fetch_full_schema()
+
+        if not self._vector_store or not self._embeddings:
+            # Legacy fallback if RAG isn't wired up
+            if len(full_schema) > 12000:
+                return full_schema[:12000] + "\n-- (schema truncated)"
+            return full_schema
+
+        try:
+            dense_vec, sparse_vec = await self._embeddings.embed_query(query)
+            chunks = await self._vector_store.search_hybrid(
+                query_vector=dense_vec,
+                sparse_vector=sparse_vec,
+                query_text=query,
+                top_k=7,
+                filters={"chunk_type": ChunkType.SQL_SCHEMA.value},
+            )
+            
+            if not chunks:
+                logger.warning("Schema RAG returned 0 chunks. Falling back to truncated schema.")
+                if len(full_schema) > 12000:
+                    return full_schema[:12000] + "\n-- (schema truncated)"
+                return full_schema
+                
+            # Combine the retrieved CREATE TABLE statements
+            retrieved_schema = "\n\n".join(chunk.chunk.content for chunk in chunks)
+            return retrieved_schema
+            
+        except Exception as e:
+            logger.error("Schema RAG search failed: %s", e)
+            # Legacy fallback
+            if len(full_schema) > 12000:
+                return full_schema[:12000] + "\n-- (schema truncated)"
+            return full_schema
 
     async def _generate_sql(self, query: str, schema: str, last_error: str | None = None) -> str:
         """Prompt the reasoning LLM to generate SQL."""
