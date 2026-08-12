@@ -654,18 +654,13 @@ async def fetch_sqlite_foreign_keys() -> list[dict]:
 
     # This table is returned as the answer VERBATIM (see _extract_sql_table in
     # s12_s13_s14_retrieval.py, which bypasses the LLM and _build_context's
-    # token budget entirely). db_client.MAX_ROWS=500 only protects the DB
-    # round-trip, not what's reasonable to hand back as a single chat answer.
-    #
-    # Budgeted by estimated size, not a flat row count: a fixed row cap either
-    # wastes budget on narrow tables (3 columns could easily fit 300+ rows in
-    # the same space 50 wide rows use) or overflows it on wide ones. Sizing by
-    # actual content keeps as much real data as the budget allows instead of
-    # discarding rows a narrow table had room for.
-    _MAX_DISPLAY_CHARS = 6000  # ~2000 tokens at ~3 chars/token
+    # token budget entirely). db_client.MAX_ROWS=500 protects the DB round-trip.
+    # However, to prevent massive walls of text in the UI, we hard-cap the 
+    # display output to 10 rows per the user's preference.
+    _MAX_DISPLAY_ROWS = 10
 
     def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
-        """Format dictionary rows into a markdown table, budgeted by size."""
+        """Format dictionary rows into a markdown table, capped at 10 rows."""
         if not rows:
             return "No results."
 
@@ -674,16 +669,14 @@ async def fetch_sqlite_foreign_keys() -> list[dict]:
         separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
 
         table_rows = [f"SQL Query Executed: `{query}`\n", header_row, separator_row]
-        running_chars = sum(len(r) for r in table_rows)
 
         shown = 0
         for row in rows:
+            if shown >= self._MAX_DISPLAY_ROWS:
+                break
             values = [str(row[h]) for h in headers]
             line = "| " + " | ".join(values) + " |"
-            if running_chars + len(line) > self._MAX_DISPLAY_CHARS and shown > 0:
-                break
             table_rows.append(line)
-            running_chars += len(line)
             shown += 1
 
         result = "\n".join(table_rows)
