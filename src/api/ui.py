@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter
 from src.core.state import state_manager
+from src.core.pipeline_metrics import get_score_summary, log_event as _log_pipeline_event
 from src.models.schemas import ThinkingStep
 from src.pipeline.query import QueryPipeline
 
@@ -125,6 +126,8 @@ class SendMessage(BaseModel):
 class MessageFeedback(BaseModel):
     # "up", "down", or None to clear the rating.
     feedback: str | None = None
+    # free-text feedback from the user
+    comment: str | None = None
 
 class IngestionCard(BaseModel):
     """A persisted ingestion-progress card (the step-by-step upload trace)."""
@@ -335,17 +338,38 @@ async def persist_ingestion_card(chat_id: str, card: IngestionCard) -> dict[str,
 async def set_message_feedback(
     chat_id: str, message_id: str, body: MessageFeedback
 ) -> dict[str, Any]:
-    """Persist a thumbs up/down rating on an assistant message.
-
-    Stored in messages.json alongside the message, so it survives reloads and is
-    inspectable server-side. ``feedback: null`` clears the rating.
-    """
+    """Persist a thumbs up/down rating and/or comment on an assistant message."""
     if body.feedback not in (None, "up", "down"):
         raise HTTPException(status_code=400, detail="feedback must be 'up', 'down', or null")
 
-    updated = state_manager.set_message_feedback(chat_id, message_id, body.feedback)
+    updated = state_manager.set_message_feedback(chat_id, message_id, body.feedback, body.comment)
     if not updated:
         raise HTTPException(status_code=404, detail="Message not found")
+
+    if body.feedback or body.comment:
+        # Find the message to log its content
+        messages = state_manager.get_messages(chat_id)
+        msg = next((m for m in messages if m.get("id") == message_id), {})
+        
+        event_type = f"user_feedback_{body.feedback}" if body.feedback else "user_feedback_comment"
+        score_delta = 0
+        if body.feedback == "up":
+            score_delta = +1
+        elif body.feedback == "down":
+            score_delta = -1
+
+        _log_pipeline_event(
+            event_type,
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "comment": body.comment,
+                "answer_preview": (msg.get("content") or "")[:200],
+                "model_used": msg.get("modelUsed"),
+            },
+            score_delta=score_delta,
+        )
+
     return {"status": "ok", "feedback": body.feedback}
 
 
@@ -580,6 +604,12 @@ async def get_provider_usage() -> dict[str, Any]:
             }
         )
     return {"providers": providers}
+
+
+@router.get("/pipeline/metrics")
+async def get_pipeline_metrics() -> dict[str, Any]:
+    """Aggregated pipeline performance: total score, catches, blunders, breakdown."""
+    return get_score_summary()
 
 
 @router.get("/settings")

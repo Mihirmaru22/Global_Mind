@@ -14,6 +14,7 @@ via httpx. This avoids pulling in provider-specific SDKs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Protocol, runtime_checkable
@@ -79,6 +80,47 @@ def _rate_limit_retry_after(exc: Exception) -> float | None:
             except (TypeError, ValueError):
                 retry_after = 5.0
     return min(max(retry_after, 0.0), _MAX_BACKOFF_SECONDS)
+
+
+# How many times the whole fallback chain may be re-tried after waiting out a
+# short backoff, and the longest single wait worth taking. Keeps a transient
+# throttle (e.g. a 5s Gemini 429) from hard-failing the request, while bounding
+# the extra latency and never waiting on a long cooldown (e.g. a daily cap).
+_MAX_FALLBACK_PASSES = 2
+_MAX_RETRY_WAIT_SECONDS = 8.0
+
+# Substrings marking a PERMANENT provider failure — a dead/renamed model, an EOL
+# slug, or an auth problem. These never recover by waiting, so a provider that
+# fails this way is dropped for the rest of the call rather than retried.
+_PERMANENT_ERROR_MARKERS = (
+    "not found", "end of life", "gone", "does not exist", "invalid model",
+    "unauthorized", "forbidden", "no api key", "daily rate limit",
+)
+
+
+def _is_transient_failure(exc: Exception) -> bool:
+    """True if ``exc`` is a recoverable throttle (429 / short backoff), False if
+    it's permanent (404/410/400/401/403, EOL slug, daily cap, unknown error).
+
+    Only transient failures are worth waiting out and retrying; permanent ones
+    mean the provider should be dropped from this call entirely.
+    """
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    low = str(exc).lower()
+
+    if status in (404, 410, 400, 401, 403):
+        return False
+    if any(marker in low for marker in _PERMANENT_ERROR_MARKERS):
+        return False
+    if status == 429 or "rate limit" in low or "too many requests" in low \
+            or "backoff" in low or "rpm limit" in low:
+        return True
+    # Unknown errors (5xx, timeouts): don't retry within the same call — avoid
+    # amplifying an outage. They'll be retried naturally on the next request.
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -592,8 +634,11 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
     ]),
     "reasoning": TaskRoute([
         ProviderOption("groq", "llama-3.3-70b-versatile", 1),
-        ProviderOption("gemini", "gemini-2.5-flash", 2),
-        ProviderOption("nvidia_nim", "meta/llama3-70b-instruct", 3),
+        # qwen3.5 on NVIDIA NIM: a known-good slug on this key, promoted ahead of
+        # gemini. Replaces the dead `meta/llama3-70b-instruct` (NVIDIA 404) that
+        # left reasoning with no working fallback once groq hit its daily cap.
+        ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 2),
+        ProviderOption("gemini", "gemini-2.5-flash", 3),
         ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
     "extraction": TaskRoute([
@@ -811,41 +856,92 @@ class ProviderRouter:
         max_tokens: int = 4096,
         response_format: dict[str, str] | None = None,
     ) -> str:
-        """Route a chat completion through the provider fallback chain."""
-        route = self._get_route(task)
-        errors: list[str] = []
+        """Route a chat completion through the provider fallback chain.
 
-        for option in sorted(route.options, key=lambda o: o.priority):
+        A provider that fails *permanently* (dead/renamed model, auth, daily cap)
+        is dropped for the rest of this call. If a full pass fails but a provider
+        is only briefly throttled, the chain waits out the shortest backoff (up
+        to _MAX_RETRY_WAIT_SECONDS) and retries — so a transient 429 no longer
+        collapses the whole request.
+        """
+        options = sorted(self._get_route(task).options, key=lambda o: o.priority)
+        errors: dict[str, str] = {}
+        dead: set[str] = set()
+
+        for _pass in range(_MAX_FALLBACK_PASSES):
+            for option in options:
+                if option.provider_name in dead:
+                    continue
+                provider = self._providers.get(option.provider_name)
+                if provider is None or not provider.is_available:
+                    continue
+
+                try:
+                    call_usage = TokenUsage()
+                    result = await provider.chat(
+                        messages,
+                        model=option.model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                        usage=call_usage,
+                    )
+                    self.last_used = f"{option.provider_name}/{option.model}"
+                    self.usage.add_call(call_usage)
+                    logger.debug(
+                        "Task '%s' completed via %s/%s", task, option.provider_name, option.model
+                    )
+                    return result
+                except Exception as e:
+                    self._note_rate_limit(option.provider_name, e)
+                    errors[f"{option.provider_name}/{option.model}"] = str(e)
+                    if not _is_transient_failure(e):
+                        dead.add(option.provider_name)  # permanent — never retry
+                    logger.warning(
+                        "Provider failed for task '%s': %s/%s: %s",
+                        task, option.provider_name, option.model, e,
+                    )
+
+            wait = self._shortest_retry_wait(options, dead)
+            if wait is None or _pass == _MAX_FALLBACK_PASSES - 1:
+                break
+            logger.info(
+                "All providers failed for '%s'; waiting %.1fs for a throttled "
+                "provider to recover, then retrying", task, wait,
+            )
+            await asyncio.sleep(wait)
+
+        raise RuntimeError(
+            f"All providers exhausted for task '{task}'. Errors: "
+            f"{'; '.join(f'{k}: {v}' for k, v in errors.items())}"
+        )
+
+    def _shortest_retry_wait(
+        self, options: list["ProviderOption"], dead: set[str]
+    ) -> float | None:
+        """Shortest backoff worth waiting for among still-viable providers.
+
+        Returns None when nothing is recoverable soon (all providers permanently
+        dead, or their cooldowns exceed _MAX_RETRY_WAIT_SECONDS — e.g. a daily
+        cap), so the caller stops instead of stalling on a hopeless wait.
+        """
+        waits: list[float] = []
+        for option in options:
+            if option.provider_name in dead:
+                continue
             provider = self._providers.get(option.provider_name)
             if provider is None or not provider.is_available:
                 continue
-
-            try:
-                call_usage = TokenUsage()
-                result = await provider.chat(
-                    messages,
-                    model=option.model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
-                    usage=call_usage,
-                )
-                self.last_used = f"{option.provider_name}/{option.model}"
-                self.usage.add_call(call_usage)
-                logger.debug(
-                    "Task '%s' completed via %s/%s", task, option.provider_name, option.model
-                )
-                return result
-            except Exception as e:
-                self._note_rate_limit(option.provider_name, e)
-                error_msg = f"{option.provider_name}/{option.model}: {e}"
-                errors.append(error_msg)
-                logger.warning("Provider failed for task '%s': %s", task, error_msg)
-                continue
-
-        raise RuntimeError(
-            f"All providers exhausted for task '{task}'. Errors: {'; '.join(errors)}"
-        )
+            waits.append(self._rate_limiter.seconds_until_available(option.provider_name))
+        if not waits:
+            return None
+        shortest = min(waits)
+        # Only worth a retry if there's an actual cooldown to wait out that's
+        # within budget; a ~0 wait means the provider just failed and would only
+        # fail again immediately.
+        if shortest <= 0.05 or shortest > _MAX_RETRY_WAIT_SECONDS:
+            return None
+        return shortest + 0.1
 
     def _note_rate_limit(self, provider_name: str, exc: Exception) -> None:
         """Record a provider cooldown when a call failed with HTTP 429.
@@ -868,54 +964,72 @@ class ProviderRouter:
         temperature: float = 0.0,
         max_tokens: int = 4096,
     ) -> AsyncGenerator[str, None]:
-        """Route a chat completion stream through the provider fallback chain."""
-        route = self._get_route(task)
-        errors: list[str] = []
+        """Route a chat completion stream through the provider fallback chain.
 
-        for option in sorted(route.options, key=lambda o: o.priority):
-            provider = self._providers.get(option.provider_name)
-            if provider is None or not provider.is_available:
-                continue
+        Same permanent-vs-transient handling and bounded backoff-retry as
+        ``chat``. A provider that has already emitted output can't be retried
+        (that would duplicate the answer), so it fails hard as before.
+        """
+        options = sorted(self._get_route(task).options, key=lambda o: o.priority)
+        errors: dict[str, str] = {}
+        dead: set[str] = set()
 
-            emitted = False
-            try:
-                # We yield from the provider's generator
-                call_usage = TokenUsage()
-                async for chunk in provider.chat_stream(
-                    messages,
-                    model=option.model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    usage=call_usage,
-                ):
-                    emitted = True
-                    yield chunk
+        for _pass in range(_MAX_FALLBACK_PASSES):
+            for option in options:
+                if option.provider_name in dead:
+                    continue
+                provider = self._providers.get(option.provider_name)
+                if provider is None or not provider.is_available:
+                    continue
 
-                self.last_used = f"{option.provider_name}/{option.model}"
-                self.usage.add_call(call_usage)
-                logger.debug(
-                    "Task stream '%s' completed via %s/%s", task, option.provider_name, option.model
-                )
-                return
-            except Exception as e:
-                self._note_rate_limit(option.provider_name, e)
-                error_msg = f"{option.provider_name}/{option.model}: {e}"
-                errors.append(error_msg)
-                logger.warning("Provider stream failed for task '%s': %s", task, error_msg)
-                # Once we've streamed partial text to the caller, falling back to
-                # another provider would append a second, duplicate answer on top
-                # of the first — garbled output. Fail hard instead; only fall
-                # back when nothing has been emitted yet.
-                if emitted:
-                    logger.error(
-                        "Stream for task '%s' failed after emitting output — not falling back to avoid duplication",
-                        task,
+                emitted = False
+                try:
+                    call_usage = TokenUsage()
+                    async for chunk in provider.chat_stream(
+                        messages,
+                        model=option.model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        usage=call_usage,
+                    ):
+                        emitted = True
+                        yield chunk
+
+                    self.last_used = f"{option.provider_name}/{option.model}"
+                    self.usage.add_call(call_usage)
+                    logger.debug(
+                        "Task stream '%s' completed via %s/%s", task, option.provider_name, option.model
                     )
-                    raise
-                continue
+                    return
+                except Exception as e:
+                    self._note_rate_limit(option.provider_name, e)
+                    errors[f"{option.provider_name}/{option.model}"] = str(e)
+                    if not _is_transient_failure(e):
+                        dead.add(option.provider_name)
+                    logger.warning(
+                        "Provider stream failed for task '%s': %s/%s: %s",
+                        task, option.provider_name, option.model, e,
+                    )
+                    # Once partial text has reached the caller, falling back would
+                    # append a second, duplicate answer — fail hard instead.
+                    if emitted:
+                        logger.error(
+                            "Stream for task '%s' failed after emitting output — "
+                            "not falling back to avoid duplication", task,
+                        )
+                        raise
+
+            wait = self._shortest_retry_wait(options, dead)
+            if wait is None or _pass == _MAX_FALLBACK_PASSES - 1:
+                break
+            logger.info(
+                "All providers failed for stream '%s'; waiting %.1fs then retrying", task, wait,
+            )
+            await asyncio.sleep(wait)
 
         raise RuntimeError(
-            f"All providers exhausted for task '{task}'. Errors: {'; '.join(errors)}"
+            f"All providers exhausted for task '{task}'. Errors: "
+            f"{'; '.join(f'{k}: {v}' for k, v in errors.items())}"
         )
 
     async def vision(

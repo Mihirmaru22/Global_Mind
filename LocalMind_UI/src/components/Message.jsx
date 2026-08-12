@@ -140,6 +140,11 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   const [copied, setCopied] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(message.content || '')
+  
+  const submitFeedbackComment = useAppStore((state) => state.submitFeedbackComment)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedbackText, setFeedbackText] = useState('')
+  
   const editRef = useRef(null)
   const copyTimerRef = useRef(null)
   const typedContent = useTypewriterText(
@@ -198,6 +203,20 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
     } catch {
       // Clipboard access can fail outside a secure context.
     }
+  }
+
+  const handleFeedback = (value) => {
+    setMessageFeedback(chatId, message.id, value)
+    setFeedbackOpen(true)
+    setFeedbackText('')
+  }
+
+  const handleFeedbackSubmit = () => {
+    if (feedbackText.trim()) {
+      submitFeedbackComment(chatId, message.id, feedbackText.trim())
+    }
+    setFeedbackOpen(false)
+    setFeedbackText('')
   }
 
   const handleSaveEdit = async () => {
@@ -305,7 +324,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
             <button
               type="button"
               className={clsx('message__action', feedback === 'up' && 'message__action--active')}
-              onClick={() => setMessageFeedback(chatId, message.id, 'up')}
+              onClick={() => handleFeedback('up')}
               aria-label="Thumbs up"
             >
               <ThumbsUp size={14} />
@@ -313,7 +332,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
             <button
               type="button"
               className={clsx('message__action', feedback === 'down' && 'message__action--active')}
-              onClick={() => setMessageFeedback(chatId, message.id, 'down')}
+              onClick={() => handleFeedback('down')}
               aria-label="Thumbs down"
             >
               <ThumbsDown size={14} />
@@ -330,6 +349,29 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
               </button>
             ) : null}
           </div>
+          
+          {feedbackOpen && (
+            <motion.div
+              className="message__feedback"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+            >
+              <input
+                className="message__feedback-input"
+                placeholder="What was wrong? (optional)"
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleFeedbackSubmit()}
+              />
+              <button className="message__feedback-submit" onClick={handleFeedbackSubmit}>
+                Send
+              </button>
+              <button className="message__feedback-skip" onClick={() => setFeedbackOpen(false)}>
+                Skip
+              </button>
+            </motion.div>
+          )}
+
           {/* Token cost of this answer — a collapsible footer, mirroring the
               thinking trace at the top. Self-hides when no usage was captured. */}
           {!isStreaming ? <TokenUsage usage={message.usage} /> : null}

@@ -1822,6 +1822,55 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   color: var(--text-primary);
 }
 
+.message__feedback {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel-strong) 40%, transparent);
+  border: 1px solid var(--panel-border);
+  padding: 8px;
+  border-radius: 12px;
+}
+
+.message__feedback-input {
+  flex-grow: 1;
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  outline: none;
+}
+.message__feedback-input:focus {
+  border-color: var(--accent);
+}
+
+.message__feedback-submit {
+  background: var(--accent);
+  color: #fff1ea;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.message__feedback-skip {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--panel-border);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.message__feedback-skip:hover {
+  background: color-mix(in srgb, var(--panel-border) 20%, transparent);
+}
+
 .message__edit-shell {
   display: grid;
   gap: 10px;

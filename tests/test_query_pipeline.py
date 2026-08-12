@@ -122,6 +122,69 @@ async def test_query_pipeline_empty_or_whitespace_input(
 
 
 @pytest.mark.asyncio
+async def test_sql_provider_outage_reports_unavailable_not_missing(
+    mock_router, mock_store, mock_embeddings
+):
+    """When the SQL path found nothing only because its models were unreachable
+    (not because the data is missing), the answer must say so — not the
+    misleading 'no documents' message."""
+    from src.pipeline.query import _SQL_UNAVAILABLE_MSG
+
+    mock_store.search_hybrid = AsyncMock(return_value=[])  # no documents either
+    pipeline = QueryPipeline(
+        router=mock_router, vector_store=mock_store, embedding_service=mock_embeddings
+    )
+    pipeline._sql_retriever = AsyncMock()
+    pipeline._sql_retriever.retrieve = AsyncMock(return_value=[])
+    pipeline._sql_retriever.last_infra_error = "All providers exhausted for task 'reasoning'"
+
+    result = await pipeline.query("total revenue in 2025")
+
+    assert result.answer == _SQL_UNAVAILABLE_MSG
+    assert result.reasoning_task == "sql_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_no_infra_error_keeps_normal_no_results_message(
+    mock_router, mock_store, mock_embeddings
+):
+    """A clean 'nothing found' (SQL abstained, no docs) keeps the ordinary
+    message — the outage wording only appears on a real provider outage."""
+    mock_store.search_hybrid = AsyncMock(return_value=[])
+    pipeline = QueryPipeline(
+        router=mock_router, vector_store=mock_store, embedding_service=mock_embeddings
+    )
+    pipeline._sql_retriever = AsyncMock()
+    pipeline._sql_retriever.retrieve = AsyncMock(return_value=[])
+    pipeline._sql_retriever.last_infra_error = None
+
+    result = await pipeline.query("something with no answer anywhere")
+
+    assert "No relevant documents found" in result.answer
+    assert result.reasoning_task == "no_results"
+
+
+@pytest.mark.asyncio
+async def test_sql_outage_streaming_reports_unavailable(
+    mock_router, mock_store, mock_embeddings
+):
+    from src.pipeline.query import _SQL_UNAVAILABLE_MSG
+
+    mock_store.search_hybrid = AsyncMock(return_value=[])
+    pipeline = QueryPipeline(
+        router=mock_router, vector_store=mock_store, embedding_service=mock_embeddings
+    )
+    pipeline._sql_retriever = AsyncMock()
+    pipeline._sql_retriever.retrieve = AsyncMock(return_value=[])
+    pipeline._sql_retriever.last_infra_error = "All providers exhausted for task 'reasoning'"
+
+    chunks = [c async for c in pipeline.query_stream("total revenue in 2025")]
+    final = chunks[-1]
+    assert final.reasoning_task == "sql_unavailable"
+    assert final.answer == _SQL_UNAVAILABLE_MSG
+
+
+@pytest.mark.asyncio
 async def test_query_pipeline_success(mock_router, mock_store, mock_embeddings):
     # Setup mock to return some chunks
     mock_chunk = Chunk(

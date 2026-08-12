@@ -19,7 +19,9 @@ from sqlglot import exp
 
 from src.core.config import settings
 from src.core.db_client import run_readonly_query
+from src.core.pipeline_metrics import log_event as _log_pipeline_event
 from src.core.provider_client import ProviderRouter
+from src.core.sql_column_registry import ColumnRegistry
 from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
 
@@ -181,12 +183,61 @@ def _load_glossary() -> str:
         return ""
 
 
+@functools.lru_cache(maxsize=1)
+def _get_raw_column_glossary() -> dict:
+    """Load column-mapped glossary dict from disk."""
+    path = Path(__file__).resolve().parents[2] / "config" / "sql_column_glossary.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def _build_column_glossary_for_query(query: str) -> str:
+    """Filter the glossary to only include terms relevant to the query to save tokens."""
+    data = _get_raw_column_glossary()
+    if not data:
+        return ""
+
+    query_lower = query.lower()
+    
+    # Very basic stemming/overlap check. If the term is in the query, include it.
+    lines: list[str] = []
+    for term, details in data.items():
+        # Check if the term (or a significant part of it) is in the query
+        term_lower = term.lower().replace("_", " ")
+        
+        # Exact substring match (e.g. "changeable pack" in query)
+        is_match = term_lower in query_lower
+        
+        # If no exact match, check word overlap for multi-word terms
+        if not is_match and " " in term_lower:
+            term_words = set(term_lower.split())
+            query_words = set(re.findall(r"\w+", query_lower))
+            # If significant overlap (at least 50% of the term's words are in query)
+            if len(term_words & query_words) >= max(1, len(term_words) // 2):
+                is_match = True
+
+        if is_match:
+            maps_to = details.get("maps_to")
+            if maps_to:
+                note = details.get("note", "")
+                note_str = f" ({note})" if note else ""
+                lines.append(f'- "{term}" → {maps_to}{note_str}')
+
+    return "\n".join(lines)
+
+
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
 
     def __init__(self, router: ProviderRouter) -> None:
         self._router = router
         self._schema_cache: str | None = None
+        self._column_registry: ColumnRegistry | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
         self._relationships = _load_relationships()
@@ -200,9 +251,17 @@ class SQLRetriever:
         # or restarts) and keyed on exact question text, not semantic
         # similarity Ã¢â¬â differently-worded questions still each pay full cost.
         self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
+        # Set when a run returned no rows because the LLM providers needed to
+        # GENERATE the SQL were all unreachable (rate-limited / dead models) —
+        # NOT because the question had no DB answer. Lets the pipeline tell the
+        # user "the model was unavailable" instead of the misleading "not in my
+        # documents". One SQLRetriever exists per request (QueryPipeline is
+        # per-request), so this is not shared across concurrent queries.
+        self.last_infra_error: str | None = None
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
+        self.last_infra_error = None
         cache_key = query.strip().lower()
         cached = self._result_cache.get(cache_key)
         if cached is not None:
@@ -212,7 +271,11 @@ class SQLRetriever:
                 return cached_chunks
 
         result = await self._retrieve_uncached(query)
-        self._result_cache[cache_key] = (time.monotonic(), result)
+        # Never cache an empty result that was caused by a provider outage — the
+        # next attempt (once a model is reachable again) must be free to retry
+        # instead of being pinned to this transient failure for the cache TTL.
+        if self.last_infra_error is None:
+            self._result_cache[cache_key] = (time.monotonic(), result)
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
@@ -227,8 +290,40 @@ class SQLRetriever:
                 return []
 
             try:
-                # Validate safety (AST parsing)
+                # --- Column validation (catches hallucinated columns before DB) ---
+                if self._column_registry:
+                    validation = self._column_registry.validate_columns(sql)
+                    if not validation.is_valid:
+                        logger.warning("Column validation failed: %s", validation.errors)
+                        _log_pipeline_event(
+                            "column_hallucination_caught",
+                            {"sql": sql, "hallucinated": validation.hallucinated_columns,
+                             "errors": validation.errors},
+                            query=query,
+                        )
+                        last_error = "Column validation failed:\n" + "\n".join(validation.errors)
+                        continue  # retry with feedback
+
+                    # Alias validation (first attempt only — don't loop forever)
+                    if attempt == 0:
+                        alias_warnings = self._column_registry.validate_aliases(sql, query)
+                        if alias_warnings:
+                            logger.warning("Alias validation: %s", alias_warnings)
+                            _log_pipeline_event(
+                                "alias_hallucination_caught",
+                                {"sql": sql, "warnings": alias_warnings},
+                                query=query,
+                            )
+                            last_error = "Alias quality issue:\n" + "\n".join(alias_warnings)
+                            continue
+
+                # --- Safety validation (AST parsing) ---
                 if not self._is_safe_read_query(sql):
+                    _log_pipeline_event(
+                        "unsafe_sql_blocked",
+                        {"sql": sql},
+                        query=query,
+                    )
                     raise UnsafeQueryError(f"Unsafe or unparseable SQL generated: {sql}")
 
                 # Execute
@@ -263,16 +358,16 @@ class SQLRetriever:
 
 
                 # An empty result on the FINAL attempt is treated as "the SQL
-                # path found nothing" and falls through to document search Ã¢â¬â
+                # path found nothing" and falls through to document search —
                 # not returned as an answer chunk. A wrong JOIN/WHERE also
                 # produces 0 rows (MySQL doesn't error on that), so trusting an
                 # empty result as authoritative risks a confident "no data"
                 # answer overriding a correct document-based one. Returning []
                 # here mirrors the UnsafeQueryError and exhausted-retry paths
-                # below Ã¢â¬â SQL only ever contributes a chunk when it found rows.
+                # below — SQL only ever contributes a chunk when it found rows.
                 if not rows:
                     logger.info(
-                        "SQL query returned 0 rows after retry Ã¢â¬â falling back "
+                        "SQL query returned 0 rows after retry — falling back "
                         "to document search."
                     )
                     return []
@@ -292,6 +387,12 @@ class SQLRetriever:
                     source_file=label,
                 )
 
+                _log_pipeline_event(
+                    "sql_success",
+                    {"sql": sql, "row_count": len(rows), "tables": tables,
+                     "attempt": attempt + 1},
+                    query=query,
+                )
                 return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
 
             except UnsafeQueryError as e:
@@ -300,17 +401,23 @@ class SQLRetriever:
                 return []
             except Exception as e:
                 logger.error(f"SQL Execution failed on attempt {attempt + 1}: {e}")
+                _log_pipeline_event(
+                    "execution_error_caught",
+                    {"sql": sql, "error": str(e), "attempt": attempt + 1},
+                    query=query,
+                )
                 last_error = str(e)
                 
         # If we exhausted retries, fail cleanly
         logger.warning("SQL generation failed after retry loop. Returning empty results.")
+        _log_pipeline_event("retry_exhausted", {"last_error": last_error}, query=query)
         return []
 
     # Sent in full on EVERY SQL-generation call (both retry attempts), so an
     # uncapped schema on a wide/many-table database silently inflates every
     # single query's input tokens, not just one answer. Cap it the same way
     # the result-row table is capped.
-    _MAX_SCHEMA_CHARS = 30000
+    _MAX_SCHEMA_CHARS = 12000
 
     async def _get_schema(self) -> str:
         """Fetch the DB schema (cached, capped)."""
@@ -340,6 +447,11 @@ class SQLRetriever:
                 schema = schema[: self._MAX_SCHEMA_CHARS] + "\n-- (schema truncated)"
 
             self._schema_cache = schema
+            # Build the column registry from the same schema text.
+            try:
+                self._column_registry = ColumnRegistry(schema, self._dialect.sqlglot_dialect)
+            except Exception as reg_err:
+                logger.warning("Failed to build column registry: %s", reg_err)
             return self._schema_cache
         except Exception as e:
             logger.error(f"Failed to fetch schema: {e}")
@@ -373,7 +485,13 @@ Schema:
             )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
-        if self._glossary:
+        column_glossary = _build_column_glossary_for_query(query)
+        if column_glossary:
+            system_prompt += (
+                "\n\nColumn mapping (use these exact paths — do NOT invent columns):\n"
+                f"{column_glossary}"
+            )
+        elif self._glossary:
             system_prompt += (
                 "\n\nBusiness term glossary (user may use these informal terms):\n"
                 f"{self._glossary}"
@@ -415,6 +533,13 @@ Schema:
             return sql
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
+            # Distinguish an infrastructure outage (every provider for the
+            # 'reasoning' task was unreachable) from an ordinary generation
+            # failure. The former means the DB was never actually consulted, so
+            # the pipeline should say the model was unavailable rather than
+            # implying the data doesn't exist.
+            if "All providers exhausted" in str(e):
+                self.last_infra_error = str(e)
             return ""
 
     # Functions that read/write files or execute code. Each is still a "SELECT"
