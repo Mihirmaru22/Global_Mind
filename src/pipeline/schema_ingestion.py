@@ -92,14 +92,17 @@ async def sync_live_schema(
     try:
         if dialect.key == "mysql" and dialect.fk_query:
             fk_rows = await run_readonly_query(dialect.fk_query, max_rows=20000)
+        elif dialect.key == "sqlite":
+            from src.stages.s12b_sql_retrieval import fetch_sqlite_foreign_keys
+            fk_rows = await fetch_sqlite_foreign_keys()
         else:
             fk_rows = []
 
         for fk_row in fk_rows:
-            from_table = fk_row.get("from_table") or fk_row.get("TABLE_NAME", "")
-            from_col = fk_row.get("from_column") or fk_row.get("COLUMN_NAME", "")
-            to_table = fk_row.get("to_table") or fk_row.get("REFERENCED_TABLE_NAME", "")
-            to_col = fk_row.get("to_column") or fk_row.get("REFERENCED_COLUMN_NAME", "")
+            from_table = fk_row.get("table_name") or fk_row.get("TABLE_NAME", "")
+            from_col = fk_row.get("column_name") or fk_row.get("COLUMN_NAME", "")
+            to_table = fk_row.get("referenced_table_name") or fk_row.get("REFERENCED_TABLE_NAME", "")
+            to_col = fk_row.get("referenced_column_name") or fk_row.get("REFERENCED_COLUMN_NAME", "")
             if from_table and to_table:
                 fk_line = f"  FOREIGN KEY ({from_col}) REFERENCES {to_table}({to_col})"
                 fk_map.setdefault(from_table, []).append(fk_line)

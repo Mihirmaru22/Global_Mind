@@ -235,6 +235,10 @@ def _build_column_glossary_for_query(query: str) -> str:
 
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
+    _full_schema_cache: str | None = None
+    _column_registry: ColumnRegistry | None = None
+    # Caches the full retrieve() result, keyed on the normalized question text.
+    _result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
 
     def __init__(
         self,
@@ -245,21 +249,9 @@ class SQLRetriever:
         self._router = router
         self._vector_store = vector_store
         self._embeddings = embedding_service
-        self._full_schema_cache: str | None = None
-        self._column_registry: ColumnRegistry | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
         self._relationships = _load_relationships()
-        # Caches the full retrieve() result, keyed on the normalized question
-        # text. Without DDL access on the client's DB to add indexes, a slow
-        # aggregation query (e.g. a multi-table JOIN view) would otherwise
-        # re-run in full for every single question Ã¢â¬â this means it only
-        # actually hits the DB once per settings.sql_result_cache_ttl_seconds,
-        # and every other identically-worded question in that window gets an
-        # instant answer instead. Per-process only (not shared across workers
-        # or restarts) and keyed on exact question text, not semantic
-        # similarity Ã¢â¬â differently-worded questions still each pay full cost.
-        self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
         # Set when a run returned no rows because the LLM providers needed to
         # GENERATE the SQL were all unreachable (rate-limited / dead models) —
         # NOT because the question had no DB answer. Lets the pipeline tell the
@@ -272,7 +264,7 @@ class SQLRetriever:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
         self.last_infra_error = None
         cache_key = query.strip().lower()
-        cached = self._result_cache.get(cache_key)
+        cached = SQLRetriever._result_cache.get(cache_key)
         if cached is not None:
             cached_at, cached_chunks = cached
             if time.monotonic() - cached_at < settings.sql_result_cache_ttl_seconds:
@@ -284,7 +276,7 @@ class SQLRetriever:
         # next attempt (once a model is reachable again) must be free to retry
         # instead of being pinned to this transient failure for the cache TTL.
         if self.last_infra_error is None:
-            self._result_cache[cache_key] = (time.monotonic(), result)
+            SQLRetriever._result_cache[cache_key] = (time.monotonic(), result)
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
@@ -300,8 +292,8 @@ class SQLRetriever:
 
             try:
                 # --- Column validation (catches hallucinated columns before DB) ---
-                if self._column_registry:
-                    validation = self._column_registry.validate_columns(sql)
+                if SQLRetriever._column_registry:
+                    validation = SQLRetriever._column_registry.validate_columns(sql)
                     if not validation.is_valid:
                         logger.warning("Column validation failed: %s", validation.errors)
                         _log_pipeline_event(
@@ -424,8 +416,8 @@ class SQLRetriever:
 
     async def _fetch_full_schema(self) -> str:
         """Fetch the full, un-truncated DB schema to initialize the ColumnRegistry."""
-        if self._full_schema_cache is not None:
-            return self._full_schema_cache
+        if SQLRetriever._full_schema_cache is not None:
+            return SQLRetriever._full_schema_cache
 
         try:
             rows = await run_readonly_query(self._dialect.schema_query, max_rows=20000)
@@ -434,18 +426,18 @@ class SQLRetriever:
             if self._dialect.key == "mysql" and self._dialect.fk_query:
                 fk_rows = await run_readonly_query(self._dialect.fk_query, max_rows=20000)
             elif self._dialect.key == "sqlite":
-                fk_rows = await self._fetch_sqlite_foreign_keys()
+                fk_rows = await fetch_sqlite_foreign_keys()
             else:
                 fk_rows = []
 
             fk_text = format_fk_rows(fk_rows)
             full_schema = schema + ("\n\n" + fk_text if fk_text else "")
 
-            self._full_schema_cache = full_schema
+            SQLRetriever._full_schema_cache = full_schema
             # Build the column registry from the complete schema text so it can
             # validate any generated SQL without truncation blindness.
             try:
-                self._column_registry = ColumnRegistry(
+                SQLRetriever._column_registry = ColumnRegistry(
                     full_schema, self._dialect.sqlglot_dialect
                 )
             except Exception as reg_err:
@@ -642,23 +634,23 @@ Output readability rules:
 
         return True
 
-    async def _fetch_sqlite_foreign_keys(self) -> list[dict]:
-        tables = await run_readonly_query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
-        )
-        fks = []
-        for row in tables:
-            table = row["name"]
-            escaped_table = table.replace('"', '""')
-            cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
-            for c in cols:
-                fks.append({
-                    "table_name": table,
-                    "column_name": c["from"],
-                    "referenced_table_name": c["table"],
-                    "referenced_column_name": c["to"],
-                })
-        return fks
+async def fetch_sqlite_foreign_keys() -> list[dict]:
+    tables = await run_readonly_query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
+    )
+    fks = []
+    for row in tables:
+        table = row["name"]
+        escaped_table = table.replace('"', '""')
+        cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
+        for c in cols:
+            fks.append({
+                "table_name": table,
+                "column_name": c["from"],
+                "referenced_table_name": c["table"],
+                "referenced_column_name": c["to"],
+            })
+    return fks
 
     # This table is returned as the answer VERBATIM (see _extract_sql_table in
     # s12_s13_s14_retrieval.py, which bypasses the LLM and _build_context's
