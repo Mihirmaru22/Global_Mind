@@ -184,26 +184,51 @@ def _load_glossary() -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def _load_column_glossary() -> str:
-    """Load column-mapped glossary from disk, cached for process lifetime."""
+def _get_raw_column_glossary() -> dict:
+    """Load column-mapped glossary dict from disk."""
     path = Path(__file__).resolve().parents[2] / "config" / "sql_column_glossary.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or not data:
-            return ""
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
 
-        lines: list[str] = []
-        for term, details in data.items():
-            maps_to = details.get("maps_to")
-            if not maps_to:
-                continue
-            note = details.get("note", "")
-            note_str = f" ({note})" if note else ""
-            lines.append(f'- "{term}" → {maps_to}{note_str}')
 
-        return "\n".join(lines)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+def _build_column_glossary_for_query(query: str) -> str:
+    """Filter the glossary to only include terms relevant to the query to save tokens."""
+    data = _get_raw_column_glossary()
+    if not data:
         return ""
+
+    query_lower = query.lower()
+    
+    # Very basic stemming/overlap check. If the term is in the query, include it.
+    lines: list[str] = []
+    for term, details in data.items():
+        # Check if the term (or a significant part of it) is in the query
+        term_lower = term.lower().replace("_", " ")
+        
+        # Exact substring match (e.g. "changeable pack" in query)
+        is_match = term_lower in query_lower
+        
+        # If no exact match, check word overlap for multi-word terms
+        if not is_match and " " in term_lower:
+            term_words = set(term_lower.split())
+            query_words = set(re.findall(r"\w+", query_lower))
+            # If significant overlap (at least 50% of the term's words are in query)
+            if len(term_words & query_words) >= max(1, len(term_words) // 2):
+                is_match = True
+
+        if is_match:
+            maps_to = details.get("maps_to")
+            if maps_to:
+                note = details.get("note", "")
+                note_str = f" ({note})" if note else ""
+                lines.append(f'- "{term}" → {maps_to}{note_str}')
+
+    return "\n".join(lines)
 
 
 class SQLRetriever:
@@ -215,7 +240,6 @@ class SQLRetriever:
         self._column_registry: ColumnRegistry | None = None
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
-        self._column_glossary = _load_column_glossary()
         self._relationships = _load_relationships()
         # Caches the full retrieve() result, keyed on the normalized question
         # text. Without DDL access on the client's DB to add indexes, a slow
@@ -393,7 +417,7 @@ class SQLRetriever:
     # uncapped schema on a wide/many-table database silently inflates every
     # single query's input tokens, not just one answer. Cap it the same way
     # the result-row table is capped.
-    _MAX_SCHEMA_CHARS = 30000
+    _MAX_SCHEMA_CHARS = 12000
 
     async def _get_schema(self) -> str:
         """Fetch the DB schema (cached, capped)."""
@@ -461,10 +485,11 @@ Schema:
             )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
-        if self._column_glossary:
+        column_glossary = _build_column_glossary_for_query(query)
+        if column_glossary:
             system_prompt += (
                 "\n\nColumn mapping (use these exact paths — do NOT invent columns):\n"
-                f"{self._column_glossary}"
+                f"{column_glossary}"
             )
         elif self._glossary:
             system_prompt += (

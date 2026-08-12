@@ -19,7 +19,7 @@ tasks:
         model: llama-3.1-8b-instant
         priority: 2
       - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+        model: qwen/qwen-2.5-72b-instruct:free
         priority: 3
 
   # Stages 4/5 — Vision-LLM OCR and layout analysis
@@ -84,10 +84,10 @@ tasks:
         model: llama-3.3-70b-versatile
         priority: 2
       - provider: nvidia_nim
-        model: qwen/qwen3.5-397b-a17b
+        model: meta/llama-3.1-70b-instruct
         priority: 3
       - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+        model: qwen/qwen-2.5-72b-instruct:free
         priority: 4
 
   reasoning:
@@ -102,19 +102,19 @@ tasks:
       # whenever groq hit its daily token cap, so Text-to-SQL silently produced no
       # query and every DB question fell back to "not in my documents".
       - provider: nvidia_nim
-        model: qwen/qwen3.5-397b-a17b
+        model: meta/llama-3.1-70b-instruct
         priority: 2
       - provider: gemini
         model: gemini-2.5-flash
         priority: 3
       - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+        model: qwen/qwen-2.5-72b-instruct:free
         priority: 4
 
   extraction:
     providers:
       - provider: nvidia_nim
-        model: qwen/qwen3.5-397b-a17b
+        model: meta/llama-3.1-70b-instruct
         priority: 1
       - provider: gemini
         model: gemini-2.5-flash
@@ -150,5 +150,5 @@ tasks:
         model: gemini-2.5-flash-lite
         priority: 2
       - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+        model: qwen/qwen-2.5-72b-instruct:free
         priority: 3
