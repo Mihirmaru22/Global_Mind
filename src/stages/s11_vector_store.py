@@ -469,6 +469,15 @@ class QdrantStore:
 
         # Always hide superseded chunks.
         exclude_inactive = [FieldCondition(key="active", match=MatchValue(value=False))]
+        
+        # Hide SQL_SCHEMA chunks from regular document search unless explicitly requested.
+        # This prevents schema dumps from polluting the context window of standard QA queries.
+        from src.models.schemas import ChunkType
+        if not filters or "chunk_type" not in filters or filters["chunk_type"] != ChunkType.SQL_SCHEMA.value:
+            exclude_inactive.append(
+                FieldCondition(key="chunk_type", match=MatchValue(value=ChunkType.SQL_SCHEMA.value))
+            )
+
         return Filter(must=conditions or None, must_not=exclude_inactive)
 
     @staticmethod
