@@ -1,6 +1,5 @@
 import {
   FileText,
-  Loader2,
   MessageSquareText,
   MoreVertical,
   PlusCircle,
@@ -8,20 +7,19 @@ import {
   Settings,
   Trash2,
   PencilLine,
-  Upload,
 } from 'lucide-react'
 import dayjs from 'dayjs'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
 
-const navItems = [
+const primaryNavItems = [
   { to: '/chat', label: 'Chat', icon: MessageSquareText },
   { to: '/documents', label: 'Documents', icon: FileText },
-  { to: '/settings', label: 'Settings', icon: Settings },
 ]
+
+const secondaryNavItems = [{ to: '/settings', label: 'Settings', icon: Settings }]
 
 export default function Sidebar() {
   const chats = useAppStore((state) => state.chats)
@@ -34,37 +32,10 @@ export default function Sidebar() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
-  const ingestDocument = useAppStore((state) => state.ingestDocument)
   const navigate = useNavigate()
-  const fileInputRef = useRef(null)
   const [openMenuId, setOpenMenuId] = useState(null)
   const [menuPosition, setMenuPosition] = useState(null)
   const [dialog, setDialog] = useState({ type: null, chat: null, value: '' })
-  const [isUploading, setIsUploading] = useState(false)
-
-  const handleUploadClick = () => {
-    fileInputRef.current?.click()
-  }
-
-  const handleFileChange = async (event) => {
-    const file = event.target.files[0]
-    if (!file) return
-
-    try {
-      setIsUploading(true)
-      // Opens a new chat and streams the live ingestion trace into it.
-      navigate('/chat')
-      await ingestDocument(file)
-    } catch (error) {
-      console.error(error)
-      toast.error(`Upload failed. Check server logs.`)
-    } finally {
-      setIsUploading(false)
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
-    }
-  }
 
   useEffect(() => {
     if (!openMenuId) return undefined
@@ -171,37 +142,19 @@ export default function Sidebar() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', padding: '0 16px', margin: '24px 0 16px' }}>
+        <div className="sidebar__new-chat-row">
           <button
             type="button"
             onClick={handleNewChat}
-            className="new-chat-action"
-            style={{ margin: 0, flex: 1, padding: '10px 8px' }}
+            className="new-chat-action new-chat-action--full"
           >
             <PlusCircle size={18} />
-            <span>New</span>
+            <span>New chat</span>
           </button>
-
-          <button
-            type="button"
-            onClick={handleUploadClick}
-            disabled={isUploading}
-            className="new-chat-action"
-            style={{ margin: 0, flex: 1, padding: '10px 8px' }}
-          >
-            {isUploading ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}
-            <span>{isUploading ? 'Ingesting...' : 'Upload'}</span>
-          </button>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            style={{ display: 'none' }}
-          />
         </div>
 
         <nav className="sidebar__nav" aria-label="Primary navigation">
-          {navItems.map(({ to, label, icon: Icon }) => (
+          {primaryNavItems.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
@@ -216,7 +169,7 @@ export default function Sidebar() {
           ))}
         </nav>
 
-        <section className="sidebar__section">
+        <section className="sidebar__section sidebar__section--grow">
           <p className="section-title">Recent Chats</p>
           <div className="chat-list">
             {chats.map((chat) => (
@@ -294,14 +247,21 @@ export default function Sidebar() {
         </section>
 
         <footer className="sidebar__footer">
-          <div className="status-pill">
-            <span className="status-pill__dot status-pill__dot--active" />
-            <span>Backend: Active</span>
-          </div>
-          <div className="status-pill">
-            <span className="status-pill__dot status-pill__dot--active" />
-            <span>Database: Connected</span>
-          </div>
+          <nav className="sidebar__nav sidebar__nav--secondary" aria-label="Secondary navigation">
+            {secondaryNavItems.map(({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `nav-item ${isActive ? 'nav-item--active' : ''}`
+                }
+                onClick={closeSidebar}
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </nav>
         </footer>
       </aside>
       {sidebarOpen ? (

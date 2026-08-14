@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import { motion } from 'framer-motion'
-import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { Loader2, RefreshCw, RotateCcw, Trash2, Upload } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import Button from '../components/Button.jsx'
 import Loader from '../components/Loader.jsx'
 import { useAppStore } from '../store/store.js'
@@ -30,12 +31,39 @@ export default function Documents() {
   const refreshDocuments = useAppStore((state) => state.refreshDocuments)
   const replaceDocument = useAppStore((state) => state.replaceDocument)
   const deleteDocument = useAppStore((state) => state.deleteDocument)
+  const ingestDocument = useAppStore((state) => state.ingestDocument)
   const loading = useAppStore((state) => state.loading)
 
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
   const replaceTargetRef = useRef(null)
+  const uploadInputRef = useRef(null)
   const [busyId, setBusyId] = useState(null)
+  const [isUploading, setIsUploading] = useState(false)
+
+  const handleUploadClick = () => {
+    uploadInputRef.current?.click()
+  }
+
+  const handleUploadFileChosen = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      setIsUploading(true)
+      // Opens a new chat and streams the live ingestion trace into it.
+      navigate('/chat')
+      await ingestDocument(file)
+    } catch (error) {
+      console.error(error)
+      toast.error(`Upload failed. Check server logs.`)
+    } finally {
+      setIsUploading(false)
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = ''
+      }
+    }
+  }
 
   const openReplacePicker = (docId) => {
     replaceTargetRef.current = docId
@@ -82,13 +110,31 @@ export default function Documents() {
             new content without losing the old version; delete removes it entirely.
           </p>
         </div>
-        <Button variant="secondary" onClick={refreshDocuments}>
-          <RefreshCw size={16} />
-          <span>Refresh</span>
-        </Button>
+        <div className="section__header-actions">
+          <Button
+            variant="secondary"
+            className="section__header-btn"
+            disabled={isUploading}
+            onClick={handleUploadClick}
+          >
+            {isUploading ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
+            <span>{isUploading ? 'Ingesting...' : 'Upload'}</span>
+          </Button>
+          <Button variant="secondary" className="section__header-btn" onClick={refreshDocuments}>
+            <RefreshCw size={16} />
+            <span>Refresh</span>
+          </Button>
+        </div>
       </div>
 
       {loading ? <Loader /> : null}
+
+      <input
+        ref={uploadInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        onChange={handleUploadFileChosen}
+      />
 
       <input
         ref={fileInputRef}

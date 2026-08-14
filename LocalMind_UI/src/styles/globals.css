@@ -419,6 +419,11 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   box-shadow: none;
 }
 
+.sidebar__new-chat-row {
+  padding: 0 16px;
+  margin: 24px 0 16px;
+}
+
 .new-chat-action {
   display: inline-flex;
   align-items: center;
@@ -434,6 +439,12 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   transition:
     transform 180ms ease,
     filter 180ms ease;
+}
+
+.new-chat-action--full {
+  width: 100%;
+  justify-content: center;
+  padding: 11px 12px;
 }
 
 .new-chat-action:hover {
@@ -453,6 +464,10 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   display: flex; 
   flex-direction: column;
   position: relative;
+}
+
+.sidebar__section--grow {
+  flex: 1;
 }
 
 .section-title {
@@ -856,6 +871,10 @@ html[data-scrolling='true'] .chat-list::-webkit-scrollbar-thumb {
   border-top: 1px solid var(--panel-border);
   display: grid;
   gap: 10px;
+}
+
+.sidebar__nav--secondary {
+  margin-top: 0;
 }
 
 .status-pill {
@@ -2139,6 +2158,18 @@ html[data-scrolling='true'] .composer__input::-webkit-scrollbar-thumb {
   gap: 12px;
 }
 
+.section__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.section__header-btn {
+  padding: 10px 16px;
+  white-space: nowrap;
+}
+
 .section__title {
   margin: 0;
   font-size: clamp(1.5rem, 3.2vw, 2.1rem);
@@ -2304,14 +2335,8 @@ html[data-scrolling='true'] .composer__input::-webkit-scrollbar-thumb {
 
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  max-height: min(54vh, 520px);
-  overflow-y: auto;
-  padding-right: 4px;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: transparent var(--scrollbar-track);
 }
 
 .theme-grid:hover,
@@ -2323,8 +2348,8 @@ html[data-scrolling='true'] .theme-grid {
 
 .theme-card {
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: 6px;
+  padding: 8px;
   border: 1px solid var(--panel-border);
   border-radius: 14px;
   background: transparent;

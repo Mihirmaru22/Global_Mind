@@ -76,11 +76,6 @@ export default function Chat() {
                 <h2 className="hero__title">
                   How can I help <em>you</em> today?
                 </h2>
-                {/* <p className="hero__copy">
-                  Your data stays on your machine. This UI is showing static demo
-                  content for now, and the live API hook points are documented in
-                  the data layer for later.
-                </p> */}
                 <div className="feature-grid">
                   <article className="feature-card">
                     <strong className="feature-card__title">Multi-Format Support</strong>
@@ -89,7 +84,7 @@ export default function Chat() {
 
                   <article className="feature-card">
                     <strong className="feature-card__title">Trusted Answers</strong>
-                    <p className="feature-card__text">Responses based only on your documents.</p>
+                    <p className="feature-card__text">Responses based only on your data & documents.</p>
                   </article>
 
                   <article className="feature-card">

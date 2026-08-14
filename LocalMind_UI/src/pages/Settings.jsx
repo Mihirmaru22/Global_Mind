@@ -1,4 +1,4 @@
-import { Check, Server, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { Check, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '../store/store.js'
 
@@ -53,15 +53,9 @@ const themeOptions = [
   },
 ]
 
-const fallbackProviders = [
-  { id: 'auto', label: 'Auto (recommended)' },
-  { id: 'openrouter', label: 'OpenRouter' },
-]
-
 export default function Settings() {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
-  const providers = useAppStore((state) => state.providers)
 
   const current = settings || {
     endpoint: '/api',
@@ -71,9 +65,6 @@ export default function Settings() {
     theme: 'dark',
     provider: 'openrouter',
   }
-
-  const providerOptions = providers?.length ? providers : fallbackProviders
-  const activeProvider = current.provider || 'auto'
 
   const setSetting = (patch) => {
     updateSettings(patch)
@@ -97,55 +88,6 @@ export default function Settings() {
       >
         <div className="settings-panel__heading">
           <div className="settings-panel__title-wrap">
-            <SlidersHorizontal size={16} />
-            <h3 className="settings-panel__title">Model Configuration</h3>
-          </div>
-          <span className="settings-panel__rule" />
-        </div>
-
-        <div className="setting-row provider-row">
-          <div className="provider-row__head">
-            <div className="settings-panel__title-wrap">
-              <Server size={15} />
-              <label>Model Provider</label>
-            </div>
-            <p className="setting-help">
-              Preferred provider for answering. It's a soft preference — if it's
-              rate-limited or down, the pipeline automatically falls back to the
-              others. <strong>Auto</strong> uses the best provider per task.
-            </p>
-          </div>
-          <div className="provider-grid">
-            {providerOptions.map((option) => {
-              const active = activeProvider === option.id
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={`provider-chip ${active ? 'provider-chip--active' : ''}`}
-                  onClick={() => setSetting({ provider: option.id })}
-                >
-                  <span className="provider-chip__label">{option.label}</span>
-                  {active ? (
-                    <span className="provider-chip__check">
-                      <Check size={12} />
-                    </span>
-                  ) : null}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      </motion.section>
-
-      <motion.section
-        className="settings-panel"
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.06 }}
-      >
-        <div className="settings-panel__heading">
-          <div className="settings-panel__title-wrap">
             <Sparkles size={16} />
             <h3 className="settings-panel__title">Appearance</h3>
           </div>
@@ -153,7 +95,8 @@ export default function Settings() {
         </div>
 
         <div className="setting-row">
-          <label>Theme Selection</label>
+          <label>Theme</label>
+          <p className="setting-help">Customize UI colors</p>
           <div className="theme-grid">
             {themeOptions.map((theme) => {
               const active = current.theme === theme.mode
