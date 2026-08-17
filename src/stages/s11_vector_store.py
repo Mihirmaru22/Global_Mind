@@ -184,6 +184,8 @@ class QdrantStore:
         indexes = [
             ("active", PayloadSchemaType.BOOL),
             ("document_id", PayloadSchemaType.KEYWORD),
+            ("chunk_type", PayloadSchemaType.KEYWORD),
+            ("document_type", PayloadSchemaType.KEYWORD),
         ]
         for field_name, field_schema in indexes:
             try:

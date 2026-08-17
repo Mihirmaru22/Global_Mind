@@ -20,6 +20,20 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+# Route Python's `warnings.warn()` output through the standard logging system
+# instead of raw stderr. This is what turns noise like aiomysql's
+#   cursors.py:458: Warning: View 'globalmind.pending_so_stock_view'
+#   references invalid table(s) or column(s) or ... definer/invoker lack
+#   rights to use them
+# into a normal, timestamped log line under the "py.warnings" logger — the
+# query itself already succeeds regardless (MySQL warnings are non-fatal;
+# rows still come back), so this doesn't change behavior at all, only where
+# the message ends up. It's app-side and one-time at process start, so it
+# needs no DB write access and covers any stale/legacy view or DEFINER
+# mismatch on any database this app ever points at, not just this one view.
+logging.captureWarnings(True)
+logging.getLogger("py.warnings").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 

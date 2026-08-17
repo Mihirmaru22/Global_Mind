@@ -173,9 +173,20 @@ class ColumnRegistry:
                     )
                     if not found_in_any:
                         table_list = ", ".join(sorted(from_tables))
+                        # Show real columns per table so the retry has something
+                        # to correct toward — without this, an unqualified miss
+                        # gives the model no signal beyond "wrong", and it just
+                        # regenerates the same hallucinated name on retry.
+                        per_table_cols = []
+                        for t in sorted(from_tables):
+                            display_cols = self._tables_original.get(t, [])
+                            shown = display_cols[:20]
+                            suffix = f" (+{len(display_cols) - 20} more)" if len(display_cols) > 20 else ""
+                            per_table_cols.append(f"{t}: {', '.join(shown)}{suffix}")
                         errors.append(
                             f"Column '{col_name}' not found in any of the query's tables "
-                            f"({table_list}). Check spelling or qualify with table name."
+                            f"({table_list}). Check spelling or qualify with table name. "
+                            f"Available columns — " + " | ".join(per_table_cols)
                         )
                         hallucinated.append(col_name)
 

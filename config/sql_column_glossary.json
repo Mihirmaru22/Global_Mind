@@ -1,7 +1,7 @@
 {
   "revenue": {
-    "maps_to": "SUM(sales_order_products.rate * sales_order_products.qty)",
-    "note": "No revenue column exists. Must derive from rate \u00d7 qty.",
+    "maps_to": "SUM(product.rate * sales_order_products.qty)",
+    "note": "No revenue column exists on sales_order_products. rate lives on product, not sales_order_products \u2014 must JOIN sales_order_products.product_id = product.id first, then derive rate \u00d7 qty.",
     "synonyms": [
       "total sales",
       "sales value",

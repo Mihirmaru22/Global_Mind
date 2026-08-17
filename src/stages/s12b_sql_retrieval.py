@@ -370,6 +370,17 @@ class SQLRetriever:
                         "SQL query returned 0 rows after retry — falling back "
                         "to document search."
                     )
+                    # Record the exact SQL that produced 0 rows so a future
+                    # "why did this return nothing" investigation has the
+                    # query to inspect, instead of hitting a dead end in
+                    # pipeline_metrics.jsonl like this one did — only a
+                    # routing_decision event was written, with no trace of
+                    # what SQL actually ran.
+                    _log_pipeline_event(
+                        "sql_zero_rows_after_retry",
+                        {"sql": sql, "attempt": attempt + 1},
+                        query=query,
+                    )
                     return []
 
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
