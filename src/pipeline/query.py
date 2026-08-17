@@ -312,7 +312,7 @@ class QueryPipeline:
             sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
             yield _think("Queried the live database", sql_detail)
         else:
-            yield _think("Queried the live database", "no matching rows Ã¢â‚¬â€  checking documents instead")
+            yield _think("Queried the live database", "no matching rows -- checking documents instead")
 
         if not vector_chunks and not sql_chunks:
             if sql_infra_error:

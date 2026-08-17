@@ -16,7 +16,7 @@ tasks:
         model: gemini-2.5-flash-lite
         priority: 1
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 2
       - provider: openrouter
         model: qwen/qwen-2.5-72b-instruct:free
@@ -81,7 +81,7 @@ tasks:
         model: gemini-2.5-flash
         priority: 1
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: qwen/qwen3.6-27b
         priority: 2
       - provider: nvidia_nim
         model: meta/llama-3.1-70b-instruct
@@ -93,7 +93,7 @@ tasks:
   reasoning:
     providers:
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: qwen/qwen3.6-27b
         priority: 1
       # NVIDIA NIM is promoted to the first fallback (ahead of gemini) and uses
       # qwen3.5 — a model already proven on this NVIDIA key elsewhere (extraction,
@@ -120,7 +120,7 @@ tasks:
         model: gemini-2.5-flash
         priority: 2
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 3
 
   summarization:
@@ -135,7 +135,7 @@ tasks:
   fast_support:
     providers:
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 1
       - provider: gemini
         model: gemini-2.5-flash-lite
@@ -144,7 +144,7 @@ tasks:
   classification:
     providers:
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 1
       - provider: gemini
         model: gemini-2.5-flash-lite

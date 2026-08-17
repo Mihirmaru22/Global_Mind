@@ -139,6 +139,16 @@ class ColumnRegistry:
         # Build a map of alias → real table name from the query's FROM/JOIN.
         table_aliases = self._resolve_table_aliases(ast)
 
+        # SELECT aliases (e.g. SUM(qty) AS total_quantity) are legal in
+        # ORDER BY / GROUP BY / HAVING under MySQL semantics -- never flag
+        # an unqualified reference to one as a hallucinated column.
+        select_aliases: set[str] = set()
+        for _sel in ast.find_all(exp.Select):
+            for _proj in _sel.expressions:
+                _alias = _proj.args.get("alias")
+                if _alias is not None:
+                    select_aliases.add((_alias.name or "").lower())
+
         errors: list[str] = []
         hallucinated: list[str] = []
 
@@ -164,6 +174,8 @@ class ColumnRegistry:
                     )
                     hallucinated.append(f"{real_table}.{col_name}")
             else:
+                if col_name.lower() in select_aliases:
+                    continue
                 # Unqualified: check against all tables in the query's FROM/JOIN.
                 from_tables = set(table_aliases.values())
                 if from_tables:

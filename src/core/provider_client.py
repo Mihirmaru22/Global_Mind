@@ -602,7 +602,7 @@ _VISION_TASKS = frozenset({
 DEFAULT_ROUTES: dict[str, TaskRoute] = {
     "semantic_classification": TaskRoute([
         ProviderOption("gemini", "gemini-2.5-flash-lite", 1),
-        ProviderOption("groq", "llama-3.1-8b-instant", 2),
+        ProviderOption("groq", "openai/gpt-oss-20b", 2),
         ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 3),
     ]),
     "ocr_vision": TaskRoute([
@@ -628,30 +628,30 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
     ]),
     "general_qa": TaskRoute([
         ProviderOption("gemini", "gemini-2.5-flash", 1),
-        ProviderOption("groq", "llama-3.3-70b-versatile", 2),
-        ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 3),
+        ProviderOption("groq", "qwen/qwen3.6-27b", 2),
+        ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 3),
         ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
     "reasoning": TaskRoute([
-        ProviderOption("groq", "llama-3.3-70b-versatile", 1),
+        ProviderOption("groq", "qwen/qwen3.6-27b", 1),
         # qwen3.5 on NVIDIA NIM: a known-good slug on this key, promoted ahead of
         # gemini. Replaces the dead `meta/llama3-70b-instruct` (NVIDIA 404) that
         # left reasoning with no working fallback once groq hit its daily cap.
-        ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 2),
+        ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 2),
         ProviderOption("gemini", "gemini-2.5-flash", 3),
         ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
     "extraction": TaskRoute([
-        ProviderOption("nvidia_nim", "qwen/qwen3.5-397b-a17b", 1),
+        ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 1),
         ProviderOption("gemini", "gemini-2.5-flash", 2),
-        ProviderOption("groq", "llama-3.1-8b-instant", 3),
+        ProviderOption("groq", "openai/gpt-oss-20b", 3),
     ]),
     "summarization": TaskRoute([
         ProviderOption("nvidia_nim", "moonshotai/kimi-k2.6", 1),
         ProviderOption("gemini", "gemini-2.5-flash", 2),
     ]),
     "fast_support": TaskRoute([
-        ProviderOption("groq", "llama-3.1-8b-instant", 1),
+        ProviderOption("groq", "openai/gpt-oss-20b", 1),
         ProviderOption("gemini", "gemini-2.5-flash-lite", 2),
     ]),
 }

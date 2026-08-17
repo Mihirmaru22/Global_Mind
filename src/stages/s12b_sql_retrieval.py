@@ -285,7 +285,7 @@ class SQLRetriever:
             return []
 
         last_error = None
-        for attempt in range(2):
+        for attempt in range(3):
             sql = await self._generate_sql(query, schema, last_error)
             if not sql:
                 return []
@@ -349,7 +349,7 @@ class SQLRetriever:
                 # returns 0 rows). Give the model one retry with that context on
                 # the first attempt. See below for what happens if it's still
                 # empty after the retry.
-                if not rows and attempt == 0:
+                if not rows and attempt < 2:
                     last_error = (
                         "Query executed successfully but returned 0 rows. If that's "
                         "surprising given the question, double-check your JOIN "
@@ -376,7 +376,7 @@ class SQLRetriever:
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
 
-                formatted_table = self._format_rows_as_markdown(rows, sql)
+                formatted_table = _format_rows_as_markdown(rows, sql)
 
                 # Wrap in a RetrievedChunk
                 chunk = Chunk(
@@ -468,7 +468,7 @@ class SQLRetriever:
                 query_vector=dense_vec,
                 sparse_vector=sparse_vec,
                 query_text=query,
-                top_k=7,
+                top_k=15,
                 filters={"chunk_type": ChunkType.SQL_SCHEMA.value},
             )
             
@@ -657,9 +657,9 @@ async def fetch_sqlite_foreign_keys() -> list[dict]:
     # token budget entirely). db_client.MAX_ROWS=500 protects the DB round-trip.
     # However, to prevent massive walls of text in the UI, we hard-cap the 
     # display output to 10 rows per the user's preference.
-    _MAX_DISPLAY_ROWS = 10
+_MAX_DISPLAY_ROWS = 10
 
-    def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
+def _format_rows_as_markdown(rows: list[dict[str, Any]], query: str) -> str:
         """Format dictionary rows into a markdown table, capped at 10 rows."""
         if not rows:
             return "No results."
@@ -672,7 +672,7 @@ async def fetch_sqlite_foreign_keys() -> list[dict]:
 
         shown = 0
         for row in rows:
-            if shown >= self._MAX_DISPLAY_ROWS:
+            if shown >= _MAX_DISPLAY_ROWS:
                 break
             values = [str(row[h]) for h in headers]
             line = "| " + " | ".join(values) + " |"
