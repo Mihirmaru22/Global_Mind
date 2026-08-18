@@ -1,6 +1,2 @@
-<<<<<<<< HEAD:frontend/assets/infoDiagram-FWYZ7A6U-BHOSQ3XK.js
 import{m as e}from"./src-DVPOk4iJ.js";import{c as t}from"./chunk-WYO6CB5R-stCaN3B1.js";import{n}from"./chunk-Y2CYZVJY-DsF7k-Jl.js";import{f as r}from"./index-CAF4FsBT.js";import{n as i}from"./mermaid-parser.core-C-xGjzuV.js";var a={parse:n(async t=>{let n=await i(`info`,t);e.debug(n)},`parse`)},o={version:`11.16.0`},s={parser:a,db:{getVersion:n(()=>o.version,`getVersion`)},renderer:{draw:n((n,i,a)=>{e.debug(`rendering info diagram
-========
-import{m as e}from"./src-DVPOk4iJ.js";import{c as t}from"./chunk-I66GZJ75-pcNfjPMX.js";import{n}from"./chunk-Y2CYZVJY-DsF7k-Jl.js";import{f as r}from"./index-Dh3mKPlI.js";import{n as i}from"./mermaid-parser.core-CFoekp7V.js";var a={parse:n(async t=>{let n=await i(`info`,t);e.debug(n)},`parse`)},o={version:`11.16.1`},s={parser:a,db:{getVersion:n(()=>o.version,`getVersion`)},renderer:{draw:n((n,i,a)=>{e.debug(`rendering info diagram
->>>>>>>> origin/claude:frontend/assets/infoDiagram-6WML65LV-D0xG5t-Y.js
 `+n);let o=r(i);t(o,100,400,!0),o.append(`g`).append(`text`).attr(`x`,100).attr(`y`,40).attr(`class`,`version`).attr(`font-size`,32).style(`text-anchor`,`middle`).text(`v${a}`)},`draw`)}};export{s as diagram};
