@@ -67,6 +67,7 @@ class DocumentType(str, Enum):
     PRESENTATION = "presentation"
     SPREADSHEET = "spreadsheet"
     GENERAL = "general"
+    DATABASE = "database"
 
 
 class ClassificationResult(BaseModel):
@@ -141,6 +142,7 @@ class ChunkType(str, Enum):
     CODE = "code"
     KEY_VALUE = "key_value"
     SQL_RESULT = "sql_result"
+    SQL_SCHEMA = "sql_schema"
 
 
 class Chunk(BaseModel):

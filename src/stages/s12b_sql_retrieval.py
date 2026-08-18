@@ -24,6 +24,8 @@ from src.core.provider_client import ProviderRouter
 from src.core.sql_column_registry import ColumnRegistry
 from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
+from src.stages.s10_embeddings import EmbeddingService
+from src.stages.s11_vector_store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
@@ -233,24 +235,23 @@ def _build_column_glossary_for_query(query: str) -> str:
 
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
+    _full_schema_cache: str | None = None
+    _column_registry: ColumnRegistry | None = None
+    # Caches the full retrieve() result, keyed on the normalized question text.
+    _result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
 
-    def __init__(self, router: ProviderRouter) -> None:
+    def __init__(
+        self,
+        router: ProviderRouter,
+        vector_store: QdrantStore | None = None,
+        embedding_service: EmbeddingService | None = None,
+    ) -> None:
         self._router = router
-        self._schema_cache: str | None = None
-        self._column_registry: ColumnRegistry | None = None
+        self._vector_store = vector_store
+        self._embeddings = embedding_service
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
         self._relationships = _load_relationships()
-        # Caches the full retrieve() result, keyed on the normalized question
-        # text. Without DDL access on the client's DB to add indexes, a slow
-        # aggregation query (e.g. a multi-table JOIN view) would otherwise
-        # re-run in full for every single question Ã¢â¬â this means it only
-        # actually hits the DB once per settings.sql_result_cache_ttl_seconds,
-        # and every other identically-worded question in that window gets an
-        # instant answer instead. Per-process only (not shared across workers
-        # or restarts) and keyed on exact question text, not semantic
-        # similarity Ã¢â¬â differently-worded questions still each pay full cost.
-        self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
         # Set when a run returned no rows because the LLM providers needed to
         # GENERATE the SQL were all unreachable (rate-limited / dead models) —
         # NOT because the question had no DB answer. Lets the pipeline tell the
@@ -263,7 +264,7 @@ class SQLRetriever:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
         self.last_infra_error = None
         cache_key = query.strip().lower()
-        cached = self._result_cache.get(cache_key)
+        cached = SQLRetriever._result_cache.get(cache_key)
         if cached is not None:
             cached_at, cached_chunks = cached
             if time.monotonic() - cached_at < settings.sql_result_cache_ttl_seconds:
@@ -275,11 +276,11 @@ class SQLRetriever:
         # next attempt (once a model is reachable again) must be free to retry
         # instead of being pinned to this transient failure for the cache TTL.
         if self.last_infra_error is None:
-            self._result_cache[cache_key] = (time.monotonic(), result)
+            SQLRetriever._result_cache[cache_key] = (time.monotonic(), result)
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
-        schema = await self._get_schema()
+        schema = await self._get_schema(query)
         if not schema:
             return []
 
@@ -291,8 +292,8 @@ class SQLRetriever:
 
             try:
                 # --- Column validation (catches hallucinated columns before DB) ---
-                if self._column_registry:
-                    validation = self._column_registry.validate_columns(sql)
+                if SQLRetriever._column_registry:
+                    validation = SQLRetriever._column_registry.validate_columns(sql)
                     if not validation.is_valid:
                         logger.warning("Column validation failed: %s", validation.errors)
                         _log_pipeline_event(
@@ -413,16 +414,10 @@ class SQLRetriever:
         _log_pipeline_event("retry_exhausted", {"last_error": last_error}, query=query)
         return []
 
-    # Sent in full on EVERY SQL-generation call (both retry attempts), so an
-    # uncapped schema on a wide/many-table database silently inflates every
-    # single query's input tokens, not just one answer. Cap it the same way
-    # the result-row table is capped.
-    _MAX_SCHEMA_CHARS = 12000
-
-    async def _get_schema(self) -> str:
-        """Fetch the DB schema (cached, capped)."""
-        if self._schema_cache:
-            return self._schema_cache
+    async def _fetch_full_schema(self) -> str:
+        """Fetch the full, un-truncated DB schema to initialize the ColumnRegistry."""
+        if SQLRetriever._full_schema_cache is not None:
+            return SQLRetriever._full_schema_cache
 
         try:
             rows = await run_readonly_query(self._dialect.schema_query, max_rows=20000)
@@ -431,31 +426,68 @@ class SQLRetriever:
             if self._dialect.key == "mysql" and self._dialect.fk_query:
                 fk_rows = await run_readonly_query(self._dialect.fk_query, max_rows=20000)
             elif self._dialect.key == "sqlite":
-                fk_rows = await self._fetch_sqlite_foreign_keys()
+                fk_rows = await fetch_sqlite_foreign_keys()
             else:
                 fk_rows = []
 
             fk_text = format_fk_rows(fk_rows)
-            schema = schema + ("\n\n" + fk_text if fk_text else "")
+            full_schema = schema + ("\n\n" + fk_text if fk_text else "")
 
-            if len(schema) > self._MAX_SCHEMA_CHARS:
-                logger.warning(
-                    "Schema text (%d chars) exceeds cap Ã¢â¬â truncating to %d chars "
-                    "for the SQL-generation prompt.",
-                    len(schema), self._MAX_SCHEMA_CHARS,
-                )
-                schema = schema[: self._MAX_SCHEMA_CHARS] + "\n-- (schema truncated)"
-
-            self._schema_cache = schema
-            # Build the column registry from the same schema text.
+            SQLRetriever._full_schema_cache = full_schema
+            # Build the column registry from the complete schema text so it can
+            # validate any generated SQL without truncation blindness.
             try:
-                self._column_registry = ColumnRegistry(schema, self._dialect.sqlglot_dialect)
+                SQLRetriever._column_registry = ColumnRegistry(
+                    full_schema, self._dialect.sqlglot_dialect
+                )
             except Exception as reg_err:
                 logger.warning("Failed to build column registry: %s", reg_err)
-            return self._schema_cache
+
+            return full_schema
         except Exception as e:
-            logger.error(f"Failed to fetch schema: {e}")
+            logger.error("Failed to fetch full schema: %s", e)
             return ""
+
+    async def _get_schema(self, query: str) -> str:
+        """Fetch relevant DB schema chunks for the prompt using Schema RAG.
+        
+        If vector_store is missing or fails, falls back to the legacy truncation method.
+        """
+        # Ensure the full schema is cached and registry is built.
+        full_schema = await self._fetch_full_schema()
+
+        if not self._vector_store or not self._embeddings:
+            # Legacy fallback if RAG isn't wired up
+            if len(full_schema) > 12000:
+                return full_schema[:12000] + "\n-- (schema truncated)"
+            return full_schema
+
+        try:
+            dense_vec, sparse_vec = await self._embeddings.embed_query(query)
+            chunks = await self._vector_store.search_hybrid(
+                query_vector=dense_vec,
+                sparse_vector=sparse_vec,
+                query_text=query,
+                top_k=7,
+                filters={"chunk_type": ChunkType.SQL_SCHEMA.value},
+            )
+            
+            if not chunks:
+                logger.warning("Schema RAG returned 0 chunks. Falling back to truncated schema.")
+                if len(full_schema) > 12000:
+                    return full_schema[:12000] + "\n-- (schema truncated)"
+                return full_schema
+                
+            # Combine the retrieved CREATE TABLE statements
+            retrieved_schema = "\n\n".join(chunk.chunk.content for chunk in chunks)
+            return retrieved_schema
+            
+        except Exception as e:
+            logger.error("Schema RAG search failed: %s", e)
+            # Legacy fallback
+            if len(full_schema) > 12000:
+                return full_schema[:12000] + "\n-- (schema truncated)"
+            return full_schema
 
     async def _generate_sql(self, query: str, schema: str, last_error: str | None = None) -> str:
         """Prompt the reasoning LLM to generate SQL."""
@@ -602,38 +634,33 @@ Output readability rules:
 
         return True
 
-    async def _fetch_sqlite_foreign_keys(self) -> list[dict]:
-        tables = await run_readonly_query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
-        )
-        fks = []
-        for row in tables:
-            table = row["name"]
-            escaped_table = table.replace('"', '""')
-            cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
-            for c in cols:
-                fks.append({
-                    "table_name": table,
-                    "column_name": c["from"],
-                    "referenced_table_name": c["table"],
-                    "referenced_column_name": c["to"],
-                })
-        return fks
+async def fetch_sqlite_foreign_keys() -> list[dict]:
+    tables = await run_readonly_query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
+    )
+    fks = []
+    for row in tables:
+        table = row["name"]
+        escaped_table = table.replace('"', '""')
+        cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
+        for c in cols:
+            fks.append({
+                "table_name": table,
+                "column_name": c["from"],
+                "referenced_table_name": c["table"],
+                "referenced_column_name": c["to"],
+            })
+    return fks
 
     # This table is returned as the answer VERBATIM (see _extract_sql_table in
     # s12_s13_s14_retrieval.py, which bypasses the LLM and _build_context's
-    # token budget entirely). db_client.MAX_ROWS=500 only protects the DB
-    # round-trip, not what's reasonable to hand back as a single chat answer.
-    #
-    # Budgeted by estimated size, not a flat row count: a fixed row cap either
-    # wastes budget on narrow tables (3 columns could easily fit 300+ rows in
-    # the same space 50 wide rows use) or overflows it on wide ones. Sizing by
-    # actual content keeps as much real data as the budget allows instead of
-    # discarding rows a narrow table had room for.
-    _MAX_DISPLAY_CHARS = 6000  # ~2000 tokens at ~3 chars/token
+    # token budget entirely). db_client.MAX_ROWS=500 protects the DB round-trip.
+    # However, to prevent massive walls of text in the UI, we hard-cap the 
+    # display output to 10 rows per the user's preference.
+    _MAX_DISPLAY_ROWS = 10
 
     def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
-        """Format dictionary rows into a markdown table, budgeted by size."""
+        """Format dictionary rows into a markdown table, capped at 10 rows."""
         if not rows:
             return "No results."
 
@@ -642,16 +669,14 @@ Output readability rules:
         separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
 
         table_rows = [f"SQL Query Executed: `{query}`\n", header_row, separator_row]
-        running_chars = sum(len(r) for r in table_rows)
 
         shown = 0
         for row in rows:
+            if shown >= self._MAX_DISPLAY_ROWS:
+                break
             values = [str(row[h]) for h in headers]
             line = "| " + " | ".join(values) + " |"
-            if running_chars + len(line) > self._MAX_DISPLAY_CHARS and shown > 0:
-                break
             table_rows.append(line)
-            running_chars += len(line)
             shown += 1
 
         result = "\n".join(table_rows)

@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 
 from src.models.schemas import (
     FileCategory,

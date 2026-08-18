@@ -85,7 +85,7 @@ class QueryPipeline:
         self._embeddings = embedding_service or EmbeddingService(self._rate_limiter)
         self._store = vector_store or QdrantStore(embedding_service=self._embeddings)
         self._retriever = Retriever(self._store, self._embeddings)
-        self._sql_retriever = SQLRetriever(self._router)
+        self._sql_retriever = SQLRetriever(self._router, self._store, self._embeddings)
         self._reranker = Reranker(self._rate_limiter)
         self._generator = Generator(self._router)
 
