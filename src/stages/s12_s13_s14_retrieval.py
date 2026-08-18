@@ -73,21 +73,14 @@ class Retriever:
         # Get dense + sparse query embeddings in one API call
         dense_vector, sparse_vector = await self._embeddings.embed_query(query)
 
-        # Hybrid RRF search (degrades gracefully to dense-only if sparse is empty).
-        # A Qdrant-side failure here (missing index, transient 5xx, etc.) must not
-        # take down the whole query stream — mirror the same graceful fallback
-        # s12b_sql_retrieval.py already uses for its schema-RAG search.
-        try:
-            results = await self._store.search_hybrid(
-                query_vector=dense_vector,
-                sparse_vector=sparse_vector,
-                query_text=query,
-                top_k=effective_top_k,
-                filters=filters,
-            )
-        except Exception as e:
-            logger.error("Vector store search_hybrid failed: %s", e)
-            return []
+        # Hybrid RRF search (degrades gracefully to dense-only if sparse is empty)
+        results = await self._store.search_hybrid(
+            query_vector=dense_vector,
+            sparse_vector=sparse_vector,
+            query_text=query,
+            top_k=effective_top_k,
+            filters=filters,
+        )
 
         # Collapse boilerplate shared across documents (same intro/disclaimer
         # stored once per file) so repeated passages don't crowd the reranker or
