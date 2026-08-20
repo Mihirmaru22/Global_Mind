@@ -108,31 +108,52 @@ class JoinPathValidator:
                 context={}
             )
         
-        tables_lower = [t.lower() for t in tables_involved]
+        tables_lower = list(dict.fromkeys(t.lower() for t in tables_involved))
         
-        # Verify that every table in the query is connected to at least one other table in the query
-        isolated_tables = []
-        for t1 in tables_lower:
-            has_connection = any(
-                (t1, t2) in self.valid_paths or (t2, t1) in self.valid_paths
-                for t2 in tables_lower if t1 != t2
-            )
-            if not has_connection:
-                isolated_tables.append(t1)
+        # Build adjacency graph for query tables
+        adj: Dict[str, set] = {t: set() for t in tables_lower}
+        for i, t1 in enumerate(tables_lower):
+            for t2 in tables_lower[i+1:]:
+                if (t1, t2) in self.valid_paths or (t2, t1) in self.valid_paths:
+                    adj[t1].add(t2)
+                    adj[t2].add(t1)
         
-        if isolated_tables:
-            logger.warning(f"Tables without valid join path to any query table: {isolated_tables}")
+        # 1. Identify completely isolated tables (degree 0)
+        isolated = [t for t, neighbors in adj.items() if not neighbors]
+        if isolated:
+            logger.warning(f"Tables without valid join path to any query table: {isolated}")
             return ValidationResult(
                 passed=False,
                 severity=ValidationSeverity.WARNING,
-                message=f"No defined relationship between {', '.join(isolated_tables)} and other tables in query",
-                context={"isolated_tables": isolated_tables, "tables": tables_involved}
+                message=f"No defined relationship between {', '.join(isolated)} and other tables in query",
+                context={"isolated_tables": isolated, "tables": tables_involved}
+            )
+        
+        # 2. Check full graph connectivity (single connected component via BFS)
+        visited = set()
+        queue = [tables_lower[0]]
+        visited.add(tables_lower[0])
+        while queue:
+            curr = queue.pop(0)
+            for neighbor in adj.get(curr, ()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        
+        if len(visited) < len(tables_lower):
+            unreachable = [t for t in tables_lower if t not in visited]
+            logger.warning(f"Disconnected join subgraphs detected in query: unreachable {unreachable}")
+            return ValidationResult(
+                passed=False,
+                severity=ValidationSeverity.WARNING,
+                message=f"Disconnected join paths in query: {', '.join(unreachable)} is not connected to {tables_lower[0]}",
+                context={"unreachable": unreachable, "tables": tables_involved}
             )
         
         return ValidationResult(
             passed=True,
             severity=ValidationSeverity.INFO,
-            message="All join paths validated against schema graph",
+            message="All join paths form a valid connected schema graph",
             context={"tables": tables_involved}
         )
 
