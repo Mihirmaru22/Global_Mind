@@ -118,13 +118,15 @@ def live_db(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config.settings, "db_engine", "sqlite", raising=False)
     monkeypatch.setattr(db_client, "DB_PATH", db_path, raising=False)
+    SQLRetriever.clear_schema_cache()
+    SQLRetriever.clear_result_cache()
     return db_path
 
 
 def _router_returning(sql: str) -> AsyncMock:
     router = AsyncMock()
 
-    async def chat(task=None, messages=None, **kw):
+    async def chat(*args, **kw):
         return sql
 
     router.chat = chat
@@ -147,15 +149,32 @@ async def test_real_sql_result_becomes_pinned_chunk(live_db):
 
 
 @pytest.mark.asyncio
-async def test_aggregate_over_no_rows_falls_back_not_null(live_db):
+async def test_aggregate_over_no_rows_returns_result_chunk(live_db):
     """SUM over a period with no data returns [{'total': None}]; the retriever
-    must treat that as empty (→ document fallback), never surface 'None'."""
+    must return a confirmed SQL result chunk with NULL status rather than silently dropping to empty."""
     sql = "SELECT SUM(amount) AS total FROM orders WHERE order_date LIKE '1998%'"
     retriever = SQLRetriever(_router_returning(sql))
 
     chunks = await retriever.retrieve("total revenue in 1998")
 
-    assert chunks == []  # abstains → pipeline falls back to documents
+    assert len(chunks) == 1
+    assert chunks[0].chunk.chunk_type == ChunkType.SQL_RESULT
+    assert "NULL" in chunks[0].chunk.content
+    assert retriever.last_query_status == "empty_result"
+
+
+@pytest.mark.asyncio
+async def test_zero_row_query_returns_result_chunk(live_db):
+    """A query returning 0 rows after execution returns a confirmed SQL result chunk with notice."""
+    sql = "SELECT id, name FROM customers WHERE name = 'NonexistentCo'"
+    retriever = SQLRetriever(_router_returning(sql))
+
+    chunks = await retriever.retrieve("find NonexistentCo")
+
+    assert len(chunks) == 1
+    assert chunks[0].chunk.chunk_type == ChunkType.SQL_RESULT
+    assert "No matching records found in the database" in chunks[0].chunk.content
+    assert retriever.last_query_status == "empty_result"
 
 
 @pytest.mark.asyncio
@@ -168,6 +187,7 @@ async def test_count_zero_is_a_real_answer(live_db):
 
     assert len(chunks) == 1
     assert "0" in chunks[0].chunk.content
+    assert retriever.last_query_status == "success"
 
 
 @pytest.mark.asyncio
@@ -188,6 +208,7 @@ async def test_no_sql_abstention(live_db, reply):
     retriever = SQLRetriever(_router_returning(reply))
     chunks = await retriever.retrieve("what is the meaning of life")
     assert chunks == []
+    assert retriever.last_query_status == "not_applicable"
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +231,7 @@ async def test_unsafe_queries_are_blocked(live_db, sql):
     retriever = SQLRetriever(_router_returning(sql))
     chunks = await retriever.retrieve("something")
     assert chunks == []
+    assert retriever.last_query_status == "failed"
     # The data is untouched — the read-only path never executed a write.
     con = sqlite3.connect(live_db)
     assert con.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 2
@@ -222,6 +244,7 @@ async def test_malformed_sql_falls_back(live_db):
     retriever = SQLRetriever(_router_returning("SELCT nope FROM"))
     chunks = await retriever.retrieve("broken")
     assert chunks == []
+    assert retriever.last_query_status == "failed"
 
 
 @pytest.mark.asyncio
@@ -230,3 +253,170 @@ async def test_nonexistent_column_falls_back(live_db):
     retriever = SQLRetriever(_router_returning("SELECT made_up_col FROM customers"))
     chunks = await retriever.retrieve("hallucinated column")
     assert chunks == []
+    assert retriever.last_query_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_result_cache_bounded_lru_and_deep_copy(live_db):
+    """Cache returns deep copies so mutation doesn't poison the cache, and clears correctly."""
+    SQLRetriever.clear_result_cache()
+    sql = "SELECT name FROM customers ORDER BY name LIMIT 1"
+    retriever = SQLRetriever(_router_returning(sql))
+
+    chunks1 = await retriever.retrieve("get first customer")
+    assert len(chunks1) == 1
+    original_content = chunks1[0].chunk.content
+
+    # Mutate the returned chunk object
+    chunks1[0].chunk.content = "MUTATED_CONTENT"
+
+    # Second retrieve should hit cache and return pristine original copy
+    chunks2 = await retriever.retrieve("get first customer")
+    assert len(chunks2) == 1
+    assert chunks2[0].chunk.content == original_content
+    assert chunks2[0].chunk.content != "MUTATED_CONTENT"
+
+    # Test cache clear
+    SQLRetriever.clear_result_cache()
+    assert len(SQLRetriever._result_cache) == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_schema_not_cached_permanently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An empty schema return from a failed/empty DB must not permanently disable introspection."""
+    SQLRetriever.clear_schema_cache()
+
+    empty_db = tmp_path / "empty.db"
+    conn = sqlite3.connect(empty_db)
+    conn.close()
+
+    from src.core import config
+    import src.core.db_client as db_client_mod
+    monkeypatch.setattr(config.settings, "db_engine", "sqlite", raising=False)
+    monkeypatch.setattr(db_client_mod, "DB_PATH", empty_db, raising=False)
+
+    retriever = SQLRetriever(_router_returning("SELECT 1"))
+    schema1 = await retriever._fetch_full_schema()
+    assert schema1 == ""
+    # Should NOT be cached in SQLRetriever._full_schema_cache
+    assert SQLRetriever._full_schema_cache is None
+
+    # Now populate the database
+    conn = sqlite3.connect(empty_db)
+    conn.execute("CREATE TABLE products (id INT, title TEXT)")
+    conn.close()
+
+    schema2 = await retriever._fetch_full_schema()
+    assert "CREATE TABLE products" in schema2
+    assert SQLRetriever._full_schema_cache is not None
+    SQLRetriever.clear_schema_cache()
+
+
+def test_column_glossary_synonyms_and_stop_words():
+    """Glossary filter matches synonyms and ignores stop words to prevent false positives."""
+    from src.stages.s12b_sql_retrieval import _build_column_glossary_for_query
+
+    # Query with synonym 'total sales' -> should match revenue
+    out_sales = _build_column_glossary_for_query("What is our total sales this year?")
+    assert "revenue" in out_sales
+
+    # Query with synonym 'buyer' -> should match customer
+    out_buyer = _build_column_glossary_for_query("Who is our top buyer?")
+    assert "customer" in out_buyer
+
+    # Stop words like 'is' should NOT trigger permissions_is_delete
+    out_is = _build_column_glossary_for_query("Who is our top buyer?")
+    assert "permissions_is_delete" not in out_is
+
+
+@pytest.mark.asyncio
+async def test_single_row_null_column_is_success(live_db):
+    """When a query selects a column whose value in an existing row is genuinely NULL,
+    the retriever must recognize the row was found (status=success), NOT empty_result,
+    and format the NULL value without aggregation-zero warning notes."""
+    con = sqlite3.connect(live_db)
+    con.execute("UPDATE customers SET city = NULL WHERE id = 2")
+    con.commit()
+    con.close()
+
+    sql = "SELECT city FROM customers WHERE id = 2"
+    retriever = SQLRetriever(_router_returning(sql))
+
+    chunks = await retriever.retrieve("what city is customer 2 in")
+
+    assert len(chunks) == 1
+    assert chunks[0].chunk.chunk_type == ChunkType.SQL_RESULT
+    assert retriever.last_query_status == "success"
+    assert "NULL" in chunks[0].chunk.content
+    assert "matched 0 records for aggregation" not in chunks[0].chunk.content
+
+
+@pytest.mark.asyncio
+async def test_sync_live_schema_atomicity(monkeypatch: pytest.MonkeyPatch):
+    """sync_live_schema embeds before upserting into vector store, ensuring no empty-store gap."""
+    from unittest.mock import AsyncMock, MagicMock
+    from src.pipeline.schema_ingestion import sync_live_schema
+
+    mock_run = AsyncMock(return_value=[
+        {"name": "customers", "sql": "CREATE TABLE customers (id INT, name TEXT)"}
+    ])
+    monkeypatch.setattr("src.pipeline.schema_ingestion.run_readonly_query", mock_run)
+
+    call_order = []
+
+    mock_store = MagicMock()
+    mock_store.upsert = AsyncMock(side_effect=lambda *args: call_order.append("upsert"))
+
+    mock_embeddings = MagicMock()
+    async def mock_embed(chunks):
+        call_order.append("embed")
+        return ([[0.1] * 384], [{}])
+    mock_embeddings.embed_chunks = AsyncMock(side_effect=mock_embed)
+
+    result = await sync_live_schema(embedding_service=mock_embeddings, vector_store=mock_store)
+    assert result["status"] == "ok"
+    assert call_order == ["embed", "upsert"]
+
+
+def test_glossary_and_relationships_no_drift():
+    """Verify that every column and table in sql_column_glossary.json and sql_relationships.json
+    resolves to a valid active schema column without drift."""
+    from src.core.sql_drift_validator import validate_glossary_and_relationships
+    errors = validate_glossary_and_relationships()
+    assert not errors, f"Glossary or relationship drift detected:\n" + "\n".join(errors)
+
+
+def test_scoped_relationships_filters_unrelated_tables():
+    """Verify that scoped relationship formatting only includes join paths for active tables."""
+    from src.stages.s12b_sql_retrieval import _format_scoped_relationships
+
+    sample_rels = [
+        {"from_table": "sales_order", "from_column": "party_id", "to_table": "party", "to_column": "id"},
+        {"from_table": "sales_order_products", "from_column": "sales_order_id", "to_table": "sales_order", "to_column": "id"},
+        {"from_table": "purchase", "from_column": "party_id", "to_table": "party", "to_column": "id"},
+        {"from_table": "party", "from_column": "created_id", "to_table": "users", "to_column": "id"},
+    ]
+
+    # When active tables are only sales_order and party:
+    scoped = _format_scoped_relationships({"sales_order", "party"}, query="top customer", rels=sample_rels)
+    assert "sales_order: party_id->party.id" in scoped
+    assert "purchase" not in scoped
+    assert "sales_order_products" not in scoped
+    assert "users" not in scoped  # Audit trail suppressed by default
+
+
+def test_1hop_graph_expansion():
+    """Verify 1-hop graph expansion finds directly connected tables while skipping audit noise."""
+    from src.stages.s12b_sql_retrieval import _get_1hop_neighbors
+
+    sample_rels = [
+        {"from_table": "sales_order", "from_column": "party_id", "to_table": "party", "to_column": "id"},
+        {"from_table": "sales_order_products", "from_column": "sales_order_id", "to_table": "sales_order", "to_column": "id"},
+        {"from_table": "sales_order", "from_column": "created_id", "to_table": "users", "to_column": "id"},
+    ]
+
+    neighbors = _get_1hop_neighbors({"sales_order"}, rels=sample_rels)
+    assert "party" in neighbors
+    assert "sales_order_products" in neighbors
+    assert "users" not in neighbors  # Audit link ignored
+

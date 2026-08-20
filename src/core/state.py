@@ -11,6 +11,7 @@ simultaneously.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -62,6 +63,10 @@ class UIStateManager:
                     with locked(f, LockMode.EXCLUSIVE):
                         f.write(content)
                         f.flush()
+                try:
+                    os.chmod(tmp_path, 0o664)
+                except Exception:
+                    pass
                 # os.replace is atomic on the same filesystem on POSIX *and*
                 # Windows, unlike Path.rename which fails on Windows when the
                 # destination already exists.
@@ -75,13 +80,37 @@ class UIStateManager:
     # --- Chats ---
 
     def get_chats(self) -> list[dict[str, Any]]:
-        return self._load_json(self.chats_file, [])
+        chats = self._load_json(self.chats_file, [])
+        # Auto-recover any chats that exist in messages.json but were missing in chats.json
+        all_messages = self.get_all_messages()
+        existing_ids = {c.get("id") for c in chats}
+        dirty = False
+        for cid, msgs in all_messages.items():
+            if cid not in existing_ids and msgs:
+                first_msg = msgs[0] if msgs else {}
+                title = first_msg.get("content", "").strip()
+                if len(title) > 40:
+                    title = title[:37].rstrip() + "..."
+                chats.append({
+                    "id": cid,
+                    "title": title or "New Chat",
+                    "updatedAt": first_msg.get("createdAt") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                })
+                dirty = True
+        if dirty:
+            self.save_chats(chats)
+        return chats
 
     def save_chats(self, chats: list[dict[str, Any]]) -> None:
         self._save_json(self.chats_file, chats)
 
     def create_chat(self, chat: dict[str, Any]) -> None:
         chats = self.get_chats()
+        for i, c in enumerate(chats):
+            if c.get("id") == chat.get("id"):
+                chats[i].update(chat)
+                self.save_chats(chats)
+                return
         chats.insert(0, chat)
         self.save_chats(chats)
 
@@ -121,6 +150,18 @@ class UIStateManager:
             all_messages[chat_id] = []
         all_messages[chat_id].append(message)
         self.save_all_messages(all_messages)
+
+        # Auto-ensure chat exists in chats.json
+        chats = self._load_json(self.chats_file, [])
+        if not any(c.get("id") == chat_id for c in chats):
+            title = message.get("content", "").strip()
+            if len(title) > 40:
+                title = title[:37].rstrip() + "..."
+            self.create_chat({
+                "id": chat_id,
+                "title": title or "New Chat",
+                "updatedAt": message.get("createdAt") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
 
     def set_message_feedback(
         self, chat_id: str, message_id: str, feedback: str | None, comment: str | None = None

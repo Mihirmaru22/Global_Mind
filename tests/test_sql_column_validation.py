@@ -138,3 +138,37 @@ def test_alias_aggregate_flagged(sqlite_schema: str) -> None:
     assert len(warnings) == 1
     assert "technology_used" in warnings[0]
     assert "total_amount" in warnings[0]
+
+
+def test_double_quoted_literals_in_sqlite_not_flagged(sqlite_schema: str) -> None:
+    """In SQLite dialect, double-quoted non-column tokens (e.g. status = 'completed')
+    compared against real columns must not be flagged as hallucinated columns."""
+    registry = ColumnRegistry(sqlite_schema, "sqlite")
+    sql = 'SELECT id, total_amount FROM orders WHERE status = "completed"'
+    result = registry.validate_columns(sql)
+    assert result.is_valid
+    assert not result.errors
+
+
+def test_hallucinated_double_quoted_column_flagged(sqlite_schema: str) -> None:
+    """A genuinely hallucinated column wrapped in double quotes (projection, compared to literal,
+    or in ORDER BY) must be caught and flagged as an error, NOT excused by the string literal fallback."""
+    registry = ColumnRegistry(sqlite_schema, "sqlite")
+
+    # 1. Hallucinated column in SELECT projection
+    res1 = registry.validate_columns('SELECT "astrological_sign" FROM users')
+    assert not res1.is_valid
+    assert "astrological_sign" in res1.errors[0]
+    assert "astrological_sign" in res1.hallucinated_columns
+
+    # 2. Hallucinated column compared to a number
+    res2 = registry.validate_columns('SELECT id FROM users WHERE "totally_fake_column" = 1')
+    assert not res2.is_valid
+    assert "totally_fake_column" in res2.errors[0]
+    assert "totally_fake_column" in res2.hallucinated_columns
+
+    # 3. Hallucinated column in ORDER BY
+    res3 = registry.validate_columns('SELECT id FROM users ORDER BY "fake_sort_col"')
+    assert not res3.is_valid
+    assert "fake_sort_col" in res3.errors[0]
+    assert "fake_sort_col" in res3.hallucinated_columns

@@ -16,7 +16,7 @@ tasks:
         model: gemini-2.5-flash-lite
         priority: 1
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 2
       - provider: openrouter
         model: qwen/qwen-2.5-72b-instruct:free
@@ -77,38 +77,32 @@ tasks:
   # Stage 14 — Generation tasks
   general_qa:
     providers:
-      - provider: gemini
-        model: gemini-2.5-flash
+      - provider: groq
+        model: openai/gpt-oss-120b
         priority: 1
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: openai/gpt-oss-20b
         priority: 2
       - provider: nvidia_nim
-        model: meta/llama-3.1-70b-instruct
+        model: meta/llama-3.3-70b-instruct
         priority: 3
-      - provider: openrouter
-        model: qwen/qwen-2.5-72b-instruct:free
+      - provider: gemini
+        model: gemini-2.5-flash
         priority: 4
 
   reasoning:
     providers:
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: openai/gpt-oss-120b
         priority: 1
-      # NVIDIA NIM is promoted to the first fallback (ahead of gemini) and uses
-      # qwen3.5 — a model already proven on this NVIDIA key elsewhere (extraction,
-      # general_qa) and strong at SQL. The previous slug `meta/llama3-70b-instruct`
-      # is dead (NVIDIA returns 404), which left reasoning with no working fallback
-      # whenever groq hit its daily token cap, so Text-to-SQL silently produced no
-      # query and every DB question fell back to "not in my documents".
-      - provider: nvidia_nim
-        model: meta/llama-3.1-70b-instruct
+      - provider: groq
+        model: openai/gpt-oss-20b
         priority: 2
+      - provider: nvidia_nim
+        model: meta/llama-3.3-70b-instruct
+        priority: 3
       - provider: gemini
         model: gemini-2.5-flash
-        priority: 3
-      - provider: openrouter
-        model: qwen/qwen-2.5-72b-instruct:free
         priority: 4
 
   extraction:
@@ -120,7 +114,7 @@ tasks:
         model: gemini-2.5-flash
         priority: 2
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 3
 
   summarization:
@@ -135,7 +129,7 @@ tasks:
   fast_support:
     providers:
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 1
       - provider: gemini
         model: gemini-2.5-flash-lite
@@ -144,7 +138,7 @@ tasks:
   classification:
     providers:
       - provider: groq
-        model: llama-3.1-8b-instant
+        model: openai/gpt-oss-20b
         priority: 1
       - provider: gemini
         model: gemini-2.5-flash-lite
