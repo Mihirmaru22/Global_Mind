@@ -84,11 +84,11 @@ class JoinPathValidator:
         return paths
     
     def validate(self, sql: str, tables_involved: List[str]) -> ValidationResult:
-        if len(tables_involved) <= 1:
+        if len(tables_involved) <= 1 or not self.valid_paths:
             return ValidationResult(
                 passed=True,
                 severity=ValidationSeverity.INFO,
-                message="Single table query - no join validation needed",
+                message="Single table or unmapped schema - join validation skipped",
                 context={}
             )
         
@@ -261,11 +261,12 @@ class ResultValidator:
     """Main validation engine orchestrating all validators."""
     
     def __init__(self, schema_atlas: Dict[str, Any], config: Optional[Dict[str, Any]] = None):
+        self.schema_atlas = schema_atlas or {}
         self.config = config or {}
         self.cardinality_validator = CardinalityValidator(
             max_rows=self.config.get("max_rows", 10000)
         )
-        self.join_path_validator = JoinPathValidator(schema_atlas)
+        self.join_path_validator = JoinPathValidator(self.schema_atlas)
         self.temporal_validator = TemporalValidator()
         self.aggregation_validator = AggregationValidator()
         self.data_type_validator = DataTypeValidator()

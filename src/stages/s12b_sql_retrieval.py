@@ -24,6 +24,9 @@ from src.core.pipeline_metrics import log_event as _log_pipeline_event
 from src.core.provider_client import ProviderRouter
 from src.core.sql_column_registry import ColumnRegistry
 from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
+from src.core.result_validator import ResultValidator, ValidationSeverity
+from src.core.pattern_learner import PatternLearner
+from src.core.confidence_scorer import ConfidenceScorer, ConfidenceBreakdown
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
@@ -562,9 +565,14 @@ class SQLRetriever:
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
         self._relationships = _load_relationships()
+        self._pattern_learner = PatternLearner()
+        self._confidence_scorer = ConfidenceScorer()
+        self._result_validator = ResultValidator(_get_raw_behavioral_atlas() or {})
         self.last_infra_error: str | None = None
         self.last_query_status: str | None = None
         self.last_cot_plan: str | None = None
+        self.last_confidence_score: float | None = None
+        self.last_confidence_breakdown: ConfidenceBreakdown | None = None
 
     @classmethod
     def clear_result_cache(cls) -> None:
@@ -576,6 +584,8 @@ class SQLRetriever:
         self.last_infra_error = None
         self.last_query_status = None
         self.last_cot_plan = None
+        self.last_confidence_score = None
+        self.last_confidence_breakdown = None
         cache_key = query.strip().lower()
         now = time.monotonic()
 
@@ -608,6 +618,9 @@ class SQLRetriever:
             return []
 
         last_error = None
+        first_failed_sql: str | None = None
+        first_error: str | None = None
+
         for attempt in range(3):
             sql = await self._generate_sql(query, schema, last_error)
             if not sql:
@@ -615,7 +628,9 @@ class SQLRetriever:
                 return []
 
             try:
-                # --- Column validation (catches hallucinated columns before DB) ---
+                tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
+
+                # --- 1. Column validation (catches hallucinated columns before DB) ---
                 if SQLRetriever._column_registry:
                     validation = SQLRetriever._column_registry.validate_columns(sql)
                     if not validation.is_valid:
@@ -626,6 +641,9 @@ class SQLRetriever:
                              "errors": validation.errors},
                             query=query,
                         )
+                        if first_failed_sql is None:
+                            first_failed_sql = sql
+                            first_error = "\n".join(validation.errors)
                         last_error = "Column validation failed:\n" + "\n".join(validation.errors)
                         continue  # retry with feedback
 
@@ -639,10 +657,30 @@ class SQLRetriever:
                                 {"sql": sql, "warnings": alias_warnings},
                                 query=query,
                             )
+                            if first_failed_sql is None:
+                                first_failed_sql = sql
+                                first_error = "\n".join(alias_warnings)
                             last_error = "Alias quality issue:\n" + "\n".join(alias_warnings)
                             continue
 
-                # --- Safety validation (AST parsing) ---
+                # --- 2. Semantic Correctness Validation ---
+                val_results = self._result_validator.validate_query(
+                    sql=sql,
+                    tables_involved=tables,
+                    has_date_filter=("WHERE" in sql.upper() and any(k in sql.upper() for k in ["DATE", "YEAR", "CREATED_AT", "UPDATED_AT", "MONTH"])),
+                    has_aggregation=any(f in sql.upper() for f in ["SUM(", "AVG(", "COUNT(", "MAX(", "MIN("]),
+                )
+                crit_errors = [r.message for r in val_results if r.severity == ValidationSeverity.CRITICAL and not r.passed]
+                if crit_errors:
+                    logger.warning("Semantic validation critical errors: %s", crit_errors)
+                    _log_pipeline_event("semantic_validation_failed", {"sql": sql, "errors": crit_errors}, query=query)
+                    if first_failed_sql is None:
+                        first_failed_sql = sql
+                        first_error = "\n".join(crit_errors)
+                    last_error = "Semantic validation failed:\n" + "\n".join(crit_errors)
+                    continue
+
+                # --- 3. Safety validation (AST parsing) ---
                 if not self._is_safe_read_query(sql):
                     _log_pipeline_event(
                         "unsafe_sql_blocked",
@@ -651,7 +689,7 @@ class SQLRetriever:
                     )
                     raise UnsafeQueryError(f"Unsafe or unparseable SQL generated: {sql}")
 
-                # Execute
+                # --- 4. Execute Read-Only Query ---
                 rows = await run_readonly_query(sql)
 
                 is_zero_rows = len(rows) == 0
@@ -666,16 +704,43 @@ class SQLRetriever:
                         "If that's surprising given the question, double-check your JOIN "
                         "and WHERE conditions."
                     )
+                    if first_failed_sql is None:
+                        first_failed_sql = sql
+                        first_error = last_error
                     continue
+
+                # --- 5. Result Sanity & Confidence Scoring ---
+                self._result_validator.validate_results(rows)
+                learned_matches = self._pattern_learner.get_patterns_for_query(query)
+                conf = self._confidence_scorer.calculate(
+                    pattern_matches=len(learned_matches),
+                    validation_results=val_results,
+                    reflexion_attempts=attempt,
+                    query_complexity={"join_count": max(0, len(tables) - 1), "subquery_depth": sql.upper().count("SELECT") - 1},
+                )
+                self.last_confidence_score = conf.final_score
+                self.last_confidence_breakdown = conf
+
+                # If query succeeded after a previous failed attempt, capture the fix!
+                if attempt > 0 and first_failed_sql:
+                    try:
+                        self._pattern_learner.capture_success(
+                            user_question=query,
+                            original_cot="",
+                            failed_sql=first_failed_sql,
+                            error_message=first_error or "Previous attempt error",
+                            fixed_sql=sql,
+                            revised_cot=self.last_cot_plan or "",
+                        )
+                    except Exception as learn_err:
+                        logger.debug("Failed to record learned pattern: %s", learn_err)
 
                 # Set query status:
                 # - empty_result: 0 rows returned or aggregate over 0 matching rows
                 # - success: matching row(s) returned (including single rows with NULL field values)
                 self.last_query_status = "empty_result" if is_empty_result else "success"
 
-                tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
-
                 formatted_table = _format_rows_as_markdown(rows, sql, is_agg_zero=is_agg_zero)
 
                 # Wrap in a RetrievedChunk
@@ -691,7 +756,8 @@ class SQLRetriever:
                 _log_pipeline_event(
                     "sql_success",
                     {"sql": sql, "row_count": len(rows), "tables": tables,
-                     "attempt": attempt + 1, "is_empty_result": is_empty_result},
+                     "attempt": attempt + 1, "is_empty_result": is_empty_result,
+                     "confidence_score": self.last_confidence_score},
                     query=query,
                 )
                 return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
@@ -708,6 +774,9 @@ class SQLRetriever:
                     {"sql": sql, "error": str(e), "attempt": attempt + 1},
                     query=query,
                 )
+                if first_failed_sql is None:
+                    first_failed_sql = sql
+                    first_error = str(e)
                 last_error = str(e)
 
         # If we exhausted retries, fail cleanly
@@ -951,6 +1020,15 @@ Schema:
                 "(use these exact forms for relative dates like 'last month', 'this year'):\n"
                 f"{self._dialect.date_functions}"
             )
+        if hasattr(self, "_pattern_learner") and self._pattern_learner:
+            learned_patterns = self._pattern_learner.get_patterns_for_query(query)
+            if learned_patterns:
+                pattern_text = "\n".join(
+                    f"- Scenario: {p.business_scenario}\n  Reasoning: {p.cot_reasoning_snippet}\n  Template: `{p.sql_structure_template}`"
+                    for p in learned_patterns
+                )
+                system_prompt += f"\n\n=== RELEVANT LEARNED SQL PATTERNS ===\n{pattern_text}"
+
         if last_error:
             system_prompt += f"\n\nWARNING: Your previous attempt failed with this error: {last_error}\nPlease fix the SQL query and try again."
         
