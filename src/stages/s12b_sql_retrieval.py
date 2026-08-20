@@ -381,6 +381,8 @@ def _build_column_glossary_for_query(query: str) -> str:
                 note = details.get("note", "")
                 note_str = f" ({note})" if note else ""
                 lines.append(f'- "{term}" → {maps_to}{note_str}')
+                if len(lines) >= 15:
+                    break
 
     return "\n".join(lines)
 
@@ -413,7 +415,10 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
     tables = atlas_data["tables"]
     lines: list[str] = []
     
-    for t_name in sorted(schema_tables):
+    # Cap to at most 8 active tables to strictly avoid LLM payload/TPM limits
+    active_tables = sorted(schema_tables)[:8]
+    
+    for t_name in active_tables:
         if t_name not in tables:
             continue
         t_data = tables[t_name]
@@ -423,7 +428,8 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
         for w in t_data.get("join_warnings", []):
             lines.append(f"  - ⚠️ Warning: {w}")
         
-        # List columns with rules or formulas
+        # List columns with rules or formulas (max 8 per table)
+        col_count = 0
         for c_name, c_data in t_data.get("columns", {}).items():
             c_rules = c_data.get("behavioral_rules", [])
             formula = c_data.get("aggregation_formula")
@@ -437,6 +443,9 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
                 if formula:
                     parts.append(f"Formula: `{formula}`")
                 lines.append(f"  - `{t_name}.{c_name}` ({c_data.get('type', 'VARCHAR')}): {'; '.join(parts)}")
+                col_count += 1
+                if col_count >= 8:
+                    break
         lines.append("")
         
     return "\n".join(lines)
@@ -541,6 +550,56 @@ def extract_analytical_intent(query: str) -> dict[str, Any]:
         intent["filters"].append("inactive (no recent orders)")
 
     return intent
+
+
+def _build_scoped_schema_fallback(full_schema: str, query: str) -> str:
+    """Build a concise, token-efficient subset of schema (max 6-8 tables) matching query intent."""
+    if not full_schema:
+        return ""
+    full_ddls = _extract_table_ddl_map(full_schema)
+    if not full_ddls:
+        return full_schema[:3500]
+    
+    query_lower = query.lower()
+    candidate_tables: list[str] = []
+    
+    glossary_text = _build_column_glossary_for_query(query)
+    glossary_tables = set(re.findall(r'\b([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+', glossary_text))
+    for t in glossary_tables:
+        if t in full_ddls and t not in candidate_tables:
+            candidate_tables.append(t)
+    
+    domain_rules = [
+        (["order", "sales", "bought", "buying", "spent", "spending", "buyer", "customer", "client", "revenue", "turnover"], ["sales_order", "sales_order_products", "party", "product", "financial_year"]),
+        (["purchase", "supplier", "vendor", "procure", "inward", "raw material"], ["purchase", "purchase_products", "party", "product", "financial_year"]),
+        (["stock", "inventory", "warehouse", "carton", "on hand"], ["stock", "product", "product_color", "category"]),
+        (["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq"], ["production", "actual_production", "machine", "product", "product_color"]),
+        (["lead", "inquiry", "inquiries", "prospect", "followup", "deal", "pipeline"], ["lead", "lead_history", "users", "party"]),
+        (["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver"], ["delivery_challan", "delivery_challan_products", "party", "sales_order"]),
+        (["proforma", "invoice", "bill", "gst", "tax", "quotation"], ["proforma", "quotation", "party", "financial_year"]),
+        (["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"], ["party", "financial_year", "party_opening_balance", "sales_order", "receipt"]),
+    ]
+    for keywords, tbls in domain_rules:
+        if any(k in query_lower for k in keywords):
+            for t in tbls:
+                if t in full_ddls and t not in candidate_tables:
+                    candidate_tables.append(t)
+
+    # Filter to candidate tables present in full_ddls
+    valid_tables = [t for t in candidate_tables if t in full_ddls]
+    
+    # If no candidate matched the actual database tables (e.g. test fixture or custom DB), use available tables
+    if not valid_tables:
+        valid_tables = list(full_ddls.keys())[:8]
+    else:
+        valid_tables = valid_tables[:6]
+        # 1-hop expansion for bridge tables
+        neighbors = _get_1hop_neighbors(set(valid_tables))
+        for n in sorted(neighbors):
+            if n in full_ddls and n not in valid_tables and len(valid_tables) < 8:
+                valid_tables.append(n)
+            
+    return "\n\n".join(full_ddls[t] for t in valid_tables if t in full_ddls)
 
 
 _MAX_RESULT_CACHE_ENTRIES = 256
@@ -829,16 +888,13 @@ class SQLRetriever:
     async def _get_schema(self, query: str) -> str:
         """Fetch relevant DB schema chunks for the prompt using Schema RAG.
         
-        If vector_store is missing or fails, falls back to the legacy truncation method.
+        If vector_store is missing or fails, falls back to an intelligent, token-bounded schema.
         """
         # Ensure the full schema is cached and registry is built.
         full_schema = await self._fetch_full_schema()
 
         if not self._vector_store or not self._embeddings:
-            # Legacy fallback if RAG isn't wired up
-            if len(full_schema) > 12000:
-                return full_schema[:12000] + "\n-- (schema truncated)"
-            return full_schema
+            return _build_scoped_schema_fallback(full_schema, query)
 
         try:
             dense_vec, sparse_vec = await self._embeddings.embed_query(query)
@@ -851,10 +907,8 @@ class SQLRetriever:
             )
             
             if not chunks:
-                logger.warning("Schema RAG returned 0 chunks. Falling back to truncated schema.")
-                if len(full_schema) > 12000:
-                    return full_schema[:12000] + "\n-- (schema truncated)"
-                return full_schema
+                logger.warning("Schema RAG returned 0 chunks. Falling back to scoped schema.")
+                return _build_scoped_schema_fallback(full_schema, query)
                 
             # Combine the retrieved CREATE TABLE statements
             retrieved_schema = "\n\n".join(chunk.chunk.content for chunk in chunks)
@@ -879,6 +933,8 @@ class SQLRetriever:
                 glossary_tables.update(["delivery_challan", "delivery_challan_products", "party", "sales_order"])
             if any(k in query_lower for k in ["proforma", "invoice", "bill", "gst", "tax", "quotation"]):
                 glossary_tables.update(["proforma", "quotation", "party", "financial_year"])
+            if any(k in query_lower for k in ["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"]):
+                glossary_tables.update(["party", "financial_year", "party_opening_balance", "sales_order", "receipt"])
 
             full_ddls = _extract_table_ddl_map(full_schema) if full_schema else {}
             anchor_extra = []
@@ -919,10 +975,7 @@ class SQLRetriever:
             
         except Exception as e:
             logger.error("Schema RAG search failed: %s", e)
-            # Legacy fallback
-            if len(full_schema) > 12000:
-                return full_schema[:12000] + "\n-- (schema truncated)"
-            return full_schema
+            return _build_scoped_schema_fallback(full_schema, query)
 
     async def _generate_sql(self, query: str, schema: str, last_error: str | None = None) -> str:
         """Prompt the reasoning LLM to generate SQL."""
@@ -1182,15 +1235,13 @@ async def fetch_sqlite_foreign_keys() -> list[dict]:
     return fks
 
 
-class _SQLResultFormatter:
-    """Helper class for formatting SQL results."""
-    
-    _MAX_DISPLAY_ROWS = 10
-    
-    def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
-        """Format dictionary rows into a markdown table, capped at 10 rows."""
-        if not rows:
-            return "No results."
+_MAX_DISPLAY_ROWS = 10
+
+
+def _format_rows_as_markdown(rows: list[dict[str, Any]], query: str, is_agg_zero: bool = False) -> str:
+    """Format dictionary rows into a markdown table, capped at 10 rows."""
+    if not rows:
+        return f"SQL Query Executed: `{query}`\n\n_No matching records found in the database._"
 
     if is_agg_zero:
         headers = list(rows[0].keys())
