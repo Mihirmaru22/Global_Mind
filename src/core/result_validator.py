@@ -108,23 +108,31 @@ class JoinPathValidator:
                 context={}
             )
         
-        # Check if all table pairs have valid join paths
-        for i, table1 in enumerate(tables_involved):
-            for table2 in tables_involved[i+1:]:
-                t1, t2 = table1.lower(), table2.lower()
-                if (t1, t2) not in self.valid_paths and (t2, t1) not in self.valid_paths:
-                    logger.warning(f"Potentially invalid join path: {table1} -> {table2}")
-                    return ValidationResult(
-                        passed=False,
-                        severity=ValidationSeverity.WARNING,
-                        message=f"No defined relationship between {table1} and {table2}",
-                        context={"table1": table1, "table2": table2}
-                    )
+        tables_lower = [t.lower() for t in tables_involved]
+        
+        # Verify that every table in the query is connected to at least one other table in the query
+        isolated_tables = []
+        for t1 in tables_lower:
+            has_connection = any(
+                (t1, t2) in self.valid_paths or (t2, t1) in self.valid_paths
+                for t2 in tables_lower if t1 != t2
+            )
+            if not has_connection:
+                isolated_tables.append(t1)
+        
+        if isolated_tables:
+            logger.warning(f"Tables without valid join path to any query table: {isolated_tables}")
+            return ValidationResult(
+                passed=False,
+                severity=ValidationSeverity.WARNING,
+                message=f"No defined relationship between {', '.join(isolated_tables)} and other tables in query",
+                context={"isolated_tables": isolated_tables, "tables": tables_involved}
+            )
         
         return ValidationResult(
             passed=True,
             severity=ValidationSeverity.INFO,
-            message="All join paths validated against schema",
+            message="All join paths validated against schema graph",
             context={"tables": tables_involved}
         )
 
