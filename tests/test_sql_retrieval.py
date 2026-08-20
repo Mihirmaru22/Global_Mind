@@ -118,6 +118,8 @@ def live_db(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config.settings, "db_engine", "sqlite", raising=False)
     monkeypatch.setattr(db_client, "DB_PATH", db_path, raising=False)
+    SQLRetriever.clear_schema_cache()
+    SQLRetriever.clear_result_cache()
     return db_path
 
 
@@ -288,8 +290,10 @@ async def test_empty_schema_not_cached_permanently(tmp_path: Path, monkeypatch: 
     conn = sqlite3.connect(empty_db)
     conn.close()
 
+    from src.core import config
     import src.core.db_client as db_client_mod
-    monkeypatch.setattr(db_client_mod, "DB_PATH", empty_db)
+    monkeypatch.setattr(config.settings, "db_engine", "sqlite", raising=False)
+    monkeypatch.setattr(db_client_mod, "DB_PATH", empty_db, raising=False)
 
     retriever = SQLRetriever(_router_returning("SELECT 1"))
     schema1 = await retriever._fetch_full_schema()
