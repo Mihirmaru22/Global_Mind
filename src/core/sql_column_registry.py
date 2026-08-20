@@ -239,7 +239,7 @@ class ColumnRegistry:
         return False
 
     def _resolve_table_aliases(self, ast: exp.Expression) -> dict[str, str]:
-        """Build alias → real_table_name mapping from the query's FROM/JOIN."""
+        """Build alias → real_table_name mapping from the query's FROM/JOIN and CTEs."""
         aliases: dict[str, str] = {}
         for table_node in ast.find_all(exp.Table):
             real_name = (table_node.name or "").lower()
@@ -248,6 +248,10 @@ class ColumnRegistry:
                 aliases[alias.lower()] = real_name
             if real_name:
                 aliases[real_name] = real_name
+        for cte_node in ast.find_all(exp.CTE):
+            cte_alias = (cte_node.alias or "").lower()
+            if cte_alias:
+                aliases[cte_alias] = cte_alias
         return aliases
 
     # ------------------------------------------------------------------
