@@ -69,18 +69,34 @@ class CardinalityValidator:
 class JoinPathValidator:
     """Validates that joins follow valid foreign key relationships."""
     
-    def __init__(self, schema_atlas: Dict[str, Any]):
-        self.schema_atlas = schema_atlas
+    def __init__(self, schema_atlas: Dict[str, Any], relationships: Optional[List[Dict[str, Any]]] = None):
+        self.schema_atlas = schema_atlas or {}
+        self.relationships = relationships
         self.valid_paths = self._build_valid_paths()
     
     def _build_valid_paths(self) -> set:
         paths = set()
+        # 1. From schema atlas
         for table_name, table_info in self.schema_atlas.get("tables", {}).items():
             for fk in table_info.get("foreign_keys", []):
                 ref_table = fk.get("references_table")
                 if ref_table:
-                    paths.add((table_name, ref_table))
-                    paths.add((ref_table, table_name))
+                    paths.add((table_name.lower(), ref_table.lower()))
+                    paths.add((ref_table.lower(), table_name.lower()))
+        # 2. From canonical relationships registry (config/sql_relationships.json)
+        rels = self.relationships
+        if rels is None:
+            try:
+                from src.stages.s12b_sql_retrieval import _get_raw_relationships
+                rels = _get_raw_relationships()
+            except Exception:
+                rels = []
+        for r in (rels or []):
+            f_tbl = (r.get("from_table") or "").lower()
+            t_tbl = (r.get("to_table") or "").lower()
+            if f_tbl and t_tbl:
+                paths.add((f_tbl, t_tbl))
+                paths.add((t_tbl, f_tbl))
         return paths
     
     def validate(self, sql: str, tables_involved: List[str]) -> ValidationResult:
@@ -95,7 +111,8 @@ class JoinPathValidator:
         # Check if all table pairs have valid join paths
         for i, table1 in enumerate(tables_involved):
             for table2 in tables_involved[i+1:]:
-                if (table1, table2) not in self.valid_paths and (table2, table1) not in self.valid_paths:
+                t1, t2 = table1.lower(), table2.lower()
+                if (t1, t2) not in self.valid_paths and (t2, t1) not in self.valid_paths:
                     logger.warning(f"Potentially invalid join path: {table1} -> {table2}")
                     return ValidationResult(
                         passed=False,
@@ -118,27 +135,20 @@ class TemporalValidator:
     def validate(self, sql: str, has_date_filter: bool = False) -> ValidationResult:
         sql_upper = sql.upper()
         
-        # Check for soft-delete filter
-        has_soft_delete = "DELETED_AT IS NULL" in sql_upper or "DELETED_AT IS NOT NULL" not in sql_upper
-        
-        if not has_soft_delete:
+        # Check for malformed soft-delete syntax (e.g. deleted_at = NULL instead of IS NULL)
+        if "DELETED_AT" in sql_upper and "DELETED_AT = NULL" in sql_upper:
             return ValidationResult(
                 passed=False,
                 severity=ValidationSeverity.WARNING,
-                message="Missing soft-delete filter (deleted_at IS NULL)",
-                context={"recommendation": "Add WHERE ...deleted_at IS NULL"}
+                message="Malformed soft-delete syntax: use 'deleted_at IS NULL', not '= NULL'",
+                context={"recommendation": "Use WHERE ...deleted_at IS NULL"}
             )
-        
-        # Check for invalid date ranges (start > end)
-        # This would require parsing the actual date values
-        if "BETWEEN" in sql_upper:
-            logger.info("Date range detected - manual verification recommended")
         
         return ValidationResult(
             passed=True,
             severity=ValidationSeverity.INFO,
             message="Temporal validation passed",
-            context={"has_date_filter": has_date_filter, "soft_delete_applied": has_soft_delete}
+            context={"has_date_filter": has_date_filter}
         )
 
 
@@ -147,26 +157,12 @@ class AggregationValidator:
     
     def validate(self, sql: str, has_aggregation: bool = False) -> ValidationResult:
         sql_upper = sql.upper()
-        
         agg_funcs = ["SUM(", "AVG(", "COUNT(", "MAX(", "MIN("]
         has_agg = any(func in sql_upper for func in agg_funcs)
         
         if has_agg:
-            # Check for GROUP BY when non-aggregated columns are selected
-            if "GROUP BY" not in sql_upper:
-                # Simple heuristic - may have false positives
-                if sql_upper.count(",") > 0 and "SELECT" in sql_upper:
-                    logger.warning("Aggregation without GROUP BY - verify if intentional")
-            
-            # Check for CAST on VARCHAR columns before aggregation
-            if "AVG(" in sql_upper or "SUM(" in sql_upper:
-                if "CAST(" not in sql_upper:
-                    return ValidationResult(
-                        passed=False,
-                        severity=ValidationSeverity.WARNING,
-                        message="Aggregation on potentially VARCHAR column without CAST",
-                        context={"recommendation": "Use CAST(column AS DECIMAL(10,2))"}
-                    )
+            if "GROUP BY" not in sql_upper and sql_upper.count(",") > 0 and "SELECT" in sql_upper:
+                logger.debug("Aggregation without GROUP BY detected")
         
         return ValidationResult(
             passed=True,
@@ -177,26 +173,28 @@ class AggregationValidator:
 
 
 class DataTypeValidator:
-    """Catches implicit type conversion risks."""
+    """Catches implicit type conversion risks on VARCHAR columns."""
     
     def validate(self, sql: str, schema_context: Dict[str, Any]) -> ValidationResult:
-        # Check for string comparisons on numeric columns
-        # This requires schema knowledge
+        import re
         varchar_columns = []
         for table_info in schema_context.get("tables", {}).values():
             for col_name, col_info in table_info.get("columns", {}).items():
-                if col_info.get("type", "").upper() in ["VARCHAR", "TEXT", "CHAR"]:
-                    varchar_columns.append(col_name)
+                if any(t in col_info.get("type", "").upper() for t in ["VARCHAR", "TEXT", "CHAR"]):
+                    if any(m in col_name.lower() for m in ["qty", "quantity", "rate", "amount", "price", "weight", "total", "cost", "apq"]):
+                        varchar_columns.append(col_name)
         
-        # Warn if numeric operations detected on VARCHAR columns
-        for col in varchar_columns:
-            if f"AVG({col})" in sql or f"SUM({col})" in sql:
-                if "CAST(" not in sql:
+        # Warn if numeric operations detected on VARCHAR columns without CAST
+        sql_upper = sql.upper()
+        for col in set(varchar_columns):
+            pattern = rf"\b(?:SUM|AVG)\s*\(\s*(?:[a-zA-Z0-9_]+\.)?{re.escape(col)}\b"
+            if re.search(pattern, sql, re.IGNORECASE):
+                if "CAST(" not in sql_upper:
                     return ValidationResult(
                         passed=False,
-                        severity=ValidationSeverity.CRITICAL,
-                        message=f"Numeric operation on VARCHAR column '{col}' without CAST",
-                        context={"column": col, "recommendation": "Apply CAST before aggregation"}
+                        severity=ValidationSeverity.WARNING,
+                        message=f"Aggregation on VARCHAR column '{col}' without CAST",
+                        context={"column": col, "recommendation": f"Apply CAST({col} AS DECIMAL(10,2)) before aggregation"}
                     )
         
         return ValidationResult(

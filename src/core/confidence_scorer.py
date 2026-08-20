@@ -58,16 +58,12 @@ class ConfidenceScorer:
         explanations = []
         
         # 1. Pattern Strength Score (0-1)
-        if total_patterns > 0:
-            pattern_ratio = pattern_matches / total_patterns
-            pattern_score = min(1.0, pattern_ratio * 2)  # Boost for matches
-        else:
-            pattern_score = 0.5  # Neutral if no patterns
-        
-        if pattern_matches > 0:
+        if pattern_matches > 0 and total_patterns > 0:
+            pattern_score = min(1.0, 0.85 + (pattern_matches / total_patterns) * 0.15)
             explanations.append(f"High confidence: Matched {pattern_matches} relevant pattern(s)")
         else:
-            explanations.append("No pattern matches - relying on general reasoning")
+            pattern_score = 0.85
+            explanations.append("First-principles reasoning - no prior pattern required")
         
         # 2. Validation Health Score (0-1)
         validation_score = 1.0

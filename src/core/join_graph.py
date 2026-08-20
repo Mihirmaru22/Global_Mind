@@ -84,24 +84,18 @@ class JoinGraphBuilder:
         return len(errors) == 0, errors
     
     def extract_tables_from_sql(self, sql: str) -> List[str]:
-        """Simple extraction of table names from SQL (production would use sqlglot)."""
-        import re
-        tables = []
-        
-        # Match FROM and JOIN clauses
-        patterns = [
-            r'FROM\s+(\w+)',
-            r'JOIN\s+(\w+)',
-            r'INNER\s+JOIN\s+(\w+)',
-            r'LEFT\s+JOIN\s+(\w+)',
-            r'RIGHT\s+JOIN\s+(\w+)'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, sql, re.IGNORECASE)
-            tables.extend(matches)
-        
-        return list(set(tables))
+        """Robust AST extraction of table names from SQL using sqlglot."""
+        try:
+            import sqlglot
+            from sqlglot import exp
+            ast = sqlglot.parse_one(sql)
+            return sorted({t.name.lower() for t in ast.find_all(exp.Table) if t.name})
+        except Exception:
+            import re
+            tables = []
+            for pattern in [r'FROM\s+([a-zA-Z0-9_]+)', r'JOIN\s+([a-zA-Z0-9_]+)']:
+                tables.extend(re.findall(pattern, sql, re.IGNORECASE))
+            return sorted(set(t.lower() for t in tables))
     
     def validate_sql_joins(self, sql: str) -> Tuple[bool, List[str]]:
         """Validate all joins in a SQL query."""
