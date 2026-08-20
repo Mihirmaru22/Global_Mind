@@ -376,7 +376,7 @@ class SQLRetriever:
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
 
-                formatted_table = self._format_rows_as_markdown(rows, sql)
+                formatted_table = self._formatter._format_rows_as_markdown(rows, sql)
 
                 # Wrap in a RetrievedChunk
                 chunk = Chunk(
@@ -634,7 +634,9 @@ Output readability rules:
 
         return True
 
+
 async def fetch_sqlite_foreign_keys() -> list[dict]:
+    """Fetch foreign key relationships from SQLite database."""
     tables = await run_readonly_query(
         "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
     )
@@ -652,13 +654,12 @@ async def fetch_sqlite_foreign_keys() -> list[dict]:
             })
     return fks
 
-    # This table is returned as the answer VERBATIM (see _extract_sql_table in
-    # s12_s13_s14_retrieval.py, which bypasses the LLM and _build_context's
-    # token budget entirely). db_client.MAX_ROWS=500 protects the DB round-trip.
-    # However, to prevent massive walls of text in the UI, we hard-cap the 
-    # display output to 10 rows per the user's preference.
-    _MAX_DISPLAY_ROWS = 10
 
+class _SQLResultFormatter:
+    """Helper class for formatting SQL results."""
+    
+    _MAX_DISPLAY_ROWS = 10
+    
     def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
         """Format dictionary rows into a markdown table, capped at 10 rows."""
         if not rows:

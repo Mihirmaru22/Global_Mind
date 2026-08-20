@@ -138,13 +138,24 @@ class ColumnRegistry:
 
         # Build a map of alias → real table name from the query's FROM/JOIN.
         table_aliases = self._resolve_table_aliases(ast)
+        
+        # Collect all SELECT aliases (e.g., "SELECT x AS total" or "SUM(x) AS total")
+        select_aliases = set()
+        for select_expr in ast.find_all(exp.Alias):
+            alias_name = (select_expr.alias or "").lower()
+            if alias_name:
+                select_aliases.add(alias_name)
 
         errors: list[str] = []
         hallucinated: list[str] = []
 
         for col_node in ast.find_all(exp.Column):
-            col_name = (col_node.name or "").strip()
+            col_name = (col_node.name or "").strip().lower()
             if not col_name:
+                continue
+
+            # Skip if this is a SELECT alias being referenced in ORDER BY/GROUP BY
+            if col_name in select_aliases:
                 continue
 
             # Resolve the table for this column.
