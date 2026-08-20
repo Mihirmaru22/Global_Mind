@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 import httpx
 
 from src.core.confidence import ConfidenceReport, check_ocr_confidence, texts_agree

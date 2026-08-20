@@ -6,6 +6,7 @@ executes it, and returns the results formatted as a context chunk.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import functools
 import json
 import logging
@@ -24,6 +25,8 @@ from src.core.provider_client import ProviderRouter
 from src.core.sql_column_registry import ColumnRegistry
 from src.core.sql_dialects import SQLDialectProfile, get_dialect_profile
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
+from src.stages.s10_embeddings import EmbeddingService
+from src.stages.s11_vector_store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
@@ -76,41 +79,75 @@ class UnsafeQueryError(Exception):
 
 
 _ABSTAIN_RE = re.compile(r"^\W*no_sql\b", re.IGNORECASE)
-_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)(?:```|$)", re.IGNORECASE | re.DOTALL)
 _SQL_START_RE = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
 
 
 def _unwrap_sql(text: str) -> str:
     """Extract the SQL from an LLM response that may wrap it in a markdown code
-    fence or precede it with a prose line ("Here is the query: SELECT ...").
+    fence or precede it with a prose line or CoT reasoning.
 
     Only the minimal, safe extractions are performed:
-      * a fenced ```sql ... ``` (or bare ``` ... ```) block anywhere in the reply;
+      * strip reasoning <think>...</think> tags;
+      * extract a fenced ```sql ... ``` (or bare ``` ... ```) block;
       * otherwise, if a leading prose preamble sits before the first SELECT/WITH,
-        drop the preamble so the query still parses instead of being rejected as
-        unsafe and silently falling back to document search.
-
-    Without this, a well-formed query decorated with a stray sentence would fail
-    _is_safe_read_query and make a genuine SQL question answer document-only.
+        drop the preamble so the query still parses.
     """
-    m = _FENCE_RE.search(text)
-    if m:
+    cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
+    if not cleaned and "</think>" in text:
+        cleaned = text.split("</think>")[-1].strip()
+
+    target = cleaned if cleaned else text.strip()
+    m = _FENCE_RE.search(target)
+    if m and m.group(1).strip():
         return m.group(1).strip()
-    km = _SQL_START_RE.search(text)
+    km = _SQL_START_RE.search(target)
+    if km and km.start() >= 0:
+        return target[km.start():].strip()
+    return target
+
+
+def extract_cot_and_sql(text: str) -> tuple[str, str]:
+    """Separates the structured Chain-of-Thought (CoT) plan (Phases 1 & 2) from the final SQL block (Phase 3)."""
+    cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
+    target = cleaned if cleaned else text.strip()
+    m = _FENCE_RE.search(target)
+    if m and m.group(1).strip():
+        sql = m.group(1).strip()
+        cot = target[:m.start()].strip()
+        return cot, sql
+    km = _SQL_START_RE.search(target)
     if km and km.start() > 0:
-        return text[km.start():].strip()
-    return text.strip()
+        cot = target[:km.start()].strip()
+        sql = target[km.start():].strip()
+        return cot, sql
+    return "", target
 
 
 def _is_all_null(rows: list[dict[str, Any]]) -> bool:
-    """True for a single row whose every column is NULL — the shape an aggregate
-    (SUM/MAX/MIN/AVG) returns when its WHERE clause matches nothing.
-
-    Multi-row results, or any row with at least one non-NULL value, are real
-    data and return False. COUNT(*) over no matches yields 0 (not NULL), so this
-    never collapses a legitimate "0 of X" answer.
-    """
+    """True for a single row whose every column is NULL."""
     return len(rows) == 1 and all(v is None for v in rows[0].values())
+
+
+def _is_aggregate_over_zero_rows(sql: str, rows: list[dict[str, Any]], dialect: str) -> bool:
+    """True if a query with top-level aggregate functions (without GROUP BY) matched 0 rows,
+    yielding a single row with all NULLs.
+
+    Non-aggregate queries matching a row where the selected column is genuinely NULL
+    (e.g. SELECT discount_code FROM orders WHERE id = 123) return False.
+    """
+    if not _is_all_null(rows):
+        return False
+    try:
+        ast = sqlglot.parse_one(sql, read=dialect)
+        has_agg = any(
+            isinstance(n, (exp.Sum, exp.Avg, exp.Min, exp.Max, exp.AggFunc))
+            for n in ast.find_all(exp.Func)
+        )
+        has_group = ast.find(exp.Group) is not None
+        return has_agg and not has_group
+    except Exception:
+        return False
 
 
 def _extract_table_names(sql: str, dialect: str) -> list[str]:
@@ -119,6 +156,94 @@ def _extract_table_names(sql: str, dialect: str) -> list[str]:
         return sorted({t.name for t in ast.find_all(exp.Table)})
     except Exception:
         return []
+
+
+@functools.lru_cache(maxsize=1)
+def _get_raw_relationships() -> list[dict[str, Any]]:
+    """Load raw relationship list from config/sql_relationships.json."""
+    path = Path(__file__).resolve().parents[2] / "config" / "sql_relationships.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        rels = data.get("relationships") if isinstance(data, dict) else data
+        return rels if isinstance(rels, list) else []
+    except Exception:
+        return []
+
+
+def _extract_schema_table_names(schema: str) -> set[str]:
+    """Extract table names present in a DDL schema string."""
+    names: set[str] = set()
+    for m in re.finditer(r'(?:TABLE|CREATE\s+TABLE)\s+([a-zA-Z0-9_]+)', schema, re.IGNORECASE):
+        names.add(m.group(1).lower())
+    return names
+
+
+def _extract_table_ddl_map(full_schema: str) -> dict[str, str]:
+    """Parse full schema string into {table_name: ddl_string}."""
+    ddls: dict[str, str] = {}
+    for block in full_schema.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        m = re.search(r'(?:TABLE|CREATE\s+TABLE)\s+([a-zA-Z0-9_]+)', block, re.IGNORECASE)
+        if m:
+            ddls[m.group(1).lower()] = block
+    return ddls
+
+
+def _get_1hop_neighbors(tables: set[str], rels: list[dict[str, Any]] | None = None) -> set[str]:
+    """Find 1-hop connected tables from the relationship graph, skipping audit noise."""
+    raw_rels = rels if rels is not None else _get_raw_relationships()
+    neighbors: set[str] = set()
+    for r in raw_rels:
+        frm = (r.get("from_table") or "").lower()
+        to = (r.get("to_table") or "").lower()
+        fcol = (r.get("from_column") or "").lower()
+        # Skip audit trail links to users unless explicitly asked
+        if to == "users" and fcol in ("created_id", "updated_id", "deleted_id"):
+            continue
+        if frm in tables and to:
+            neighbors.add(to)
+        if to in tables and frm:
+            neighbors.add(frm)
+    return neighbors
+
+
+def _format_scoped_relationships(
+    active_tables: set[str],
+    query: str = "",
+    rels: list[dict[str, Any]] | None = None,
+) -> str:
+    """Format relationships only between the tables present in the active schema prompt."""
+    if not active_tables:
+        return ""
+    raw_rels = rels if rels is not None else _get_raw_relationships()
+    if not raw_rels:
+        return ""
+
+    include_audit = any(
+        w in query.lower()
+        for w in ("created by", "creator", "updated by", "who entered", "who deleted")
+    )
+    grouped: dict[str, list[str]] = {}
+    for r in raw_rels:
+        frm = (r.get("from_table") or "").lower()
+        to = (r.get("to_table") or "").lower()
+        fcol = r.get("from_column")
+        tcol = r.get("to_column")
+        if not (frm and to and fcol and tcol):
+            continue
+        if frm not in active_tables or to not in active_tables:
+            continue
+        if not include_audit and to == "users" and str(fcol).lower() in ("created_id", "updated_id", "deleted_id"):
+            continue
+        grouped.setdefault(frm, []).append(f"{fcol}->{to}.{tcol}")
+
+    if not grouped:
+        return ""
+    return "\n".join(
+        f"- {table}: {', '.join(edges)}" for table, edges in sorted(grouped.items())
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -137,24 +262,19 @@ def _load_relationships() -> str:
     Returns "" when no relationships file is present (e.g. a deployment whose DB
     has real FK constraints and needs no inferred map), so injection is opt-in.
     """
-    path = Path(__file__).resolve().parents[2] / "config" / "sql_relationships.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        rels = data.get("relationships") if isinstance(data, dict) else data
-        if not rels:
-            return ""
-        grouped: dict[str, list[str]] = {}
-        for r in rels:
-            frm, fcol = r.get("from_table"), r.get("from_column")
-            to, tcol = r.get("to_table"), r.get("to_column")
-            if not all((frm, fcol, to, tcol)):
-                continue
-            grouped.setdefault(frm, []).append(f"{fcol}->{to}.{tcol}")
-        return "\n".join(
-            f"- {table}: {', '.join(edges)}" for table, edges in sorted(grouped.items())
-        )
-    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+    rels = _get_raw_relationships()
+    if not rels:
         return ""
+    grouped: dict[str, list[str]] = {}
+    for r in rels:
+        frm, fcol = r.get("from_table"), r.get("from_column")
+        to, tcol = r.get("to_table"), r.get("to_column")
+        if not all((frm, fcol, to, tcol)):
+            continue
+        grouped.setdefault(frm, []).append(f"{fcol}->{to}.{tcol}")
+    return "\n".join(
+        f"- {table}: {', '.join(edges)}" for table, edges in sorted(grouped.items())
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -196,32 +316,63 @@ def _get_raw_column_glossary() -> dict:
         return {}
 
 
+_GLOSSARY_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "of", "for", "in", "on", "at",
+    "to", "by", "with", "and", "or", "our", "my", "your", "who", "what", "which",
+    "show", "get", "list", "how", "much", "many", "this", "that", "from", "tell",
+})
+
+
+def _stem_word(w: str) -> str:
+    w = w.lower()
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("es") and len(w) > 3 and not w.endswith("tes"):
+        return w[:-2]
+    if w.endswith("s") and not w.endswith("ss") and len(w) > 3:
+        return w[:-1]
+    return w
+
+
+def _matches_glossary_candidate(candidate: str, query_lower: str, query_words: set[str], query_stems: set[str]) -> bool:
+    cand_lower = candidate.lower().replace("_", " ").strip()
+    if not cand_lower:
+        return False
+    # 1. Exact phrase with word boundaries & optional plural (e.g. "buyer/buyers", "estimate/estimates")
+    if re.search(r"\b" + re.escape(cand_lower) + r"(?:s|es|ies)?\b", query_lower):
+        return True
+    # 2. Check stemmed candidate against query stems
+    cand_words = [w for w in re.findall(r"\w+", cand_lower) if w not in _GLOSSARY_STOP_WORDS]
+    if not cand_words:
+        return False
+    if len(cand_words) == 1:
+        w = cand_words[0]
+        if w in query_words or _stem_word(w) in query_stems:
+            return True
+    else:
+        # Multi-word candidate: all significant stems must match
+        cand_stems = {_stem_word(w) for w in cand_words}
+        if cand_stems.issubset(query_stems):
+            return True
+    return False
+
+
 def _build_column_glossary_for_query(query: str) -> str:
-    """Filter the glossary to only include terms relevant to the query to save tokens."""
+    """Filter the glossary to only include terms/synonyms relevant to the query to save tokens."""
     data = _get_raw_column_glossary()
     if not data:
         return ""
 
     query_lower = query.lower()
-    
-    # Very basic stemming/overlap check. If the term is in the query, include it.
+    raw_words = set(re.findall(r"\w+", query_lower)) - _GLOSSARY_STOP_WORDS
+    query_stems = {_stem_word(w) for w in raw_words}
+
     lines: list[str] = []
     for term, details in data.items():
-        # Check if the term (or a significant part of it) is in the query
-        term_lower = term.lower().replace("_", " ")
-        
-        # Exact substring match (e.g. "changeable pack" in query)
-        is_match = term_lower in query_lower
-        
-        # If no exact match, check word overlap for multi-word terms
-        if not is_match and " " in term_lower:
-            term_words = set(term_lower.split())
-            query_words = set(re.findall(r"\w+", query_lower))
-            # If significant overlap (at least 50% of the term's words are in query)
-            if len(term_words & query_words) >= max(1, len(term_words) // 2):
-                is_match = True
-
-        if is_match:
+        if not isinstance(details, dict):
+            continue
+        candidates = [term] + details.get("synonyms", [])
+        if any(_matches_glossary_candidate(c, query_lower, raw_words, query_stems) for c in candidates if isinstance(c, str)):
             maps_to = details.get("maps_to")
             if maps_to:
                 note = details.get("note", "")
@@ -231,68 +382,242 @@ def _build_column_glossary_for_query(query: str) -> str:
     return "\n".join(lines)
 
 
+_BEHAVIORAL_ATLAS_CACHE: dict[str, Any] | None = None
+
+
+def _get_raw_behavioral_atlas() -> dict[str, Any]:
+    global _BEHAVIORAL_ATLAS_CACHE
+    if _BEHAVIORAL_ATLAS_CACHE is not None:
+        return _BEHAVIORAL_ATLAS_CACHE
+    atlas_path = Path(__file__).resolve().parent.parent.parent / "config" / "behavioral_schema_atlas.json"
+    if atlas_path.exists():
+        try:
+            with open(atlas_path, "r", encoding="utf-8") as f:
+                _BEHAVIORAL_ATLAS_CACHE = json.load(f)
+        except Exception:
+            _BEHAVIORAL_ATLAS_CACHE = {}
+    else:
+        _BEHAVIORAL_ATLAS_CACHE = {}
+    return _BEHAVIORAL_ATLAS_CACHE
+
+
+def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> str:
+    """Extract dynamically filtered behavioral rules and formulas for active tables."""
+    atlas_data = _get_raw_behavioral_atlas()
+    if not atlas_data or "tables" not in atlas_data:
+        return ""
+    
+    tables = atlas_data["tables"]
+    lines: list[str] = []
+    
+    for t_name in sorted(schema_tables):
+        if t_name not in tables:
+            continue
+        t_data = tables[t_name]
+        lines.append(f"### Table `{t_name}`: {t_data.get('table_meaning', '')}")
+        for r in t_data.get("table_behavioral_rules", []):
+            lines.append(f"  - Rule: {r}")
+        for w in t_data.get("join_warnings", []):
+            lines.append(f"  - ⚠️ Warning: {w}")
+        
+        # List columns with rules or formulas
+        for c_name, c_data in t_data.get("columns", {}).items():
+            c_rules = c_data.get("behavioral_rules", [])
+            formula = c_data.get("aggregation_formula")
+            c_warns = c_data.get("join_warnings", [])
+            if c_rules or formula or c_warns:
+                parts = []
+                if c_rules:
+                    parts.append(" | ".join(c_rules))
+                if c_warns:
+                    parts.append("⚠️ " + " | ".join(c_warns))
+                if formula:
+                    parts.append(f"Formula: `{formula}`")
+                lines.append(f"  - `{t_name}.{c_name}` ({c_data.get('type', 'VARCHAR')}): {'; '.join(parts)}")
+        lines.append("")
+        
+    return "\n".join(lines)
+
+
+def extract_analytical_intent(query: str) -> dict[str, Any]:
+    """Extract business analytical intent (metrics, dimensions, filters, time_period, aggregation, limit, sorting)
+    from a user's question without writing SQL, serving as a semantic-layer preprocessor.
+    """
+    q = query.lower()
+    intent: dict[str, Any] = {
+        "metrics": [],
+        "dimensions": [],
+        "filters": [],
+        "time_period": None,
+        "entities": [],
+        "aggregation": None,
+        "limit": None,
+        "sorting": None,
+        "ambiguous_terms": [],
+    }
+
+    # Relative Time Periods
+    if "last month" in q or "previous month" in q:
+        intent["time_period"] = "last month"
+    elif "this year" in q or "current year" in q or "this financial year" in q or "this fiscal year" in q:
+        intent["time_period"] = "this financial year"
+    elif "last year" in q or "previous year" in q:
+        intent["time_period"] = "last financial year"
+    elif "last quarter" in q:
+        intent["time_period"] = "last quarter"
+    elif "last 6 months" in q or "past 6 months" in q:
+        intent["time_period"] = "last 6 months"
+    elif "last 30 days" in q or "past 30 days" in q:
+        intent["time_period"] = "last 30 days"
+
+    # Aggregations
+    if re.search(r"\b(how many|count|number of)\b", q):
+        intent["aggregation"] = "COUNT"
+    elif re.search(r"\b(how much|total|sum|overall)\b", q):
+        intent["aggregation"] = "SUM"
+    elif re.search(r"\b(average|mean|avg)\b", q):
+        intent["aggregation"] = "AVG"
+
+    # Limits & Rankings
+    top_match = re.search(r"\btop\s+(\d+)\b", q)
+    if top_match:
+        intent["limit"] = int(top_match.group(1))
+        intent["sorting"] = "DESC"
+    elif re.search(r"\b(best|highest|top|most|maximum|greatest)\b", q):
+        intent["limit"] = 1
+        intent["sorting"] = "DESC"
+    elif re.search(r"\b(lowest|worst|least|minimum|cheapest)\b", q):
+        intent["limit"] = 1
+        intent["sorting"] = "ASC"
+
+    # Metrics
+    if any(k in q for k in ["bought from us", "sales", "revenue", "turnover", "sold", "spent with us", "order value", "orders"]):
+        intent["metrics"].append("sales value / revenue")
+        intent["dimensions"].append("customer / party")
+    elif any(k in q for k in ["we bought", "we spend", "we spent", "purchase", "bought from vendor", "bought from supplier", "procurement", "inward", "suppliers paid"]):
+        intent["metrics"].append("purchase expenditure")
+        intent["dimensions"].append("supplier")
+    elif any(k in q for k in ["bought", "buying", "spent", "spending"]):
+        # Default "who bought the most / who spent the most" -> customer sales
+        intent["metrics"].append("sales value / revenue")
+        intent["dimensions"].append("customer / party")
+
+    if any(k in q for k in ["qty", "quantity", "volume", "units"]):
+        intent["metrics"].append("quantity / units")
+    if any(k in q for k in ["stock", "inventory", "on hand"]):
+        intent["metrics"].append("stock on hand")
+    if any(k in q for k in ["production", "produced", "manufactured", "output"]):
+        intent["metrics"].append("production quantity")
+
+    # Dimensions & Entities
+    if any(k in q for k in ["customer", "client", "buyer", "party", "parties"]):
+        if "customer / party" not in intent["dimensions"]:
+            intent["dimensions"].append("customer / party")
+    if any(k in q for k in ["supplier", "vendor"]):
+        if "supplier" not in intent["dimensions"]:
+            intent["dimensions"].append("supplier")
+    if any(k in q for k in ["product", "item", "goods", "sku"]):
+        intent["dimensions"].append("product")
+    if any(k in q for k in ["category"]):
+        intent["dimensions"].append("category")
+    if any(k in q for k in ["lead", "leads", "inquiry", "inquiries", "prospect"]):
+        intent["dimensions"].append("sales lead")
+    if any(k in q for k in ["challan", "dispatch", "delivery", "shipping"]):
+        intent["dimensions"].append("delivery challan")
+    if any(k in q for k in ["month", "monthly"]):
+        intent["dimensions"].append("month")
+
+    # Filters & Statuses
+    if any(k in q for k in ["open", "pending", "active", "in progress", "in-progress"]):
+        intent["filters"].append("open / pending / in-progress")
+    if any(k in q for k in ["verified", "unverified", "pending verification"]):
+        intent["filters"].append("carton verification status")
+    if any(k in q for k in ["shortfall", "fell short", "short"]):
+        intent["filters"].append("actual output < planned target")
+    if any(k in q for k in ["inactive", "haven't ordered", "no orders"]):
+        intent["filters"].append("inactive (no recent orders)")
+
+    return intent
+
+
+_MAX_RESULT_CACHE_ENTRIES = 256
+
+
 class SQLRetriever:
     """Generates and executes SQL queries for analytical questions."""
+    _full_schema_cache: str | None = None
+    _column_registry: ColumnRegistry | None = None
+    # Bounded LRU cache for query results, keyed on normalized question text.
+    _result_cache: OrderedDict[str, tuple[float, list[RetrievedChunk]]] = OrderedDict()
 
-    def __init__(self, router: ProviderRouter) -> None:
+    def __init__(
+        self,
+        router: ProviderRouter,
+        vector_store: QdrantStore | None = None,
+        embedding_service: EmbeddingService | None = None,
+    ) -> None:
         self._router = router
-        self._schema_cache: str | None = None
-        self._column_registry: ColumnRegistry | None = None
+        self._vector_store = vector_store
+        self._embeddings = embedding_service
         self._dialect = get_dialect_profile(settings.db_engine)
         self._glossary = _load_glossary()
         self._relationships = _load_relationships()
-        # Caches the full retrieve() result, keyed on the normalized question
-        # text. Without DDL access on the client's DB to add indexes, a slow
-        # aggregation query (e.g. a multi-table JOIN view) would otherwise
-        # re-run in full for every single question Ã¢â¬â this means it only
-        # actually hits the DB once per settings.sql_result_cache_ttl_seconds,
-        # and every other identically-worded question in that window gets an
-        # instant answer instead. Per-process only (not shared across workers
-        # or restarts) and keyed on exact question text, not semantic
-        # similarity Ã¢â¬â differently-worded questions still each pay full cost.
-        self._result_cache: dict[str, tuple[float, list[RetrievedChunk]]] = {}
-        # Set when a run returned no rows because the LLM providers needed to
-        # GENERATE the SQL were all unreachable (rate-limited / dead models) —
-        # NOT because the question had no DB answer. Lets the pipeline tell the
-        # user "the model was unavailable" instead of the misleading "not in my
-        # documents". One SQLRetriever exists per request (QueryPipeline is
-        # per-request), so this is not shared across concurrent queries.
         self.last_infra_error: str | None = None
+        self.last_query_status: str | None = None
+        self.last_cot_plan: str | None = None
+
+    @classmethod
+    def clear_result_cache(cls) -> None:
+        """Clear the cached query results."""
+        cls._result_cache.clear()
 
     async def retrieve(self, query: str) -> list[RetrievedChunk]:
         """Convert NL to SQL, execute, and return formatted results (with 1 retry)."""
         self.last_infra_error = None
+        self.last_query_status = None
+        self.last_cot_plan = None
         cache_key = query.strip().lower()
-        cached = self._result_cache.get(cache_key)
+        now = time.monotonic()
+
+        cached = SQLRetriever._result_cache.get(cache_key)
         if cached is not None:
             cached_at, cached_chunks = cached
-            if time.monotonic() - cached_at < settings.sql_result_cache_ttl_seconds:
+            if now - cached_at < settings.sql_result_cache_ttl_seconds:
                 logger.info("SQL result cache hit for query: %s", query)
-                return cached_chunks
+                SQLRetriever._result_cache.move_to_end(cache_key)
+                self.last_query_status = "success"
+                return [c.model_copy(deep=True) for c in cached_chunks]
+            else:
+                SQLRetriever._result_cache.pop(cache_key, None)
 
         result = await self._retrieve_uncached(query)
-        # Never cache an empty result that was caused by a provider outage — the
-        # next attempt (once a model is reachable again) must be free to retry
-        # instead of being pinned to this transient failure for the cache TTL.
-        if self.last_infra_error is None:
-            self._result_cache[cache_key] = (time.monotonic(), result)
+        # Only cache valid results when query executed successfully and no infra outage occurred.
+        if self.last_infra_error is None and self.last_query_status in ("success", "empty_result") and result:
+            while len(SQLRetriever._result_cache) >= _MAX_RESULT_CACHE_ENTRIES:
+                SQLRetriever._result_cache.popitem(last=False)
+            SQLRetriever._result_cache[cache_key] = (
+                now,
+                [c.model_copy(deep=True) for c in result],
+            )
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
-        schema = await self._get_schema()
+        schema = await self._get_schema(query)
         if not schema:
+            self.last_query_status = "not_applicable"
             return []
 
         last_error = None
-        for attempt in range(2):
+        for attempt in range(3):
             sql = await self._generate_sql(query, schema, last_error)
             if not sql:
+                self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
                 return []
 
             try:
                 # --- Column validation (catches hallucinated columns before DB) ---
-                if self._column_registry:
-                    validation = self._column_registry.validate_columns(sql)
+                if SQLRetriever._column_registry:
+                    validation = SQLRetriever._column_registry.validate_columns(sql)
                     if not validation.is_valid:
                         logger.warning("Column validation failed: %s", validation.errors)
                         _log_pipeline_event(
@@ -329,53 +654,29 @@ class SQLRetriever:
                 # Execute
                 rows = await run_readonly_query(sql)
 
-                # An aggregate over zero matching rows (SUM/MAX/MIN/AVG ... WHERE
-                # <no match>) does NOT come back empty — SQL returns a single row
-                # whose aggregate columns are all NULL (e.g. [{"total": None}]).
-                # Treating that as a real result surfaces a meaningless
-                # "total: None" answer AND suppresses the document fallback, so
-                # it reads as a confident (wrong) "no data" instead of deferring
-                # to the documents. Collapse it to the empty case so it takes the
-                # same retry-then-fallback path as a genuine 0-row result.
-                # COUNT(*) returns 0 (not NULL) for no matches, so a legitimate
-                # "there are 0 of X" answer is preserved and never collapsed.
-                if _is_all_null(rows):
-                    rows = []
+                is_zero_rows = len(rows) == 0
+                is_agg_zero = _is_aggregate_over_zero_rows(sql, rows, self._dialect.sqlglot_dialect)
+                is_empty_result = is_zero_rows or is_agg_zero
 
-                # An empty result is ambiguous: it can mean the query is correct
-                # and the true answer is "none", or that a wrong JOIN/WHERE
-                # silently matched nothing (MySQL doesn't error on that, it just
-                # returns 0 rows). Give the model one retry with that context on
-                # the first attempt. See below for what happens if it's still
-                # empty after the retry.
-                if not rows and attempt == 0:
+                # If the query returned 0 rows or an all-NULL aggregate on early attempts,
+                # give the LLM one retry opportunity to check JOIN/WHERE conditions
+                if is_empty_result and attempt < 1:
                     last_error = (
-                        "Query executed successfully but returned 0 rows. If that's "
-                        "surprising given the question, double-check your JOIN "
-                        "conditions reference the correct foreign key columns."
+                        "Query executed successfully but returned 0 rows or NULL aggregate. "
+                        "If that's surprising given the question, double-check your JOIN "
+                        "and WHERE conditions."
                     )
                     continue
 
-
-                # An empty result on the FINAL attempt is treated as "the SQL
-                # path found nothing" and falls through to document search —
-                # not returned as an answer chunk. A wrong JOIN/WHERE also
-                # produces 0 rows (MySQL doesn't error on that), so trusting an
-                # empty result as authoritative risks a confident "no data"
-                # answer overriding a correct document-based one. Returning []
-                # here mirrors the UnsafeQueryError and exhausted-retry paths
-                # below — SQL only ever contributes a chunk when it found rows.
-                if not rows:
-                    logger.info(
-                        "SQL query returned 0 rows after retry — falling back "
-                        "to document search."
-                    )
-                    return []
+                # Set query status:
+                # - empty_result: 0 rows returned or aggregate over 0 matching rows
+                # - success: matching row(s) returned (including single rows with NULL field values)
+                self.last_query_status = "empty_result" if is_empty_result else "success"
 
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
 
-                formatted_table = self._format_rows_as_markdown(rows, sql)
+                formatted_table = _format_rows_as_markdown(rows, sql, is_agg_zero=is_agg_zero)
 
                 # Wrap in a RetrievedChunk
                 chunk = Chunk(
@@ -390,7 +691,7 @@ class SQLRetriever:
                 _log_pipeline_event(
                     "sql_success",
                     {"sql": sql, "row_count": len(rows), "tables": tables,
-                     "attempt": attempt + 1},
+                     "attempt": attempt + 1, "is_empty_result": is_empty_result},
                     query=query,
                 )
                 return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
@@ -398,6 +699,7 @@ class SQLRetriever:
             except UnsafeQueryError as e:
                 # Security violations die instantly. No feedback loop.
                 logger.warning(f"Blocked unsafe SQL query: {e}")
+                self.last_query_status = "failed"
                 return []
             except Exception as e:
                 logger.error(f"SQL Execution failed on attempt {attempt + 1}: {e}")
@@ -407,22 +709,23 @@ class SQLRetriever:
                     query=query,
                 )
                 last_error = str(e)
-                
+
         # If we exhausted retries, fail cleanly
         logger.warning("SQL generation failed after retry loop. Returning empty results.")
+        self.last_query_status = "failed"
         _log_pipeline_event("retry_exhausted", {"last_error": last_error}, query=query)
         return []
 
-    # Sent in full on EVERY SQL-generation call (both retry attempts), so an
-    # uncapped schema on a wide/many-table database silently inflates every
-    # single query's input tokens, not just one answer. Cap it the same way
-    # the result-row table is capped.
-    _MAX_SCHEMA_CHARS = 12000
+    @classmethod
+    def clear_schema_cache(cls) -> None:
+        """Clear the cached full schema and column registry (e.g. after schema sync)."""
+        cls._full_schema_cache = None
+        cls._column_registry = None
 
-    async def _get_schema(self) -> str:
-        """Fetch the DB schema (cached, capped)."""
-        if self._schema_cache:
-            return self._schema_cache
+    async def _fetch_full_schema(self) -> str:
+        """Fetch the full, un-truncated DB schema to initialize the ColumnRegistry."""
+        if SQLRetriever._full_schema_cache is not None:
+            return SQLRetriever._full_schema_cache
 
         try:
             rows = await run_readonly_query(self._dialect.schema_query, max_rows=20000)
@@ -431,70 +734,216 @@ class SQLRetriever:
             if self._dialect.key == "mysql" and self._dialect.fk_query:
                 fk_rows = await run_readonly_query(self._dialect.fk_query, max_rows=20000)
             elif self._dialect.key == "sqlite":
-                fk_rows = await self._fetch_sqlite_foreign_keys()
+                fk_rows = await fetch_sqlite_foreign_keys()
             else:
                 fk_rows = []
 
             fk_text = format_fk_rows(fk_rows)
-            schema = schema + ("\n\n" + fk_text if fk_text else "")
+            full_schema = schema + ("\n\n" + fk_text if fk_text else "")
 
-            if len(schema) > self._MAX_SCHEMA_CHARS:
-                logger.warning(
-                    "Schema text (%d chars) exceeds cap Ã¢â¬â truncating to %d chars "
-                    "for the SQL-generation prompt.",
-                    len(schema), self._MAX_SCHEMA_CHARS,
-                )
-                schema = schema[: self._MAX_SCHEMA_CHARS] + "\n-- (schema truncated)"
+            # Only cache and build registry if the schema was successfully retrieved and non-empty.
+            # An empty string from a missing/unready DB must never be cached as permanent truth.
+            if full_schema.strip():
+                SQLRetriever._full_schema_cache = full_schema
+                try:
+                    SQLRetriever._column_registry = ColumnRegistry(
+                        full_schema, self._dialect.sqlglot_dialect
+                    )
+                except Exception as reg_err:
+                    logger.warning("Failed to build column registry: %s", reg_err)
 
-            self._schema_cache = schema
-            # Build the column registry from the same schema text.
-            try:
-                self._column_registry = ColumnRegistry(schema, self._dialect.sqlglot_dialect)
-            except Exception as reg_err:
-                logger.warning("Failed to build column registry: %s", reg_err)
-            return self._schema_cache
+            return full_schema
         except Exception as e:
-            logger.error(f"Failed to fetch schema: {e}")
+            logger.error("Failed to fetch full schema: %s", e)
             return ""
+
+    async def _get_schema(self, query: str) -> str:
+        """Fetch relevant DB schema chunks for the prompt using Schema RAG.
+        
+        If vector_store is missing or fails, falls back to the legacy truncation method.
+        """
+        # Ensure the full schema is cached and registry is built.
+        full_schema = await self._fetch_full_schema()
+
+        if not self._vector_store or not self._embeddings:
+            # Legacy fallback if RAG isn't wired up
+            if len(full_schema) > 12000:
+                return full_schema[:12000] + "\n-- (schema truncated)"
+            return full_schema
+
+        try:
+            dense_vec, sparse_vec = await self._embeddings.embed_query(query)
+            chunks = await self._vector_store.search_hybrid(
+                query_vector=dense_vec,
+                sparse_vector=sparse_vec,
+                query_text=query,
+                top_k=8,
+                filters={"chunk_type": ChunkType.SQL_SCHEMA.value},
+            )
+            
+            if not chunks:
+                logger.warning("Schema RAG returned 0 chunks. Falling back to truncated schema.")
+                if len(full_schema) > 12000:
+                    return full_schema[:12000] + "\n-- (schema truncated)"
+                return full_schema
+                
+            # Combine the retrieved CREATE TABLE statements
+            retrieved_schema = "\n\n".join(chunk.chunk.content for chunk in chunks)
+            retrieved_tables = _extract_schema_table_names(retrieved_schema)
+
+            # Seed anchor tables from matched glossary terms & domain concepts
+            glossary_text = _build_column_glossary_for_query(query)
+            glossary_tables = set(re.findall(r'\b([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+', glossary_text))
+
+            query_lower = query.lower()
+            if any(k in query_lower for k in ["order", "sales", "bought", "buying", "spent", "spending", "buyer", "customer", "client", "revenue", "turnover"]):
+                glossary_tables.update(["sales_order", "sales_order_products", "party", "product", "financial_year"])
+            if any(k in query_lower for k in ["purchase", "supplier", "vendor", "procure", "inward", "raw material"]):
+                glossary_tables.update(["purchase", "purchase_products", "party", "product", "financial_year"])
+            if any(k in query_lower for k in ["stock", "inventory", "warehouse", "carton", "on hand"]):
+                glossary_tables.update(["stock", "product", "product_color", "category"])
+            if any(k in query_lower for k in ["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq"]):
+                glossary_tables.update(["production", "actual_production", "machine", "product", "product_color"])
+            if any(k in query_lower for k in ["lead", "inquiry", "inquiries", "prospect", "followup", "deal", "pipeline"]):
+                glossary_tables.update(["lead", "lead_history", "users", "party"])
+            if any(k in query_lower for k in ["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver"]):
+                glossary_tables.update(["delivery_challan", "delivery_challan_products", "party", "sales_order"])
+            if any(k in query_lower for k in ["proforma", "invoice", "bill", "gst", "tax", "quotation"]):
+                glossary_tables.update(["proforma", "quotation", "party", "financial_year"])
+
+            full_ddls = _extract_table_ddl_map(full_schema) if full_schema else {}
+            anchor_extra = []
+            for g_table in sorted(glossary_tables):
+                if g_table not in retrieved_tables and g_table in full_ddls:
+                    anchor_extra.append(full_ddls[g_table])
+                    retrieved_tables.add(g_table)
+            if anchor_extra:
+                retrieved_schema += "\n\n-- Domain Anchor & Glossary Tables:\n" + "\n\n".join(anchor_extra)
+
+            # 1-hop graph expansion: add directly connected neighbor tables if missing
+            neighbors = _get_1hop_neighbors(retrieved_tables)
+            needed_neighbors = neighbors - retrieved_tables
+
+            if needed_neighbors and full_ddls:
+                # Rank neighbors by how many active tables they connect to (bridge priority)
+                raw_rels = _get_raw_relationships()
+                conn_scores = {}
+                for r in raw_rels:
+                    frm = (r.get("from_table") or "").lower()
+                    to = (r.get("to_table") or "").lower()
+                    if frm in retrieved_tables and to in needed_neighbors:
+                        conn_scores[to] = conn_scores.get(to, 0) + 1
+                    if to in retrieved_tables and frm in needed_neighbors:
+                        conn_scores[frm] = conn_scores.get(frm, 0) + 1
+
+                ranked_neighbors = sorted(needed_neighbors, key=lambda t: conn_scores.get(t, 0), reverse=True)
+                added = 0
+                extra_ddls = []
+                for n_table in ranked_neighbors:
+                    if n_table in full_ddls and added < 4:
+                        extra_ddls.append(full_ddls[n_table])
+                        added += 1
+                if extra_ddls:
+                    retrieved_schema += "\n\n-- Directly connected related tables:\n" + "\n\n".join(extra_ddls)
+
+            return retrieved_schema
+            
+        except Exception as e:
+            logger.error("Schema RAG search failed: %s", e)
+            # Legacy fallback
+            if len(full_schema) > 12000:
+                return full_schema[:12000] + "\n-- (schema truncated)"
+            return full_schema
 
     async def _generate_sql(self, query: str, schema: str, last_error: str | None = None) -> str:
         """Prompt the reasoning LLM to generate SQL."""
-        system_prompt = f"""You are a {self._dialect.name} expert. 
-Given the following database schema, generate a highly optimized {self._dialect.name} SELECT statement to answer the user's question.
+        import datetime
+        current_date_str = datetime.date.today().isoformat()
+        intent = extract_analytical_intent(query)
+        intent_summary_lines = []
+        if intent["metrics"]:
+            intent_summary_lines.append(f"- Metrics: {', '.join(intent['metrics'])}")
+        if intent["dimensions"]:
+            intent_summary_lines.append(f"- Dimensions: {', '.join(intent['dimensions'])}")
+        if intent["filters"]:
+            intent_summary_lines.append(f"- Filters: {', '.join(intent['filters'])}")
+        if intent["time_period"]:
+            intent_summary_lines.append(f"- Time Period: {intent['time_period']}")
+        if intent["aggregation"]:
+            intent_summary_lines.append(f"- Aggregation: {intent['aggregation']}")
+        if intent["limit"]:
+            intent_summary_lines.append(f"- Limit: {intent['limit']} (Sorting: {intent['sorting'] or 'DESC'})")
 
-If nothing in this schema - no table or column - answers ANY part of the
-question, respond with exactly the single word NO_SQL and nothing else.
+        intent_section = (
+            "\nExtracted Business Intent:\n" + "\n".join(intent_summary_lines) + "\n"
+            if intent_summary_lines
+            else ""
+        )
+        
+        schema_tables = _extract_schema_table_names(schema)
+        scoped_relationships = _format_scoped_relationships(schema_tables, query)
+        rel_text = scoped_relationships or (self._relationships if hasattr(self, "_relationships") and self._relationships else "")
+        behavioral_atlas_text = _build_behavioral_atlas_for_query(schema_tables, query)
+        column_glossary = _build_column_glossary_for_query(query)
 
-If the question has multiple parts and only SOME relate to this schema,
-IGNORE the unrelated parts and write a query for only the part(s) this
-schema can answer. Do not try to combine unrelated concepts into one query,
-and do not abstain just because part of the question is out of scope -
-only respond NO_SQL if NONE of the parts are answerable here.
+        system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent. Your goal is to translate informal layman business questions into precise, executable, read-only {self._dialect.name} queries by applying first-principles reasoning.
 
-Return ONLY the raw SQL query, no markdown formatting, no explanations, no backticks.
+You MUST follow this 4-Phase process:
 
+### PHASE 1: INTENT DECOMPOSITION & BEHAVIORAL RULE APPLICATION
+Analyze the user's question and decompose it:
+- **Metrics:** Quantitative value(s) requested.
+- **Dimensions:** Attributes to group/breakdown by.
+- **Filters:** Constraints to apply (time, status).
+- **Aggregation:** Mathematical functions needed (SUM, AVG, COUNT, MIN, MAX).
+- **Sorting/Limiting:** Top/bottom result requirements.
+
+**Implicit Business Rule Application:**
+Review the Behavioral Schema Atlas below and apply all required rules:
+- **Soft Delete:** Confirm `alias.deleted_at IS NULL` for every table with soft deletes.
+- **Type Casting:** Identify any VARCHAR columns requiring `CAST(... AS DECIMAL(10,2))` before math/aggregation.
+- **Enum Translation:** Map layman terms to exact database enums (e.g., 'Pending', 'Y', 'B').
+- **Polymorphic Handling:** If querying `party`, specify if joined to `sales_order` (Customer) or `purchase` (Supplier).
+
+### PHASE 2: CHAIN-OF-THOUGHT (CoT) PLAN GENERATION
+Write a concise step-by-step plan:
+- **Proposed Join Graph:** Sequence of table joins and reasoning (e.g., why LEFT JOIN vs INNER JOIN for sparse `stock`).
+- **Final Filter Set:** Exact WHERE and HAVING conditions.
+- **Final Metric Calculation:** Exact formulas for metrics (e.g., SUM(CAST(sop.qty AS DECIMAL(10,2)) * p.rate)).
+
+### PHASE 3: SQL CODE GENERATION
+Output the final SQL in a ```sql ... ``` code block.
+- **Dialect:** {self._dialect.name}.
+- **Read-Only:** SELECT statements only. NO INSERT, UPDATE, DELETE, DROP.
+- **No Hallucinations:** ONLY use tables and columns present in the schema.
+- **Aliases:** Use descriptive aliases (e.g., AS total_revenue, AS customer_name).
+- If nothing in this schema can answer ANY part of the question, respond with exactly NO_SQL.
+
+### PHASE 4: CONTEXTUAL KNOWLEDGE BASE
+Current System Date: {current_date_str} (Use this for ALL relative date calculations like 'last month', 'this year')
+{intent_section}
 Schema:
 {schema}
 """
-        if self._relationships:
+        if rel_text:
             system_prompt += (
                 "\n\nTable relationships (this database has NO foreign-key "
                 "constraints — use ONLY these join paths, and never join on or "
                 "select a column that a table's schema above does not list):\n"
-                f"{self._relationships}\n"
+                f"{rel_text}\n"
             )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
-        column_glossary = _build_column_glossary_for_query(query)
+        if behavioral_atlas_text:
+            system_prompt += (
+                "\n\n=== BEHAVIORAL SCHEMA ATLAS & COGNITIVE ONTOLOGY (STRICT RULES) ===\n"
+                f"{behavioral_atlas_text}"
+            )
+
         if column_glossary:
             system_prompt += (
                 "\n\nColumn mapping (use these exact paths — do NOT invent columns):\n"
                 f"{column_glossary}"
-            )
-        elif self._glossary:
-            system_prompt += (
-                "\n\nBusiness term glossary (user may use these informal terms):\n"
-                f"{self._glossary}"
             )
         if self._dialect.date_functions:
             system_prompt += (
@@ -512,7 +961,7 @@ Schema:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query},
                 ],
-                max_tokens=512
+                max_tokens=2048
             )
             
             raw = (response or "").strip()
@@ -523,10 +972,9 @@ Schema:
             if _ABSTAIN_RE.match(raw):
                 return ""
 
-            # Strip code fences / prose preamble so a well-formed query isn't
-            # discarded (and turned into a spurious document-only answer) just
-            # because the model wrapped or introduced it.
-            sql = _unwrap_sql(raw)
+            # Extract both CoT trace and clean SQL
+            cot_plan, sql = extract_cot_and_sql(raw)
+            self.last_cot_plan = cot_plan
             if not sql or _ABSTAIN_RE.match(sql):
                 return ""
 
@@ -542,35 +990,62 @@ Schema:
                 self.last_infra_error = str(e)
             return ""
 
-    # Functions that read/write files or execute code. Each is still a "SELECT"
-    # to sqlglot, so isinstance(ast, exp.Select) alone would wave them through.
+    # Functions that read/write files, execute code, or cause DoS / lock contention.
+    # Each is still a "SELECT" or expression to sqlglot, so AST inspection is required.
     _DANGEROUS_FUNCTIONS = frozenset({
         "load_file", "loadfile",              # MySQL: read an arbitrary file
         "sys_eval", "sys_exec", "sys_get",    # MySQL sys UDFs: shell execution
         "lo_import", "lo_export",             # Postgres large-object file I/O
+        "benchmark",                          # MySQL: CPU exhaustion DoS
+        "sleep",                              # MySQL/Postgres: thread sleep DoS
+        "get_lock", "release_lock",           # MySQL: advisory lock contention DoS
+        "release_all_locks",
+        "is_free_lock", "is_used_lock",
     })
 
     _OUTPUT_READABILITY_RULES = """
-Output readability rules:
+Output readability & database-specific schema rules:
 - Never return a raw ID column (e.g. customer_id, product_id, order_id) by itself if a related table has a human-readable name, title, or label for it. JOIN to that table and return the readable value instead of, or alongside, the ID.
 - Give every selected column a clear, descriptive alias using AS, so the result is understandable on its own without needing to see the query (e.g. SELECT c.name AS customer_name, SUM(o.amount) AS total_revenue - not SELECT c.name, SUM(o.amount)).
 - Name each alias based on what the user actually asked for, ONLY when that wording accurately describes what the column holds (e.g. if the user asked "who spent the most", alias the result as top_customer or total_spent, not c1 or col2). Never invent a label that misrepresents the data - e.g. do not call a product_type_id column "technology_used" just because the word "technology" appeared in the question.
 - Include any extra column that adds useful context to the answer (name, category, date, status) even if not strictly required to answer narrowly - the goal is a result a person can read and understand directly, not just the minimum data needed.
 - "Most"/"highest"/"best" used in singular form (no number given) means exactly ONE result - apply LIMIT 1. "Top N" means LIMIT N. If the question asks to rank/list multiple items without a specific count, use a sensible default limit (e.g. LIMIT 20) rather than returning every row unbounded.
+- Always filter out soft-deleted records (WHERE deleted_at IS NULL or AND t.deleted_at IS NULL) on all tables that possess a deleted_at column.
+- Financial Year handling: If a specific year is mentioned (e.g. '2024-2025' or '24-25'), join financial_year and filter on financial_year.fyear LIKE '%2024%'. For relative periods like 'this financial year' or 'current fiscal year', filter financial_year.current_year = 'Y'. If no year is specified for an all-time total, do not restrict by financial_year.
+- Revenue vs Invoiced/Tax: Calculate standard sales revenue as product sales value SUM(p.rate * sop.qty). If the user specifically asks for invoiced sales, tax-inclusive billing, or GST, query proforma (proforma.grand_total, proforma.gst_amount).
+- Order Value & Purchase Value: sales_order and purchase tables have NO total amount column. Calculate sales order value as SUM(sop.qty * p.rate) from sales_order_products sop JOIN product p ON sop.product_id = p.id. Calculate purchase value as SUM(pp.qty * p.rate) from purchase_products pp JOIN product p ON pp.product_id = p.id.
+- Lead Status: In the lead table, status values are 'Pending', 'In-Progress', 'Success' (won), and 'Reject' (lost). Open / active / in-pipeline leads are WHERE status IN ('Pending', 'In-Progress'). Do NOT use status = 'Open'.
+- Lead Source: lead.lead_generate_from values are 'SalesExecutive', 'SocialMedia', 'Email', 'Website', 'Reference', 'Telecalling'.
+- Active / Inactive Status Flags: party.status, product.status, category.status, machine.status, unit.status, users.status, warehouse.status, product_type.status all use 'Y' for active/enabled and 'N' for inactive/disabled. Never use 'Active', 1, or true.
+- Customer vs Supplier: The party table holds both customers and suppliers (profile_type is 'Party' for all). To find suppliers, join to the purchase table (party.id = purchase.party_id). To find customers, join to sales_order (party.id = sales_order.party_id).
+- Product Types: product_type_id = 1 means 'Raw Material' and product_type_id = 2 means 'Finished Goods' (joined via product_type.id).
+- Stock Quantity: stock.qty is stored as VARCHAR - ALWAYS use CAST(stock.qty AS DECIMAL(10,2)) or CAST(stock.qty AS UNSIGNED) when aggregating (SUM/AVG) or doing numeric comparisons.
+- Stock Status: stock.status uses 'B' for Booked / available on-hand stock and 'D' for Dispatched / out stock.
+- Carton Verification: stock.carton_verify_status and packagings.carton_verify_status use 'P' for Pending (unverified) and 'V' for Verified.
+- Low Stock & Shortages: To find products running low or out of stock, start from product p JOIN product_color pc ON p.id = pc.product_id (or product p) and LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id AND s.status = 'B' AND s.deleted_at IS NULL. Calculate COALESCE(SUM(CAST(s.qty AS DECIMAL(10,2))), 0) AS current_stock. When comparing against minimum threshold, use pc.minimum_stock > 0 HAVING current_stock < pc.minimum_stock or ORDER BY current_stock ASC, pc.minimum_stock DESC. Do NOT use INNER JOIN stock because out-of-stock items have no rows in the stock table.
+- Production Planned vs Actual: In production table, qty is the planned/target quantity. In actual_production table, apq is the actual produced quantity. Shortfall is (production.qty - actual_production.apq).
+- Inactive Customers (Anti-Join): To find customers who haven't placed orders recently (e.g. in last 3 or 6 months), use party p LEFT JOIN sales_order so ON p.id = so.party_id AND so.deleted_at IS NULL AND so.sales_order_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) WHERE p.status = 'Y' AND p.deleted_at IS NULL AND so.id IS NULL.
+- Party Name Column: In party table, customer/supplier name is party.party_name (NEVER party.name).
+- Non-Existent Status Columns: quotation, proforma, and purchase tables DO NOT have a status column. NEVER write quotation.status, proforma.status, or purchase.status.
+- Delivery Challan Columns: In delivery_challan, transport agency is transport_name (NOT transporter_name) and order link is sales_order_id.
+- Lead Sales Rep & Followup: lead.lead_assign_to links to users.id (sales rep name is users.name). Lead followup medium column is followup_medimum ('Email','Call','PersonalMeeting','WhatsappMessage').
+- State and City Names: State is linked via party.state_id = states.id (states.name). Cities are stored directly as text strings in party.city.
+- When filtering by entity or location names (e.g. customer name, state name, product name), match against the text column (e.g. party.party_name, states.name) rather than numeric IDs.
 """
 
     def _is_safe_read_query(self, sql: str) -> bool:
-        """Parse the AST and confirm it's a single, side-effect-free read SELECT.
+        """Parse the AST and confirm it's a single, side-effect-free read SELECT or UNION.
 
-        ``isinstance(ast, exp.Select)`` is necessary but NOT sufficient Ã¢â¬â several
-        write/exfiltration primitives are still SELECTs:
+        ``isinstance(ast, (exp.Select, exp.Union))`` is necessary but NOT sufficient — several
+        write/exfiltration/DoS primitives are still valid read statements:
 
           * ``SELECT ... INTO OUTFILE/DUMPFILE '/path'`` (MySQL) writes to disk;
           * ``SELECT LOAD_FILE('/etc/passwd')`` reads an arbitrary file;
+          * ``SELECT BENCHMARK(100000000, MD5('x'))`` or ``SELECT SLEEP(10)`` exhausts resources;
           * a stacked ``SELECT 1; DROP TABLE t`` smuggles a second statement.
 
         This rejects all of the above so the generated query can only ever read
-        rows, matching the layer's stated "read-only SELECT" guarantee.
+        rows, matching the layer's stated "read-only SELECT/UNION" guarantee.
         """
         try:
             # parse() (not parse_one) surfaces stacked statements so they can be
@@ -585,81 +1060,87 @@ Output readability rules:
             return False
 
         ast = statements[0]
-        if not isinstance(ast, exp.Select):
+        if not isinstance(ast, (exp.Select, exp.Union)):
             return False
 
-        # SELECT ... INTO OUTFILE/DUMPFILE (or INTO @var) Ã¢â¬â a disk/variable write.
-        if ast.args.get("into") is not None:
-            logger.warning("Blocked SELECT ... INTO (file/variable write): %s", sql)
-            return False
+        # SELECT ... INTO OUTFILE/DUMPFILE (or INTO @var) anywhere in the AST — disk/variable write.
+        for sel_node in ast.find_all(exp.Select):
+            if sel_node.args.get("into") is not None:
+                logger.warning("Blocked SELECT ... INTO (file/variable write): %s", sql)
+                return False
 
-        # File-read / code-exec functions anywhere in the tree.
+        # File-read / code-exec / DoS / locking functions anywhere in the tree.
         for anon in ast.find_all(exp.Anonymous):
             fname = (anon.this or "")
+            if isinstance(fname, str) and fname.lower() in self._DANGEROUS_FUNCTIONS:
+                logger.warning("Blocked dangerous function '%s' in SQL: %s", fname, sql)
+                return False
+        for func in ast.find_all(exp.Func):
+            fname = func.sql_name() if hasattr(func, "sql_name") else getattr(func, "key", "")
             if isinstance(fname, str) and fname.lower() in self._DANGEROUS_FUNCTIONS:
                 logger.warning("Blocked dangerous function '%s' in SQL: %s", fname, sql)
                 return False
 
         return True
 
-    async def _fetch_sqlite_foreign_keys(self) -> list[dict]:
-        tables = await run_readonly_query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
-        )
-        fks = []
-        for row in tables:
-            table = row["name"]
-            escaped_table = table.replace('"', '""')
-            cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
-            for c in cols:
-                fks.append({
-                    "table_name": table,
-                    "column_name": c["from"],
-                    "referenced_table_name": c["table"],
-                    "referenced_column_name": c["to"],
-                })
-        return fks
+async def fetch_sqlite_foreign_keys() -> list[dict]:
+    tables = await run_readonly_query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';"
+    )
+    fks = []
+    for row in tables:
+        table = row["name"]
+        escaped_table = table.replace('"', '""')
+        cols = await run_readonly_query(f'PRAGMA foreign_key_list("{escaped_table}");')
+        for c in cols:
+            fks.append({
+                "table_name": table,
+                "column_name": c["from"],
+                "referenced_table_name": c["table"],
+                "referenced_column_name": c["to"],
+            })
+    return fks
 
     # This table is returned as the answer VERBATIM (see _extract_sql_table in
     # s12_s13_s14_retrieval.py, which bypasses the LLM and _build_context's
-    # token budget entirely). db_client.MAX_ROWS=500 only protects the DB
-    # round-trip, not what's reasonable to hand back as a single chat answer.
-    #
-    # Budgeted by estimated size, not a flat row count: a fixed row cap either
-    # wastes budget on narrow tables (3 columns could easily fit 300+ rows in
-    # the same space 50 wide rows use) or overflows it on wide ones. Sizing by
-    # actual content keeps as much real data as the budget allows instead of
-    # discarding rows a narrow table had room for.
-    _MAX_DISPLAY_CHARS = 6000  # ~2000 tokens at ~3 chars/token
+    # token budget entirely). db_client.MAX_ROWS=500 protects the DB round-trip.
+    # However, to prevent massive walls of text in the UI, we hard-cap the 
+    # display output to 10 rows per the user's preference.
+_MAX_DISPLAY_ROWS = 10
 
-    def _format_rows_as_markdown(self, rows: list[dict[str, Any]], query: str) -> str:
-        """Format dictionary rows into a markdown table, budgeted by size."""
-        if not rows:
-            return "No results."
+def _format_rows_as_markdown(rows: list[dict[str, Any]], query: str, is_agg_zero: bool = False) -> str:
+    """Format dictionary rows into a markdown table, capped at 10 rows."""
+    if not rows:
+        return f"SQL Query Executed: `{query}`\n\nNo matching records found in the database."
 
+    if is_agg_zero:
         headers = list(rows[0].keys())
         header_row = "| " + " | ".join(headers) + " |"
         separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
+        null_row = "| " + " | ".join(["NULL" for _ in headers]) + " |"
+        return f"SQL Query Executed: `{query}`\n\n" + "\n".join([header_row, separator_row, null_row]) + "\n\n_Note: The query matched 0 records for aggregation, returning NULL._"
 
-        table_rows = [f"SQL Query Executed: `{query}`\n", header_row, separator_row]
-        running_chars = sum(len(r) for r in table_rows)
+    headers = list(rows[0].keys())
+    header_row = "| " + " | ".join(headers) + " |"
+    separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
 
-        shown = 0
-        for row in rows:
-            values = [str(row[h]) for h in headers]
-            line = "| " + " | ".join(values) + " |"
-            if running_chars + len(line) > self._MAX_DISPLAY_CHARS and shown > 0:
-                break
-            table_rows.append(line)
-            running_chars += len(line)
-            shown += 1
+    table_rows = [f"SQL Query Executed: `{query}`\n", header_row, separator_row]
 
-        result = "\n".join(table_rows)
-        total = len(rows)
-        if shown < total:
-            result += (
-                f"\n\n_Showing {shown} of {total} rows (result too large to "
-                "display in full). Narrow your question (add a filter, date "
-                "range, or LIMIT) to see a different slice._"
-            )
-        return result
+    shown = 0
+    for row in rows:
+        if shown >= _MAX_DISPLAY_ROWS:
+            break
+        values = [str(row[h]) if row[h] is not None else "NULL" for h in headers]
+        line = "| " + " | ".join(values) + " |"
+        table_rows.append(line)
+        shown += 1
+
+    result = "\n".join(table_rows)
+    total = len(rows)
+    if shown < total:
+        result += (
+            f"\n\n_Showing {shown} of {total} rows (result too large to "
+            "display in full). Narrow your question (add a filter, date "
+            "range, or LIMIT) to see a different slice._"
+        )
+    return result

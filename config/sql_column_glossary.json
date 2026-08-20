@@ -1,11 +1,37 @@
 {
   "revenue": {
-    "maps_to": "SUM(sales_order_products.rate * sales_order_products.qty)",
-    "note": "No revenue column exists. Must derive from rate \u00d7 qty.",
+    "maps_to": "SUM(product.rate * sales_order_products.qty)",
+    "note": "Booked base sales value (excluding tax) from sales orders. If question specifically asks for invoiced/tax-inclusive revenue or billing, use proforma.grand_total.",
     "synonyms": [
       "total sales",
       "sales value",
-      "turnover"
+      "turnover",
+      "sales amount",
+      "base sales",
+      "money made"
+    ]
+  },
+  "invoiced_revenue": {
+    "maps_to": "SUM(proforma.grand_total)",
+    "note": "Invoiced total amount including GST and discounts from proforma invoices.",
+    "synonyms": [
+      "invoiced total",
+      "billed amount",
+      "invoice revenue",
+      "grand total",
+      "net billing",
+      "billed sales"
+    ]
+  },
+  "tax_amount": {
+    "maps_to": "SUM(proforma.gst_amount)",
+    "note": "Total GST tax amount from proforma invoices.",
+    "synonyms": [
+      "gst amount",
+      "tax collected",
+      "total gst",
+      "tax value",
+      "gst total"
     ]
   },
   "stock_quantity": {
@@ -15,77 +41,222 @@
       "inventory",
       "on-hand",
       "stock level",
-      "available quantity"
+      "available quantity",
+      "stock on hand"
     ]
   },
   "customer": {
-    "maps_to": "party.company_name",
-    "note": "party table holds both customers and suppliers.",
+    "maps_to": "party.party_name",
+    "note": "party table holds both customers (profile_type='Party') and suppliers (profile_type='Company').",
     "synonyms": [
       "client",
       "buyer",
-      "account"
+      "account",
+      "customer name",
+      "purchaser"
+    ]
+  },
+  "dispatched_quantity": {
+    "maps_to": "delivery_challan_products.qty",
+    "note": "Quantity dispatched via delivery challans.",
+    "synonyms": [
+      "dispatched",
+      "shipped",
+      "sent out",
+      "delivery quantity",
+      "dispatch count"
+    ]
+  },
+  "packed_cartons": {
+    "maps_to": "packagings.packing_qty_count",
+    "note": "Verified packed carton count (carton_verify_status='V').",
+    "synonyms": [
+      "cartons",
+      "packed boxes",
+      "ready cartons",
+      "boxed stock",
+      "warehouse boxes"
+    ]
+  },
+  "quotation": {
+    "maps_to": "SUM(quotation_products.final_amount)",
+    "note": "Price estimates, proposals, and quotations sent to customers.",
+    "synonyms": [
+      "quote",
+      "estimate",
+      "proposal",
+      "price estimate",
+      "quotations",
+      "estimates",
+      "proposals",
+      "price estimates"
+    ]
+  },
+  "vendor": {
+    "maps_to": "party.party_name",
+    "note": "Suppliers and raw material vendors (party.profile_type='Company').",
+    "synonyms": [
+      "supplier",
+      "seller",
+      "raw material vendor",
+      "suppliers",
+      "vendors",
+      "sellers"
+    ]
+  },
+  "purchase_quantity": {
+    "maps_to": "purchase_products.qty",
+    "note": "Quantity of raw materials or stock purchased from suppliers.",
+    "synonyms": [
+      "supplies bought",
+      "materials purchased",
+      "procured items",
+      "purchase qty",
+      "bought quantity"
+    ]
+  },
+  "transporter": {
+    "maps_to": "delivery_challan.transport_name",
+    "note": "Logistics carrier or transport company used for dispatch.",
+    "synonyms": [
+      "logistics company",
+      "carrier",
+      "shipping company",
+      "transport agency",
+      "logistics partner"
+    ]
+  },
+  "lead_inquiry": {
+    "maps_to": "lead.company_name",
+    "note": "Sales inquiries and potential client leads.",
+    "synonyms": [
+      "sales lead",
+      "inquiry",
+      "prospect",
+      "new inquiry",
+      "business lead",
+      "leads",
+      "inquiries",
+      "prospects"
+    ]
+  },
+  "opening_balance": {
+    "maps_to": "party_opening_balance.opening_balance",
+    "note": "Initial starting balance for customers or suppliers.",
+    "synonyms": [
+      "initial balance",
+      "starting balance",
+      "opening dues",
+      "prior balance",
+      "carried forward balance"
+    ]
+  },
+  "stock_adjustment": {
+    "maps_to": "stock_adjustment.qty",
+    "note": "Manual inventory corrections and adjustments.",
+    "synonyms": [
+      "inventory correction",
+      "stock write-off",
+      "manual adjustment",
+      "stock correction",
+      "reconciled quantity"
     ]
   },
   "actual_production_production_id": {
     "maps_to": "actual_production.production_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "actual production production id",
+      "production id"
+    ]
   },
   "actual_production_financial_id": {
     "maps_to": "actual_production.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "actual production financial id",
+      "financial id"
+    ]
   },
   "actual_production_production_date": {
     "maps_to": "actual_production.production_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "actual production production date",
+      "production date"
+    ]
   },
   "actual_production_product_type_id": {
     "maps_to": "actual_production.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2'.",
+    "synonyms": [
+      "product type id",
+      "actual production product type id"
+    ]
   },
   "actual_production_category_id": {
     "maps_to": "actual_production.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '5', '7', '6', '13', '17', '8', '9', '18', '15', '10', '11', '12', '16', '28', '27', '29', '26', '30'.",
+    "synonyms": [
+      "actual production category id",
+      "category id"
+    ]
   },
   "actual_production_product_id": {
     "maps_to": "actual_production.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product id",
+      "actual production product id"
+    ]
   },
   "actual_production_product_color_id": {
     "maps_to": "actual_production.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "actual production product color id"
+    ]
   },
   "actual_production_batch_no": {
     "maps_to": "actual_production.batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "batch no",
+      "actual production batch no"
+    ]
   },
   "actual_production_apq": {
     "maps_to": "actual_production.apq",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "apq",
+      "actual production apq"
+    ]
   },
   "actual_production_created_id": {
     "maps_to": "actual_production.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "actual production created id"
+    ]
   },
   "actual_production_updated_id": {
     "maps_to": "actual_production.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "actual production updated id",
+      "updated id"
+    ]
   },
   "actual_production_deleted_id": {
     "maps_to": "actual_production.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "actual production deleted id",
+      "deleted id"
+    ]
   },
   "carton_search_view_product_type": {
     "maps_to": "carton_search_view.product_type",
@@ -165,77 +336,122 @@
   "category_category_name": {
     "maps_to": "category.category_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category name",
+      "category category name"
+    ]
   },
   "category_product_type": {
     "maps_to": "category.product_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'RM'.",
+    "synonyms": [
+      "category product type",
+      "product type"
+    ]
   },
   "category_status": {
     "maps_to": "category.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Y', 'N'.",
+    "synonyms": [
+      "category status",
+      "status"
+    ]
   },
   "category_terms_condition": {
     "maps_to": "category.terms_condition",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "terms condition",
+      "category terms condition"
+    ]
   },
   "category_created_id": {
     "maps_to": "category.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category created id",
+      "created id"
+    ]
   },
   "category_updated_id": {
     "maps_to": "category.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category updated id",
+      "updated id"
+    ]
   },
   "category_deleted_id": {
     "maps_to": "category.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category deleted id",
+      "deleted id"
+    ]
   },
   "color_category_id": {
     "maps_to": "color.category_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category id",
+      "color category id"
+    ]
   },
   "color_color": {
     "maps_to": "color.color",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "color color",
+      "color"
+    ]
   },
   "color_created_id": {
     "maps_to": "color.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "color created id",
+      "created id"
+    ]
   },
   "color_updated_id": {
     "maps_to": "color.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "color updated id",
+      "updated id"
+    ]
   },
   "color_deleted_id": {
     "maps_to": "color.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "color deleted id"
+    ]
   },
   "countries_shortname": {
     "maps_to": "countries.shortname",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "countries shortname",
+      "shortname"
+    ]
   },
   "countries_name": {
     "maps_to": "countries.name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "name",
+      "countries name"
+    ]
   },
   "countries_phonecode": {
     "maps_to": "countries.phonecode",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "countries phonecode",
+      "phonecode"
+    ]
   },
   "dc_stock_view_sales_order_id": {
     "maps_to": "dc_stock_view.sales_order_id",
@@ -300,367 +516,588 @@
   "dc_temp_carton_no": {
     "maps_to": "dc_temp.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "dc temp carton no",
+      "carton no"
+    ]
   },
   "dc_temp_carton_name": {
     "maps_to": "dc_temp.carton_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "carton name",
+      "dc temp carton name"
+    ]
   },
   "delivery_challan_financial_id": {
     "maps_to": "delivery_challan.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan financial id",
+      "financial id"
+    ]
   },
   "delivery_challan_dc_no": {
     "maps_to": "delivery_challan.dc_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "dc no",
+      "delivery challan dc no"
+    ]
   },
   "delivery_challan_dc_date": {
     "maps_to": "delivery_challan.dc_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "dc date",
+      "delivery challan dc date"
+    ]
   },
   "delivery_challan_party_id": {
     "maps_to": "delivery_challan.party_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan party id",
+      "party id"
+    ]
   },
   "delivery_challan_sales_order_id": {
     "maps_to": "delivery_challan.sales_order_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan sales order id",
+      "sales order id"
+    ]
   },
   "delivery_challan_remarks": {
     "maps_to": "delivery_challan.remarks",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan remarks",
+      "remarks"
+    ]
   },
   "delivery_challan_transport_name": {
     "maps_to": "delivery_challan.transport_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan transport name",
+      "transport name"
+    ]
   },
   "delivery_challan_lr_number": {
     "maps_to": "delivery_challan.lr_number",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan lr number",
+      "lr number"
+    ]
   },
   "delivery_challan_lr_date": {
     "maps_to": "delivery_challan.lr_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan lr date",
+      "lr date"
+    ]
   },
   "delivery_challan_transport_remark": {
     "maps_to": "delivery_challan.transport_remark",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "transport remark",
+      "delivery challan transport remark"
+    ]
   },
   "delivery_challan_transport_updated_at": {
     "maps_to": "delivery_challan.transport_updated_at",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "transport updated at",
+      "delivery challan transport updated at"
+    ]
   },
   "delivery_challan_transport_updated_id": {
     "maps_to": "delivery_challan.transport_updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan transport updated id",
+      "transport updated id"
+    ]
   },
   "delivery_challan_created_id": {
     "maps_to": "delivery_challan.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan created id",
+      "created id"
+    ]
   },
   "delivery_challan_updated_id": {
     "maps_to": "delivery_challan.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "updated id",
+      "delivery challan updated id"
+    ]
   },
   "delivery_challan_deleted_id": {
     "maps_to": "delivery_challan.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan deleted id",
+      "deleted id"
+    ]
   },
   "delivery_challan_products_financial_id": {
     "maps_to": "delivery_challan_products.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "financial id",
+      "delivery challan products financial id"
+    ]
   },
   "delivery_challan_products_dc_id": {
     "maps_to": "delivery_challan_products.dc_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "dc id",
+      "delivery challan products dc id"
+    ]
   },
   "delivery_challan_products_product_type_id": {
     "maps_to": "delivery_challan_products.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2'.",
+    "synonyms": [
+      "product type id",
+      "delivery challan products product type id"
+    ]
   },
   "delivery_challan_products_category_id": {
     "maps_to": "delivery_challan_products.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '5', '7', '13', '6', '17', '11', '8', '15', '9', '18', '10', '16', '28', '12', '27', '26', '29', '30'.",
+    "synonyms": [
+      "delivery challan products category id",
+      "category id"
+    ]
   },
   "delivery_challan_products_product_id": {
     "maps_to": "delivery_challan_products.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan products product id",
+      "product id"
+    ]
   },
   "delivery_challan_products_product_color_id": {
     "maps_to": "delivery_challan_products.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "delivery challan products product color id"
+    ]
   },
   "delivery_challan_products_unit_id": {
     "maps_to": "delivery_challan_products.unit_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "unit id",
+      "delivery challan products unit id"
+    ]
   },
   "delivery_challan_products_product_batch_id": {
     "maps_to": "delivery_challan_products.product_batch_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan products product batch id",
+      "product batch id"
+    ]
   },
   "delivery_challan_products_batch_no": {
     "maps_to": "delivery_challan_products.batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "batch no",
+      "delivery challan products batch no"
+    ]
   },
   "delivery_challan_products_carton_no": {
     "maps_to": "delivery_challan_products.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "carton no",
+      "delivery challan products carton no"
+    ]
   },
   "delivery_challan_products_qty": {
     "maps_to": "delivery_challan_products.qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "qty",
+      "delivery challan products qty"
+    ]
   },
   "delivery_challan_products_batch_stock_type": {
     "maps_to": "delivery_challan_products.batch_stock_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Packaging'.",
+    "synonyms": [
+      "batch stock type",
+      "delivery challan products batch stock type"
+    ]
   },
   "delivery_challan_products_created_id": {
     "maps_to": "delivery_challan_products.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan products created id",
+      "created id"
+    ]
   },
   "delivery_challan_products_updated_id": {
     "maps_to": "delivery_challan_products.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery challan products updated id",
+      "updated id"
+    ]
   },
   "delivery_challan_products_deleted_id": {
     "maps_to": "delivery_challan_products.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "delivery challan products deleted id"
+    ]
   },
   "delivery_dispatch_attachment_financial_id": {
     "maps_to": "delivery_dispatch_attachment.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "financial id",
+      "delivery dispatch attachment financial id"
+    ]
   },
   "delivery_dispatch_attachment_dc_id": {
     "maps_to": "delivery_dispatch_attachment.dc_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "dc id",
+      "delivery dispatch attachment dc id"
+    ]
   },
   "delivery_dispatch_attachment_transport_attachment": {
     "maps_to": "delivery_dispatch_attachment.transport_attachment",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "transport attachment",
+      "delivery dispatch attachment transport attachment"
+    ]
   },
   "delivery_dispatch_attachment_created_id": {
     "maps_to": "delivery_dispatch_attachment.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "delivery dispatch attachment created id"
+    ]
   },
   "delivery_dispatch_attachment_updated_id": {
     "maps_to": "delivery_dispatch_attachment.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "delivery dispatch attachment updated id",
+      "updated id"
+    ]
   },
   "delivery_dispatch_attachment_deleted_id": {
     "maps_to": "delivery_dispatch_attachment.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "delivery dispatch attachment deleted id"
+    ]
   },
   "denomination_production_financial_id": {
     "maps_to": "denomination_production.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "financial id",
+      "denomination production financial id"
+    ]
   },
   "denomination_production_production_id": {
     "maps_to": "denomination_production.production_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "denomination production production id",
+      "production id"
+    ]
   },
   "denomination_production_apq_production_id": {
     "maps_to": "denomination_production.apq_production_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "denomination production apq production id",
+      "apq production id"
+    ]
   },
   "denomination_production_carton_product_id": {
     "maps_to": "denomination_production.carton_product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "denomination production carton product id",
+      "carton product id"
+    ]
   },
   "denomination_production_product_type_id": {
     "maps_to": "denomination_production.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2'.",
+    "synonyms": [
+      "denomination production product type id",
+      "product type id"
+    ]
   },
   "denomination_production_category_id": {
     "maps_to": "denomination_production.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '5', '6', '17'.",
+    "synonyms": [
+      "denomination production category id",
+      "category id"
+    ]
   },
   "denomination_production_product_id": {
     "maps_to": "denomination_production.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "denomination production product id",
+      "product id"
+    ]
   },
   "denomination_production_product_color_id": {
     "maps_to": "denomination_production.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "denomination production product color id"
+    ]
   },
   "denomination_production_qty": {
     "maps_to": "denomination_production.qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "denomination production qty",
+      "qty"
+    ]
   },
   "denomination_production_created_id": {
     "maps_to": "denomination_production.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "denomination production created id"
+    ]
   },
   "denomination_production_updated_id": {
     "maps_to": "denomination_production.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "denomination production updated id",
+      "updated id"
+    ]
   },
   "denomination_production_deleted_id": {
     "maps_to": "denomination_production.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "denomination production deleted id"
+    ]
   },
   "email_setting_email_send_auto": {
     "maps_to": "email_setting.email_send_auto",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'N'.",
+    "synonyms": [
+      "email send auto",
+      "email setting email send auto"
+    ]
   },
   "email_setting_created_id": {
     "maps_to": "email_setting.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "email setting created id",
+      "created id"
+    ]
   },
   "email_setting_updated_id": {
     "maps_to": "email_setting.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "email setting updated id",
+      "updated id"
+    ]
   },
   "failed_jobs_uuid": {
     "maps_to": "failed_jobs.uuid",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "failed jobs uuid",
+      "uuid"
+    ]
   },
   "failed_jobs_connection": {
     "maps_to": "failed_jobs.connection",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "failed jobs connection",
+      "connection"
+    ]
   },
   "failed_jobs_queue": {
     "maps_to": "failed_jobs.queue",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "failed jobs queue",
+      "queue"
+    ]
   },
   "failed_jobs_payload": {
     "maps_to": "failed_jobs.payload",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "payload",
+      "failed jobs payload"
+    ]
   },
   "failed_jobs_exception": {
     "maps_to": "failed_jobs.exception",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "failed jobs exception",
+      "exception"
+    ]
   },
   "failed_jobs_failed_at": {
     "maps_to": "failed_jobs.failed_at",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "failed at",
+      "failed jobs failed at"
+    ]
   },
   "financial_year_start_date": {
     "maps_to": "financial_year.start_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "financial year start date",
+      "start date"
+    ]
   },
   "financial_year_end_date": {
     "maps_to": "financial_year.end_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "financial year end date",
+      "end date"
+    ]
   },
   "financial_year_fyear": {
     "maps_to": "financial_year.fyear",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "fyear",
+      "financial year fyear"
+    ]
   },
   "financial_year_current_year": {
     "maps_to": "financial_year.current_year",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'N', 'Y'. Values are 'Y' (current fiscal year) and 'N'. For current fiscal year filter financial_year.current_year = 'Y'.",
+    "synonyms": [
+      "current fiscal year",
+      "active financial year",
+      "current financial year",
+      "this financial year"
+    ]
   },
   "financial_year_created_id": {
     "maps_to": "financial_year.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "financial year created id"
+    ]
   },
   "financial_year_updated_id": {
     "maps_to": "financial_year.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "updated id",
+      "financial year updated id"
+    ]
   },
   "financial_year_deleted_id": {
     "maps_to": "financial_year.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "financial year deleted id",
+      "deleted id"
+    ]
   },
   "image_setting_url": {
     "maps_to": "image_setting.url",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "image setting url",
+      "url"
+    ]
   },
   "lead_party_type": {
     "maps_to": "lead.party_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'New'.",
+    "synonyms": [
+      "party type",
+      "lead party type"
+    ]
   },
   "lead_party_id": {
     "maps_to": "lead.party_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead party id",
+      "party id"
+    ]
   },
   "lead_company_name": {
     "maps_to": "lead.company_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead company name",
+      "company name"
+    ]
   },
   "lead_lead_title": {
     "maps_to": "lead.lead_title",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead title",
+      "lead lead title"
+    ]
   },
   "lead_contact_name": {
     "maps_to": "lead.contact_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead contact name",
+      "contact name"
+    ]
   },
   "lead_address": {
     "maps_to": "lead.address",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "address",
+      "lead address"
+    ]
   },
   "lead_email": {
     "maps_to": "lead.email",
@@ -674,714 +1111,1133 @@
   "lead_mobile": {
     "maps_to": "lead.mobile",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "mobile",
+      "lead mobile"
+    ]
   },
   "lead_country_id": {
     "maps_to": "lead.country_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead country id",
+      "country id"
+    ]
   },
   "lead_state_id": {
     "maps_to": "lead.state_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '13', '12', '41', '0', '5', '22', '35', '36', '38', '8'.",
+    "synonyms": [
+      "lead state id",
+      "state id"
+    ]
   },
   "lead_new_state": {
     "maps_to": "lead.new_state",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead new state",
+      "new state"
+    ]
   },
   "lead_city": {
     "maps_to": "lead.city",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "city",
+      "lead city"
+    ]
   },
   "lead_pincode": {
     "maps_to": "lead.pincode",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead pincode",
+      "pincode"
+    ]
   },
   "lead_website": {
     "maps_to": "lead.website",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "website",
+      "lead website"
+    ]
   },
   "lead_interested_in": {
     "maps_to": "lead.interested_in",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "interested in",
+      "lead interested in"
+    ]
   },
   "lead_int_in_custom_product": {
     "maps_to": "lead.int_in_custom_product",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead int in custom product",
+      "int in custom product"
+    ]
   },
   "lead_lead_generate_from": {
     "maps_to": "lead.lead_generate_from",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'SalesExecutive', 'SocialMedia', 'Email', 'Website', 'Reference', 'Telecalling'.",
+    "synonyms": [
+      "lead lead generate from",
+      "lead generate from"
+    ]
   },
   "lead_lfrom_website": {
     "maps_to": "lead.lfrom_website",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lfrom website",
+      "lead lfrom website"
+    ]
   },
   "lead_lfrom_sample_requested": {
     "maps_to": "lead.lfrom_sample_requested",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'No', 'Yes'.",
+    "synonyms": [
+      "lead lfrom sample requested",
+      "lfrom sample requested"
+    ]
   },
   "lead_lfrom_exhibition": {
     "maps_to": "lead.lfrom_exhibition",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lfrom exhibition",
+      "lead lfrom exhibition"
+    ]
   },
   "lead_more_details": {
     "maps_to": "lead.more_details",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead more details",
+      "more details"
+    ]
   },
   "lead_lfrom_email": {
     "maps_to": "lead.lfrom_email",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead lfrom email",
+      "lfrom email"
+    ]
   },
   "lead_lfrom_social_media": {
     "maps_to": "lead.lfrom_social_media",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead lfrom social media",
+      "lfrom social media"
+    ]
   },
   "lead_lfrom_telecalling_user_id": {
     "maps_to": "lead.lfrom_telecalling_user_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead lfrom telecalling user id",
+      "lfrom telecalling user id"
+    ]
   },
   "lead_lfrom_reference": {
     "maps_to": "lead.lfrom_reference",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead lfrom reference",
+      "lfrom reference"
+    ]
   },
   "lead_lead_description": {
     "maps_to": "lead.lead_description",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead lead description",
+      "lead description"
+    ]
   },
   "lead_status": {
     "maps_to": "lead.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Success', 'Pending', 'Reject', 'In-Progress'. Actual status values in database are 'Pending' (104 rows), 'In-Progress' (2 rows), 'Success' (119 rows), 'Reject' (21 rows). Open/active leads are status IN ('Pending', 'In-Progress').",
+    "synonyms": [
+      "pending leads",
+      "active leads",
+      "open leads",
+      "lead status"
+    ]
   },
   "lead_next_followup_date": {
     "maps_to": "lead.next_followup_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "next followup date",
+      "lead next followup date"
+    ]
   },
   "lead_followup_medimum": {
     "maps_to": "lead.followup_medimum",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'WhatsappMessage', 'Email', 'Call'.",
+    "synonyms": [
+      "followup medimum",
+      "lead followup medimum"
+    ]
   },
   "lead_lead_date_time": {
     "maps_to": "lead.lead_date_time",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead date time",
+      "lead lead date time"
+    ]
   },
   "lead_lead_assign_to": {
     "maps_to": "lead.lead_assign_to",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead assign to",
+      "lead lead assign to"
+    ]
   },
   "lead_reason_for_delete": {
     "maps_to": "lead.reason_for_delete",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead reason for delete",
+      "reason for delete"
+    ]
   },
   "lead_request_for_quotation": {
     "maps_to": "lead.request_for_quotation",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'No', 'Yes'.",
+    "synonyms": [
+      "lead request for quotation",
+      "request for quotation"
+    ]
   },
   "lead_lead_id": {
     "maps_to": "lead.lead_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead lead id",
+      "lead id"
+    ]
   },
   "lead_gst_no": {
     "maps_to": "lead.gst_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead gst no",
+      "gst no"
+    ]
   },
   "lead_created_id": {
     "maps_to": "lead.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead created id",
+      "created id"
+    ]
   },
   "lead_updated_id": {
     "maps_to": "lead.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead updated id",
+      "updated id"
+    ]
   },
   "lead_deleted_id": {
     "maps_to": "lead.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "lead deleted id"
+    ]
   },
   "lead_restore_at": {
     "maps_to": "lead.restore_at",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "restore at",
+      "lead restore at"
+    ]
   },
   "lead_restore_id": {
     "maps_to": "lead.restore_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "restore id",
+      "lead restore id"
+    ]
   },
   "lead_attachment_lead_id": {
     "maps_to": "lead_attachment.lead_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead attachment lead id",
+      "lead id"
+    ]
   },
   "lead_attachment_attachment": {
     "maps_to": "lead_attachment.attachment",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead attachment attachment",
+      "attachment"
+    ]
   },
   "lead_attachment_created_id": {
     "maps_to": "lead_attachment.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead attachment created id",
+      "created id"
+    ]
   },
   "lead_attachment_updated_id": {
     "maps_to": "lead_attachment.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead attachment updated id",
+      "updated id"
+    ]
   },
   "lead_attachment_deleted_id": {
     "maps_to": "lead_attachment.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "lead attachment deleted id"
+    ]
   },
   "lead_history_lead_id": {
     "maps_to": "lead_history.lead_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead id",
+      "lead history lead id"
+    ]
   },
   "lead_history_description": {
     "maps_to": "lead_history.description",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "description",
+      "lead history description"
+    ]
   },
   "lead_history_lead_user_id": {
     "maps_to": "lead_history.lead_user_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead user id",
+      "lead history lead user id"
+    ]
   },
   "lead_history_lead_date_time": {
     "maps_to": "lead_history.lead_date_time",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead history lead date time",
+      "lead date time"
+    ]
   },
   "lead_history_status": {
     "maps_to": "lead_history.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Pending', 'Success', 'Reject', 'In-Progress'.",
+    "synonyms": [
+      "lead history status",
+      "status"
+    ]
   },
   "lead_history_next_followup_date": {
     "maps_to": "lead_history.next_followup_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "next followup date",
+      "lead history next followup date"
+    ]
   },
   "lead_history_lfrom_sample_requested": {
     "maps_to": "lead_history.lfrom_sample_requested",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'No', 'Yes'.",
+    "synonyms": [
+      "lead history lfrom sample requested",
+      "lfrom sample requested"
+    ]
   },
   "lead_history_request_for_quotation": {
     "maps_to": "lead_history.request_for_quotation",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'No', 'Yes'.",
+    "synonyms": [
+      "lead history request for quotation",
+      "request for quotation"
+    ]
   },
   "lead_history_quotation_id": {
     "maps_to": "lead_history.quotation_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead history quotation id",
+      "quotation id"
+    ]
   },
   "lead_history_pi_id": {
     "maps_to": "lead_history.pi_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "pi id",
+      "lead history pi id"
+    ]
   },
   "lead_history_created_id": {
     "maps_to": "lead_history.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "lead history created id"
+    ]
   },
   "lead_history_updated_id": {
     "maps_to": "lead_history.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead history updated id",
+      "updated id"
+    ]
   },
   "lead_history_deleted_id": {
     "maps_to": "lead_history.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "lead history deleted id"
+    ]
   },
   "lead_interested_lead_id": {
     "maps_to": "lead_interested.lead_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead interested lead id",
+      "lead id"
+    ]
   },
   "lead_interested_category_id": {
     "maps_to": "lead_interested.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '0'.",
+    "synonyms": [
+      "lead interested category id",
+      "category id"
+    ]
   },
   "lead_interested_interested_in": {
     "maps_to": "lead_interested.interested_in",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "interested in",
+      "lead interested interested in"
+    ]
   },
   "lead_interested_int_in_custom_product": {
     "maps_to": "lead_interested.int_in_custom_product",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead interested int in custom product",
+      "int in custom product"
+    ]
   },
   "lead_interested_created_id": {
     "maps_to": "lead_interested.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "lead interested created id"
+    ]
   },
   "lead_interested_updated_id": {
     "maps_to": "lead_interested.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead interested updated id",
+      "updated id"
+    ]
   },
   "lead_interested_deleted_id": {
     "maps_to": "lead_interested.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead interested deleted id",
+      "deleted id"
+    ]
   },
   "lead_product_sample_detail_lead_id": {
     "maps_to": "lead_product_sample_detail.lead_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail lead id",
+      "lead id"
+    ]
   },
   "lead_product_sample_detail_delivery_type": {
     "maps_to": "lead_product_sample_detail.delivery_type",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail delivery type",
+      "delivery type"
+    ]
   },
   "lead_product_sample_detail_courier_date": {
     "maps_to": "lead_product_sample_detail.courier_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail courier date",
+      "courier date"
+    ]
   },
   "lead_product_sample_detail_courier_name": {
     "maps_to": "lead_product_sample_detail.courier_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "courier name",
+      "lead product sample detail courier name"
+    ]
   },
   "lead_product_sample_detail_tracking_no": {
     "maps_to": "lead_product_sample_detail.tracking_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "tracking no",
+      "lead product sample detail tracking no"
+    ]
   },
   "lead_product_sample_detail_courier_expected_delivery": {
     "maps_to": "lead_product_sample_detail.courier_expected_delivery",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "courier expected delivery",
+      "lead product sample detail courier expected delivery"
+    ]
   },
   "lead_product_sample_detail_courier_document": {
     "maps_to": "lead_product_sample_detail.courier_document",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail courier document",
+      "courier document"
+    ]
   },
   "lead_product_sample_detail_transport_name": {
     "maps_to": "lead_product_sample_detail.transport_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail transport name",
+      "transport name"
+    ]
   },
   "lead_product_sample_detail_transport_date": {
     "maps_to": "lead_product_sample_detail.transport_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "transport date",
+      "lead product sample detail transport date"
+    ]
   },
   "lead_product_sample_detail_lr_number": {
     "maps_to": "lead_product_sample_detail.lr_number",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail lr number",
+      "lr number"
+    ]
   },
   "lead_product_sample_detail_transport_expected_delivery": {
     "maps_to": "lead_product_sample_detail.transport_expected_delivery",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail transport expected delivery",
+      "transport expected delivery"
+    ]
   },
   "lead_product_sample_detail_transport_document": {
     "maps_to": "lead_product_sample_detail.transport_document",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "transport document",
+      "lead product sample detail transport document"
+    ]
   },
   "lead_product_sample_detail_created_id": {
     "maps_to": "lead_product_sample_detail.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "lead product sample detail created id"
+    ]
   },
   "lead_product_sample_detail_updated_id": {
     "maps_to": "lead_product_sample_detail.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail updated id",
+      "updated id"
+    ]
   },
   "lead_product_sample_detail_deleted_id": {
     "maps_to": "lead_product_sample_detail.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "lead product sample detail deleted id",
+      "deleted id"
+    ]
   },
   "log_email_send_type": {
     "maps_to": "log_email_send.type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'PI'.",
+    "synonyms": [
+      "type",
+      "log email send type"
+    ]
   },
   "log_email_send_invoice_no": {
     "maps_to": "log_email_send.invoice_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log email send invoice no",
+      "invoice no"
+    ]
   },
   "log_email_send_revision_no": {
     "maps_to": "log_email_send.revision_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log email send revision no",
+      "revision no"
+    ]
   },
   "log_email_send_status": {
     "maps_to": "log_email_send.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Success', ''.",
+    "synonyms": [
+      "log email send status",
+      "status"
+    ]
   },
   "log_email_send_error_message": {
     "maps_to": "log_email_send.error_message",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log email send error message",
+      "error message"
+    ]
   },
   "log_email_send_recipient_email": {
     "maps_to": "log_email_send.recipient_email",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log email send recipient email",
+      "recipient email"
+    ]
   },
   "log_email_send_sender_email": {
     "maps_to": "log_email_send.sender_email",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log email send sender email",
+      "sender email"
+    ]
   },
   "log_email_send_form_status": {
     "maps_to": "log_email_send.form_status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Update', 'Button'.",
+    "synonyms": [
+      "log email send form status",
+      "form status"
+    ]
   },
   "log_email_send_created_id": {
     "maps_to": "log_email_send.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "log email send created id"
+    ]
   },
   "log_location_set_carton_no": {
     "maps_to": "log_location_set.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log location set carton no",
+      "carton no"
+    ]
   },
   "log_location_set_warehouse_id": {
     "maps_to": "log_location_set.warehouse_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log location set warehouse id",
+      "warehouse id"
+    ]
   },
   "log_location_set_location_name": {
     "maps_to": "log_location_set.location_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "log location set location name",
+      "location name"
+    ]
   },
   "log_location_set_type": {
     "maps_to": "log_location_set.type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Organize', 'Packaging'.",
+    "synonyms": [
+      "log location set type",
+      "type"
+    ]
   },
   "log_location_set_created_id": {
     "maps_to": "log_location_set.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "log location set created id"
+    ]
   },
   "machine_machine_name": {
     "maps_to": "machine.machine_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "machine name",
+      "machine machine name"
+    ]
   },
   "machine_notes": {
     "maps_to": "machine.notes",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "notes",
+      "machine notes"
+    ]
   },
   "machine_status": {
     "maps_to": "machine.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Y'.",
+    "synonyms": [
+      "machine status",
+      "status"
+    ]
   },
   "machine_created_id": {
     "maps_to": "machine.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "machine created id",
+      "created id"
+    ]
   },
   "machine_updated_id": {
     "maps_to": "machine.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "updated id",
+      "machine updated id"
+    ]
   },
   "machine_deleted_id": {
     "maps_to": "machine.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "machine deleted id"
+    ]
   },
   "migrations_migration": {
     "maps_to": "migrations.migration",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "migrations migration",
+      "migration"
+    ]
   },
   "migrations_batch": {
     "maps_to": "migrations.batch",
     "note": "",
     "synonyms": [
-      "batch",
-      "lot",
       "consignment",
+      "lot",
+      "batch",
       "serial"
     ]
   },
   "model_has_permissions_permission_id": {
     "maps_to": "model_has_permissions.permission_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "model has permissions permission id",
+      "permission id"
+    ]
   },
   "model_has_permissions_model_type": {
     "maps_to": "model_has_permissions.model_type",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "model has permissions model type",
+      "model type"
+    ]
   },
   "model_has_permissions_model_id": {
     "maps_to": "model_has_permissions.model_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "model has permissions model id",
+      "model id"
+    ]
   },
   "model_has_roles_role_id": {
     "maps_to": "model_has_roles.role_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "model has roles role id",
+      "role id"
+    ]
   },
   "model_has_roles_model_type": {
     "maps_to": "model_has_roles.model_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'App\\Models\\User'.",
+    "synonyms": [
+      "model has roles model type",
+      "model type"
+    ]
   },
   "model_has_roles_model_id": {
     "maps_to": "model_has_roles.model_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '13', '14', '17', '18', '3', '6', '8', '11', '12'.",
+    "synonyms": [
+      "model has roles model id",
+      "model id"
+    ]
   },
   "packaging_financial_id": {
     "maps_to": "packaging.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging financial id",
+      "financial id"
+    ]
   },
   "packaging_packaging_no": {
     "maps_to": "packaging.packaging_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging no",
+      "packaging packaging no"
+    ]
   },
   "packaging_packaging_date": {
     "maps_to": "packaging.packaging_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging date",
+      "packaging packaging date"
+    ]
   },
   "packaging_remarks": {
     "maps_to": "packaging.remarks",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging remarks",
+      "remarks"
+    ]
   },
   "packaging_created_id": {
     "maps_to": "packaging.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging created id",
+      "created id"
+    ]
   },
   "packaging_updated_id": {
     "maps_to": "packaging.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging updated id",
+      "updated id"
+    ]
   },
   "packaging_deleted_id": {
     "maps_to": "packaging.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "packaging deleted id"
+    ]
   },
   "packagings_financial_id": {
     "maps_to": "packagings.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings financial id",
+      "financial id"
+    ]
   },
   "packagings_packaging_date": {
     "maps_to": "packagings.packaging_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging date",
+      "packagings packaging date"
+    ]
   },
   "packagings_product_type_id": {
     "maps_to": "packagings.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2'.",
+    "synonyms": [
+      "packagings product type id",
+      "product type id"
+    ]
   },
   "packagings_category_id": {
     "maps_to": "packagings.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '5', '7', '6', '13', '18', '17', '11', '15', '8', '9', '28', '16', '10', '26', '12', '29', '27', '30'.",
+    "synonyms": [
+      "category id",
+      "packagings category id"
+    ]
   },
   "packagings_product_id": {
     "maps_to": "packagings.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings product id",
+      "product id"
+    ]
   },
   "packagings_product_color_id": {
     "maps_to": "packagings.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "packagings product color id"
+    ]
   },
   "packagings_unit_id": {
     "maps_to": "packagings.unit_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "unit id",
+      "packagings unit id"
+    ]
   },
   "packagings_product_batch_id": {
     "maps_to": "packagings.product_batch_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings product batch id",
+      "product batch id"
+    ]
   },
   "packagings_batch_no": {
     "maps_to": "packagings.batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "batch no",
+      "packagings batch no"
+    ]
   },
   "packagings_qty": {
     "maps_to": "packagings.qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings qty",
+      "qty"
+    ]
   },
   "packagings_packaging_qty": {
     "maps_to": "packagings.packaging_qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging qty",
+      "packagings packaging qty"
+    ]
   },
   "packagings_packing_qty_count": {
     "maps_to": "packagings.packing_qty_count",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings packing qty count",
+      "packing qty count"
+    ]
   },
   "packagings_carton_product_id": {
     "maps_to": "packagings.carton_product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "carton product id",
+      "packagings carton product id"
+    ]
   },
   "packagings_carton_no": {
     "maps_to": "packagings.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings carton no",
+      "carton no"
+    ]
   },
   "packagings_carton_verify_status": {
     "maps_to": "packagings.carton_verify_status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'V', 'P'.",
+    "synonyms": [
+      "packagings carton verify status",
+      "carton verify status"
+    ]
   },
   "packagings_carton_verify_at": {
     "maps_to": "packagings.carton_verify_at",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings carton verify at",
+      "carton verify at"
+    ]
   },
   "packagings_location_code": {
     "maps_to": "packagings.location_code",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "location code",
+      "packagings location code"
+    ]
   },
   "packagings_warehouse_id": {
     "maps_to": "packagings.warehouse_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings warehouse id",
+      "warehouse id"
+    ]
   },
   "packagings_location_updated_at": {
     "maps_to": "packagings.location_updated_at",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings location updated at",
+      "location updated at"
+    ]
   },
   "packagings_location_updated_id": {
     "maps_to": "packagings.location_updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings location updated id",
+      "location updated id"
+    ]
   },
   "packagings_prefix_carton_no": {
     "maps_to": "packagings.prefix_carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "prefix carton no",
+      "packagings prefix carton no"
+    ]
   },
   "packagings_remarks": {
     "maps_to": "packagings.remarks",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings remarks",
+      "remarks"
+    ]
   },
   "packagings_status": {
     "maps_to": "packagings.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'D', 'B'.",
+    "synonyms": [
+      "packagings status",
+      "status"
+    ]
   },
   "packagings_so_id": {
     "maps_to": "packagings.so_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings so id",
+      "so id"
+    ]
   },
   "packagings_dc_id": {
     "maps_to": "packagings.dc_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings dc id",
+      "dc id"
+    ]
   },
   "packagings_created_id": {
     "maps_to": "packagings.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "packagings created id"
+    ]
   },
   "packagings_updated_id": {
     "maps_to": "packagings.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packagings updated id",
+      "updated id"
+    ]
   },
   "packagings_deleted_id": {
     "maps_to": "packagings.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "packagings deleted id"
+    ]
   },
   "packaging_barcode_log_packaging_date": {
     "maps_to": "packaging_barcode_log.packaging_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging date",
+      "packaging barcode log packaging date"
+    ]
   },
   "packaging_barcode_log_carton_no": {
     "maps_to": "packaging_barcode_log.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging barcode log carton no",
+      "carton no"
+    ]
   },
   "packaging_barcode_log_batch_no": {
     "maps_to": "packaging_barcode_log.batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "batch no",
+      "packaging barcode log batch no"
+    ]
   },
   "packaging_barcode_log_created_id": {
     "maps_to": "packaging_barcode_log.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "packaging barcode log created id"
+    ]
   },
   "packaging_barcode_log_user": {
     "maps_to": "packaging_barcode_log.user",
     "note": "",
     "synonyms": [
-      "user",
       "login",
+      "user",
       "account holder",
       "member"
     ]
@@ -1389,137 +2245,218 @@
   "packaging_products_financial_id": {
     "maps_to": "packaging_products.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products financial id",
+      "financial id"
+    ]
   },
   "packaging_products_packaging_id": {
     "maps_to": "packaging_products.packaging_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging id",
+      "packaging products packaging id"
+    ]
   },
   "packaging_products_packaging_date": {
     "maps_to": "packaging_products.packaging_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging date",
+      "packaging products packaging date"
+    ]
   },
   "packaging_products_product_type_id": {
     "maps_to": "packaging_products.product_type_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products product type id",
+      "product type id"
+    ]
   },
   "packaging_products_category_id": {
     "maps_to": "packaging_products.category_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category id",
+      "packaging products category id"
+    ]
   },
   "packaging_products_product_id": {
     "maps_to": "packaging_products.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products product id",
+      "product id"
+    ]
   },
   "packaging_products_product_color_id": {
     "maps_to": "packaging_products.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "packaging products product color id"
+    ]
   },
   "packaging_products_product_batch_id": {
     "maps_to": "packaging_products.product_batch_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products product batch id",
+      "product batch id"
+    ]
   },
   "packaging_products_unit_id": {
     "maps_to": "packaging_products.unit_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "unit id",
+      "packaging products unit id"
+    ]
   },
   "packaging_products_qty": {
     "maps_to": "packaging_products.qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "qty",
+      "packaging products qty"
+    ]
   },
   "packaging_products_carton_product_id": {
     "maps_to": "packaging_products.carton_product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products carton product id",
+      "carton product id"
+    ]
   },
   "packaging_products_carton_no": {
     "maps_to": "packaging_products.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products carton no",
+      "carton no"
+    ]
   },
   "packaging_products_status": {
     "maps_to": "packaging_products.status",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "status",
+      "packaging products status"
+    ]
   },
   "packaging_products_created_id": {
     "maps_to": "packaging_products.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "packaging products created id"
+    ]
   },
   "packaging_products_updated_id": {
     "maps_to": "packaging_products.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "packaging products updated id",
+      "updated id"
+    ]
   },
   "packaging_products_deleted_id": {
     "maps_to": "packaging_products.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "packaging products deleted id"
+    ]
   },
   "party_party_name": {
     "maps_to": "party.party_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party party name",
+      "party name"
+    ]
   },
   "party_logo": {
     "maps_to": "party.logo",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "logo",
+      "party logo"
+    ]
   },
   "party_contact_person1": {
     "maps_to": "party.contact_person1",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party contact person1",
+      "contact person1"
+    ]
   },
   "party_country_id": {
     "maps_to": "party.country_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party country id",
+      "country id"
+    ]
   },
   "party_state_id": {
     "maps_to": "party.state_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '22', '12', '13', '32', '17', '41', '10', '35', '21', '38', '39', '6', '11', '14'.",
+    "synonyms": [
+      "state id",
+      "party state id"
+    ]
   },
   "party_new_state": {
     "maps_to": "party.new_state",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party new state",
+      "new state"
+    ]
   },
   "party_city": {
     "maps_to": "party.city",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "city",
+      "party city"
+    ]
   },
   "party_pincode": {
     "maps_to": "party.pincode",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party pincode",
+      "pincode"
+    ]
   },
   "party_address": {
     "maps_to": "party.address",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "address",
+      "party address"
+    ]
   },
   "party_bank_branch": {
     "maps_to": "party.bank_branch",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party bank branch",
+      "bank branch"
+    ]
   },
   "party_mobile1": {
     "maps_to": "party.mobile1",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party mobile1",
+      "mobile1"
+    ]
   },
   "party_email": {
     "maps_to": "party.email",
@@ -1533,207 +2470,324 @@
   "party_website": {
     "maps_to": "party.website",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "website",
+      "party website"
+    ]
   },
   "party_gst_no": {
     "maps_to": "party.gst_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party gst no",
+      "gst no"
+    ]
   },
   "party_pan_no": {
     "maps_to": "party.pan_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "pan no",
+      "party pan no"
+    ]
   },
   "party_profile_type": {
     "maps_to": "party.profile_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Party', 'Company'.",
+    "synonyms": [
+      "profile type",
+      "party profile type"
+    ]
   },
   "party_bank_name": {
     "maps_to": "party.bank_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "bank name",
+      "party bank name"
+    ]
   },
   "party_bank_address": {
     "maps_to": "party.bank_address",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party bank address",
+      "bank address"
+    ]
   },
   "party_bank_account_name": {
     "maps_to": "party.bank_account_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "bank account name",
+      "party bank account name"
+    ]
   },
   "party_bank_account_no": {
     "maps_to": "party.bank_account_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party bank account no",
+      "bank account no"
+    ]
   },
   "party_bank_account_type": {
     "maps_to": "party.bank_account_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Current'.",
+    "synonyms": [
+      "party bank account type",
+      "bank account type"
+    ]
   },
   "party_ifsc_code": {
     "maps_to": "party.ifsc_code",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "ifsc code",
+      "party ifsc code"
+    ]
   },
   "party_credit_limit": {
     "maps_to": "party.credit_limit",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "credit limit",
+      "party credit limit"
+    ]
   },
   "party_status": {
     "maps_to": "party.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Y', '', 'N'. Values are 'Y' (active) and 'N' (inactive). Active parties: party.status = 'Y'.",
+    "synonyms": [
+      "active parties",
+      "customer status",
+      "active customers",
+      "party status"
+    ]
   },
   "party_packaging_forwarding": {
     "maps_to": "party.packaging_forwarding",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Yes', 'No'.",
+    "synonyms": [
+      "packaging forwarding",
+      "party packaging forwarding"
+    ]
   },
   "party_delivery_terms": {
     "maps_to": "party.delivery_terms",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party delivery terms",
+      "delivery terms"
+    ]
   },
   "party_birthdate1": {
     "maps_to": "party.birthdate1",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "birthdate1",
+      "party birthdate1"
+    ]
   },
   "party_contact_person2": {
     "maps_to": "party.contact_person2",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "contact person2",
+      "party contact person2"
+    ]
   },
   "party_mobile2": {
     "maps_to": "party.mobile2",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party mobile2",
+      "mobile2"
+    ]
   },
   "party_birthdate2": {
     "maps_to": "party.birthdate2",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "birthdate2",
+      "party birthdate2"
+    ]
   },
   "party_contact_person3": {
     "maps_to": "party.contact_person3",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "contact person3",
+      "party contact person3"
+    ]
   },
   "party_mobile3": {
     "maps_to": "party.mobile3",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party mobile3",
+      "mobile3"
+    ]
   },
   "party_phone_no": {
     "maps_to": "party.phone_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "phone no",
+      "party phone no"
+    ]
   },
   "party_birthdate3": {
     "maps_to": "party.birthdate3",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party birthdate3",
+      "birthdate3"
+    ]
   },
   "party_created_id": {
     "maps_to": "party.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "party created id"
+    ]
   },
   "party_updated_id": {
     "maps_to": "party.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party updated id",
+      "updated id"
+    ]
   },
   "party_deleted_id": {
     "maps_to": "party.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "party deleted id"
+    ]
   },
   "party_followup_history_party_id": {
     "maps_to": "party_followup_history.party_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party id",
+      "party followup history party id"
+    ]
   },
   "party_followup_history_reminder_date": {
     "maps_to": "party_followup_history.reminder_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "reminder date",
+      "party followup history reminder date"
+    ]
   },
   "party_followup_history_followup_date": {
     "maps_to": "party_followup_history.followup_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "followup date",
+      "party followup history followup date"
+    ]
   },
   "party_followup_history_remark": {
     "maps_to": "party_followup_history.remark",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party followup history remark",
+      "remark"
+    ]
   },
   "party_followup_history_status": {
     "maps_to": "party_followup_history.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Pending'.",
+    "synonyms": [
+      "party followup history status",
+      "status"
+    ]
   },
   "party_followup_history_assign_to_user": {
     "maps_to": "party_followup_history.assign_to_user",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party followup history assign to user",
+      "assign to user"
+    ]
   },
   "party_followup_history_created_id": {
     "maps_to": "party_followup_history.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "party followup history created id"
+    ]
   },
   "party_followup_history_updated_id": {
     "maps_to": "party_followup_history.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "updated id",
+      "party followup history updated id"
+    ]
   },
   "party_followup_history_deleted_id": {
     "maps_to": "party_followup_history.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "party followup history deleted id"
+    ]
   },
   "party_opening_balance_financial_id": {
     "maps_to": "party_opening_balance.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party opening balance financial id",
+      "financial id"
+    ]
   },
   "party_opening_balance_party_id": {
     "maps_to": "party_opening_balance.party_id",
     "note": "",
-    "synonyms": []
-  },
-  "party_opening_balance_opening_balance": {
-    "maps_to": "party_opening_balance.opening_balance",
-    "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party id",
+      "party opening balance party id"
+    ]
   },
   "party_opening_balance_balance_type": {
     "maps_to": "party_opening_balance.balance_type",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Credit'.",
+    "synonyms": [
+      "balance type",
+      "party opening balance balance type"
+    ]
   },
   "party_opening_balance_created_id": {
     "maps_to": "party_opening_balance.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "party opening balance created id"
+    ]
   },
   "party_opening_balance_updated_id": {
     "maps_to": "party_opening_balance.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party opening balance updated id",
+      "updated id"
+    ]
   },
   "party_opening_balance_deleted_id": {
     "maps_to": "party_opening_balance.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "party opening balance deleted id",
+      "deleted id"
+    ]
   },
   "password_resets_email": {
     "maps_to": "password_resets.email",
@@ -1747,358 +2801,559 @@
   "password_resets_token": {
     "maps_to": "password_resets.token",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "token",
+      "password resets token"
+    ]
   },
   "permissions_name": {
     "maps_to": "permissions.name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "name",
+      "permissions name"
+    ]
   },
   "permissions_guard_name": {
     "maps_to": "permissions.guard_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "permissions guard name",
+      "guard name"
+    ]
   },
   "permissions_order_no": {
     "maps_to": "permissions.order_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "permissions order no",
+      "order no"
+    ]
   },
   "permissions_is_delete": {
     "maps_to": "permissions.is_delete",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'N'.",
+    "synonyms": [
+      "is delete",
+      "permissions is delete"
+    ]
   },
   "personal_access_tokens_tokenable_type": {
     "maps_to": "personal_access_tokens.tokenable_type",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "personal access tokens tokenable type",
+      "tokenable type"
+    ]
   },
   "personal_access_tokens_tokenable_id": {
     "maps_to": "personal_access_tokens.tokenable_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "tokenable id",
+      "personal access tokens tokenable id"
+    ]
   },
   "personal_access_tokens_name": {
     "maps_to": "personal_access_tokens.name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "name",
+      "personal access tokens name"
+    ]
   },
   "personal_access_tokens_token": {
     "maps_to": "personal_access_tokens.token",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "token",
+      "personal access tokens token"
+    ]
   },
   "personal_access_tokens_abilities": {
     "maps_to": "personal_access_tokens.abilities",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "abilities",
+      "personal access tokens abilities"
+    ]
   },
   "personal_access_tokens_last_used_at": {
     "maps_to": "personal_access_tokens.last_used_at",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "personal access tokens last used at",
+      "last used at"
+    ]
   },
   "product_product_type_id": {
     "maps_to": "product.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2', '1'.",
+    "synonyms": [
+      "product product type id",
+      "product type id"
+    ]
   },
   "product_category_id": {
     "maps_to": "product.category_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product category id",
+      "category id"
+    ]
   },
   "product_product_name": {
     "maps_to": "product.product_name",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product name",
+      "product product name"
+    ]
   },
   "product_unit_id": {
     "maps_to": "product.unit_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "unit id",
+      "product unit id"
+    ]
   },
   "product_gst_percentage": {
     "maps_to": "product.gst_percentage",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "gst percentage",
+      "product gst percentage"
+    ]
   },
   "product_moq": {
     "maps_to": "product.moq",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "moq",
+      "product moq"
+    ]
   },
   "product_rate": {
     "maps_to": "product.rate",
     "note": "",
     "synonyms": [
-      "rate",
       "price",
-      "cost per unit",
-      "unit price"
+      "unit price",
+      "rate",
+      "cost per unit"
     ]
   },
   "product_status": {
     "maps_to": "product.status",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'Y', 'N'.",
+    "synonyms": [
+      "product status",
+      "status"
+    ]
   },
   "product_created_id": {
     "maps_to": "product.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "product created id"
+    ]
   },
   "product_updated_id": {
     "maps_to": "product.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "updated id",
+      "product updated id"
+    ]
   },
   "product_deleted_id": {
     "maps_to": "product.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "product deleted id"
+    ]
   },
   "production_financial_id": {
     "maps_to": "production.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production financial id",
+      "financial id"
+    ]
   },
   "production_production_no": {
     "maps_to": "production.production_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production production no",
+      "production no"
+    ]
   },
   "production_production_date": {
     "maps_to": "production.production_date",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production date",
+      "production production date"
+    ]
   },
   "production_product_type_id": {
     "maps_to": "production.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2'.",
+    "synonyms": [
+      "product type id",
+      "production product type id"
+    ]
   },
   "production_category_id": {
     "maps_to": "production.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '5', '7', '6', '13', '17', '8', '18', '10', '9', '15', '11', '16', '12', '28', '29', '27', '26', '30'.",
+    "synonyms": [
+      "category id",
+      "production category id"
+    ]
   },
   "production_product_id": {
     "maps_to": "production.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production product id",
+      "product id"
+    ]
   },
   "production_product_color_id": {
     "maps_to": "production.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "production product color id"
+    ]
   },
   "production_batch_no": {
     "maps_to": "production.batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "batch no",
+      "production batch no"
+    ]
   },
   "production_auto_batch_no": {
     "maps_to": "production.auto_batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "auto batch no",
+      "production auto batch no"
+    ]
   },
   "production_fyear": {
     "maps_to": "production.fyear",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production fyear",
+      "fyear"
+    ]
   },
   "production_qty": {
     "maps_to": "production.qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production qty",
+      "qty"
+    ]
   },
   "production_machine_id": {
     "maps_to": "production.machine_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production machine id",
+      "machine id"
+    ]
   },
   "production_created_id": {
     "maps_to": "production.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production created id",
+      "created id"
+    ]
   },
   "production_updated_id": {
     "maps_to": "production.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "production updated id",
+      "updated id"
+    ]
   },
   "production_deleted_id": {
     "maps_to": "production.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "production deleted id"
+    ]
   },
   "production_rights_setting_edit": {
     "maps_to": "production_rights_setting.edit",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: 'N'.",
+    "synonyms": [
+      "edit",
+      "production rights setting edit"
+    ]
   },
   "product_color_financial_id": {
     "maps_to": "product_color.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color financial id",
+      "financial id"
+    ]
   },
   "product_color_product_type_id": {
     "maps_to": "product_color.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '2', '1'.",
+    "synonyms": [
+      "product color product type id",
+      "product type id"
+    ]
   },
   "product_color_category_id": {
     "maps_to": "product_color.category_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "category id",
+      "product color category id"
+    ]
   },
   "product_color_product_id": {
     "maps_to": "product_color.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color product id",
+      "product id"
+    ]
   },
   "product_color_product_color_id": {
     "maps_to": "product_color.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "product color product color id"
+    ]
   },
   "product_color_color": {
     "maps_to": "product_color.color",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "color",
+      "product color color"
+    ]
   },
   "product_color_minimum_stock": {
     "maps_to": "product_color.minimum_stock",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color minimum stock",
+      "minimum stock"
+    ]
   },
   "product_color_created_id": {
     "maps_to": "product_color.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "product color created id"
+    ]
   },
   "product_color_updated_id": {
     "maps_to": "product_color.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color updated id",
+      "updated id"
+    ]
   },
   "product_color_deleted_id": {
     "maps_to": "product_color.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "product color deleted id"
+    ]
   },
   "product_opening_stock_financial_id": {
     "maps_to": "product_opening_stock.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock financial id",
+      "financial id"
+    ]
   },
   "product_opening_stock_product_type_id": {
     "maps_to": "product_opening_stock.product_type_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '1', '2'.",
+    "synonyms": [
+      "product opening stock product type id",
+      "product type id"
+    ]
   },
   "product_opening_stock_category_id": {
     "maps_to": "product_opening_stock.category_id",
-    "note": "",
-    "synonyms": []
+    "note": "Allowed values: '1', '2', '5'.",
+    "synonyms": [
+      "category id",
+      "product opening stock category id"
+    ]
   },
   "product_opening_stock_product_id": {
     "maps_to": "product_opening_stock.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock product id",
+      "product id"
+    ]
   },
   "product_opening_stock_product_color_id": {
     "maps_to": "product_opening_stock.product_color_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product color id",
+      "product opening stock product color id"
+    ]
   },
   "product_opening_stock_batch_no": {
     "maps_to": "product_opening_stock.batch_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "batch no",
+      "product opening stock batch no"
+    ]
   },
   "product_opening_stock_carton_product_id": {
     "maps_to": "product_opening_stock.carton_product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock carton product id",
+      "carton product id"
+    ]
   },
   "product_opening_stock_carton_no": {
     "maps_to": "product_opening_stock.carton_no",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock carton no",
+      "carton no"
+    ]
   },
   "product_opening_stock_location": {
     "maps_to": "product_opening_stock.location",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "location",
+      "product opening stock location"
+    ]
   },
   "product_opening_stock_opening_stock": {
     "maps_to": "product_opening_stock.opening_stock",
     "note": "",
     "synonyms": [
-      "ProductOs",
-      "opening stock",
       "product opening stock",
+      "starting stock",
+      "opening stock",
       "beginning inventory",
-      "starting stock"
+      "ProductOs"
     ]
   },
   "product_opening_stock_status": {
     "maps_to": "product_opening_stock.status",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock status",
+      "status"
+    ]
   },
   "product_opening_stock_created_id": {
     "maps_to": "product_opening_stock.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock created id",
+      "created id"
+    ]
   },
   "product_opening_stock_updated_id": {
     "maps_to": "product_opening_stock.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product opening stock updated id",
+      "updated id"
+    ]
   },
   "product_opening_stock_deleted_id": {
     "maps_to": "product_opening_stock.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "product opening stock deleted id"
+    ]
   },
   "product_packaging_detail_financial_id": {
     "maps_to": "product_packaging_detail.financial_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product packaging detail financial id",
+      "financial id"
+    ]
   },
   "product_packaging_detail_product_id": {
     "maps_to": "product_packaging_detail.product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product packaging detail product id",
+      "product id"
+    ]
   },
   "product_packaging_detail_carton_product_id": {
     "maps_to": "product_packaging_detail.carton_product_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "carton product id",
+      "product packaging detail carton product id"
+    ]
   },
   "product_packaging_detail_qty": {
     "maps_to": "product_packaging_detail.qty",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "product packaging detail qty",
+      "qty"
+    ]
   },
   "product_packaging_detail_created_id": {
     "maps_to": "product_packaging_detail.created_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "created id",
+      "product packaging detail created id"
+    ]
   },
   "product_packaging_detail_updated_id": {
     "maps_to": "product_packaging_detail.updated_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "updated id",
+      "product packaging detail updated id"
+    ]
   },
   "product_packaging_detail_deleted_id": {
     "maps_to": "product_packaging_detail.deleted_id",
     "note": "",
-    "synonyms": []
+    "synonyms": [
+      "deleted id",
+      "product packaging detail deleted id"
+    ]
   },
   "product_type_product_type": {
     "maps_to": "product_type.product_type",
@@ -2992,8 +4247,13 @@
   },
   "stock_carton_verify_status": {
     "maps_to": "stock.carton_verify_status",
-    "note": "",
-    "synonyms": []
+    "note": "Values are 'P' (Pending / unverified) and 'V' (Verified). Pending/unverified cartons: carton_verify_status = 'P'. Verified: carton_verify_status = 'V'.",
+    "synonyms": [
+      "unverified cartons",
+      "pending cartons",
+      "carton verification",
+      "verified cartons"
+    ]
   },
   "stock_carton_verify_at": {
     "maps_to": "stock.carton_verify_at",
@@ -3011,9 +4271,13 @@
     "synonyms": []
   },
   "stock_qty": {
-    "maps_to": "stock.qty",
-    "note": "",
-    "synonyms": []
+    "maps_to": "CAST(stock.qty AS DECIMAL(10,2))",
+    "note": "stock.qty is stored as VARCHAR \u2014 ALWAYS CAST to DECIMAL or UNSIGNED when doing SUM, AVG, or numeric comparisons.",
+    "synonyms": [
+      "stock quantity",
+      "available stock",
+      "inventory quantity"
+    ]
   },
   "stock_gst_amount": {
     "maps_to": "stock.gst_amount",
@@ -3027,18 +4291,23 @@
   },
   "stock_stock_type": {
     "maps_to": "stock.stock_type",
-    "note": "",
+    "note": "Values: 'Packaging', 'StockAdjustment', 'PI', 'ProductOs'.",
     "synonyms": []
   },
   "stock_transaction_type": {
     "maps_to": "stock.transaction_type",
-    "note": "",
+    "note": "Values: 'StockIn', 'StockOut'.",
     "synonyms": []
   },
   "stock_status": {
     "maps_to": "stock.status",
-    "note": "",
-    "synonyms": []
+    "note": "Values are 'B' (Booked / available in-stock on hand) and 'D' (Dispatched / shipped out). Available stock on hand: stock.status = 'B'.",
+    "synonyms": [
+      "in stock",
+      "available stock",
+      "stock status",
+      "on hand stock"
+    ]
   },
   "stock_so_id": {
     "maps_to": "stock.so_id",
@@ -3587,5 +4856,965 @@
     "maps_to": "warehouse.deleted_id",
     "note": "",
     "synonyms": []
+  },
+  "actual_production_id": {
+    "maps_to": "actual_production.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "actual production id"
+    ]
+  },
+  "actual_production_deleted_at": {
+    "maps_to": "actual_production.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "actual production deleted at"
+    ]
+  },
+  "actual_production_created_at": {
+    "maps_to": "actual_production.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "actual production created at"
+    ]
+  },
+  "actual_production_updated_at": {
+    "maps_to": "actual_production.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "actual production updated at"
+    ]
+  },
+  "category_id": {
+    "maps_to": "category.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "category id"
+    ]
+  },
+  "category_created_at": {
+    "maps_to": "category.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "category created at"
+    ]
+  },
+  "category_updated_at": {
+    "maps_to": "category.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "category updated at"
+    ]
+  },
+  "category_deleted_at": {
+    "maps_to": "category.deleted_at",
+    "note": "",
+    "synonyms": [
+      "category deleted at",
+      "deleted at"
+    ]
+  },
+  "color_id": {
+    "maps_to": "color.id",
+    "note": "",
+    "synonyms": [
+      "color id",
+      "id"
+    ]
+  },
+  "color_created_at": {
+    "maps_to": "color.created_at",
+    "note": "",
+    "synonyms": [
+      "color created at",
+      "created at"
+    ]
+  },
+  "color_updated_at": {
+    "maps_to": "color.updated_at",
+    "note": "",
+    "synonyms": [
+      "color updated at",
+      "updated at"
+    ]
+  },
+  "color_deleted_at": {
+    "maps_to": "color.deleted_at",
+    "note": "",
+    "synonyms": [
+      "color deleted at",
+      "deleted at"
+    ]
+  },
+  "countries_id": {
+    "maps_to": "countries.id",
+    "note": "",
+    "synonyms": [
+      "countries id",
+      "id"
+    ]
+  },
+  "dc_temp_id": {
+    "maps_to": "dc_temp.id",
+    "note": "",
+    "synonyms": [
+      "dc temp id",
+      "id"
+    ]
+  },
+  "delivery_challan_id": {
+    "maps_to": "delivery_challan.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "delivery challan id"
+    ]
+  },
+  "delivery_challan_deleted_at": {
+    "maps_to": "delivery_challan.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "delivery challan deleted at"
+    ]
+  },
+  "delivery_challan_created_at": {
+    "maps_to": "delivery_challan.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "delivery challan created at"
+    ]
+  },
+  "delivery_challan_updated_at": {
+    "maps_to": "delivery_challan.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "delivery challan updated at"
+    ]
+  },
+  "delivery_challan_products_id": {
+    "maps_to": "delivery_challan_products.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "delivery challan products id"
+    ]
+  },
+  "delivery_challan_products_deleted_at": {
+    "maps_to": "delivery_challan_products.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "delivery challan products deleted at"
+    ]
+  },
+  "delivery_challan_products_created_at": {
+    "maps_to": "delivery_challan_products.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "delivery challan products created at"
+    ]
+  },
+  "delivery_challan_products_updated_at": {
+    "maps_to": "delivery_challan_products.updated_at",
+    "note": "",
+    "synonyms": [
+      "delivery challan products updated at",
+      "updated at"
+    ]
+  },
+  "delivery_dispatch_attachment_id": {
+    "maps_to": "delivery_dispatch_attachment.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "delivery dispatch attachment id"
+    ]
+  },
+  "delivery_dispatch_attachment_deleted_at": {
+    "maps_to": "delivery_dispatch_attachment.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "delivery dispatch attachment deleted at"
+    ]
+  },
+  "delivery_dispatch_attachment_created_at": {
+    "maps_to": "delivery_dispatch_attachment.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "delivery dispatch attachment created at"
+    ]
+  },
+  "delivery_dispatch_attachment_updated_at": {
+    "maps_to": "delivery_dispatch_attachment.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "delivery dispatch attachment updated at"
+    ]
+  },
+  "denomination_production_id": {
+    "maps_to": "denomination_production.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "denomination production id"
+    ]
+  },
+  "denomination_production_deleted_at": {
+    "maps_to": "denomination_production.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "denomination production deleted at"
+    ]
+  },
+  "denomination_production_created_at": {
+    "maps_to": "denomination_production.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "denomination production created at"
+    ]
+  },
+  "denomination_production_updated_at": {
+    "maps_to": "denomination_production.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "denomination production updated at"
+    ]
+  },
+  "email_setting_id": {
+    "maps_to": "email_setting.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "email setting id"
+    ]
+  },
+  "email_setting_created_at": {
+    "maps_to": "email_setting.created_at",
+    "note": "",
+    "synonyms": [
+      "email setting created at",
+      "created at"
+    ]
+  },
+  "email_setting_updated_at": {
+    "maps_to": "email_setting.updated_at",
+    "note": "",
+    "synonyms": [
+      "email setting updated at",
+      "updated at"
+    ]
+  },
+  "failed_jobs_id": {
+    "maps_to": "failed_jobs.id",
+    "note": "",
+    "synonyms": [
+      "failed jobs id",
+      "id"
+    ]
+  },
+  "financial_year_id": {
+    "maps_to": "financial_year.id",
+    "note": "",
+    "synonyms": [
+      "financial year id",
+      "id"
+    ]
+  },
+  "financial_year_created_at": {
+    "maps_to": "financial_year.created_at",
+    "note": "",
+    "synonyms": [
+      "financial year created at",
+      "created at"
+    ]
+  },
+  "financial_year_updated_at": {
+    "maps_to": "financial_year.updated_at",
+    "note": "",
+    "synonyms": [
+      "financial year updated at",
+      "updated at"
+    ]
+  },
+  "financial_year_deleted_at": {
+    "maps_to": "financial_year.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "financial year deleted at"
+    ]
+  },
+  "image_setting_id": {
+    "maps_to": "image_setting.id",
+    "note": "",
+    "synonyms": [
+      "image setting id",
+      "id"
+    ]
+  },
+  "lead_id": {
+    "maps_to": "lead.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "lead id"
+    ]
+  },
+  "lead_deleted_at": {
+    "maps_to": "lead.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "lead deleted at"
+    ]
+  },
+  "lead_created_at": {
+    "maps_to": "lead.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "lead created at"
+    ]
+  },
+  "lead_updated_at": {
+    "maps_to": "lead.updated_at",
+    "note": "",
+    "synonyms": [
+      "lead updated at",
+      "updated at"
+    ]
+  },
+  "lead_attachment_id": {
+    "maps_to": "lead_attachment.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "lead attachment id"
+    ]
+  },
+  "lead_attachment_deleted_at": {
+    "maps_to": "lead_attachment.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "lead attachment deleted at"
+    ]
+  },
+  "lead_attachment_created_at": {
+    "maps_to": "lead_attachment.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "lead attachment created at"
+    ]
+  },
+  "lead_attachment_updated_at": {
+    "maps_to": "lead_attachment.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "lead attachment updated at"
+    ]
+  },
+  "lead_history_id": {
+    "maps_to": "lead_history.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "lead history id"
+    ]
+  },
+  "lead_history_deleted_at": {
+    "maps_to": "lead_history.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "lead history deleted at"
+    ]
+  },
+  "lead_history_created_at": {
+    "maps_to": "lead_history.created_at",
+    "note": "",
+    "synonyms": [
+      "lead history created at",
+      "created at"
+    ]
+  },
+  "lead_history_updated_at": {
+    "maps_to": "lead_history.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "lead history updated at"
+    ]
+  },
+  "lead_interested_id": {
+    "maps_to": "lead_interested.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "lead interested id"
+    ]
+  },
+  "lead_interested_deleted_at": {
+    "maps_to": "lead_interested.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "lead interested deleted at"
+    ]
+  },
+  "lead_interested_created_at": {
+    "maps_to": "lead_interested.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "lead interested created at"
+    ]
+  },
+  "lead_interested_updated_at": {
+    "maps_to": "lead_interested.updated_at",
+    "note": "",
+    "synonyms": [
+      "lead interested updated at",
+      "updated at"
+    ]
+  },
+  "lead_product_sample_detail_id": {
+    "maps_to": "lead_product_sample_detail.id",
+    "note": "",
+    "synonyms": [
+      "lead product sample detail id",
+      "id"
+    ]
+  },
+  "lead_product_sample_detail_deleted_at": {
+    "maps_to": "lead_product_sample_detail.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "lead product sample detail deleted at"
+    ]
+  },
+  "lead_product_sample_detail_created_at": {
+    "maps_to": "lead_product_sample_detail.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "lead product sample detail created at"
+    ]
+  },
+  "lead_product_sample_detail_updated_at": {
+    "maps_to": "lead_product_sample_detail.updated_at",
+    "note": "",
+    "synonyms": [
+      "lead product sample detail updated at",
+      "updated at"
+    ]
+  },
+  "log_email_send_id": {
+    "maps_to": "log_email_send.id",
+    "note": "",
+    "synonyms": [
+      "log email send id",
+      "id"
+    ]
+  },
+  "log_email_send_created_at": {
+    "maps_to": "log_email_send.created_at",
+    "note": "",
+    "synonyms": [
+      "log email send created at",
+      "created at"
+    ]
+  },
+  "log_location_set_id": {
+    "maps_to": "log_location_set.id",
+    "note": "",
+    "synonyms": [
+      "log location set id",
+      "id"
+    ]
+  },
+  "log_location_set_created_at": {
+    "maps_to": "log_location_set.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "log location set created at"
+    ]
+  },
+  "machine_id": {
+    "maps_to": "machine.id",
+    "note": "",
+    "synonyms": [
+      "machine id",
+      "id"
+    ]
+  },
+  "machine_created_at": {
+    "maps_to": "machine.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "machine created at"
+    ]
+  },
+  "machine_updated_at": {
+    "maps_to": "machine.updated_at",
+    "note": "",
+    "synonyms": [
+      "machine updated at",
+      "updated at"
+    ]
+  },
+  "machine_deleted_at": {
+    "maps_to": "machine.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "machine deleted at"
+    ]
+  },
+  "migrations_id": {
+    "maps_to": "migrations.id",
+    "note": "",
+    "synonyms": [
+      "migrations id",
+      "id"
+    ]
+  },
+  "packaging_id": {
+    "maps_to": "packaging.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "packaging id"
+    ]
+  },
+  "packaging_created_at": {
+    "maps_to": "packaging.created_at",
+    "note": "",
+    "synonyms": [
+      "packaging created at",
+      "created at"
+    ]
+  },
+  "packaging_updated_at": {
+    "maps_to": "packaging.updated_at",
+    "note": "",
+    "synonyms": [
+      "packaging updated at",
+      "updated at"
+    ]
+  },
+  "packaging_deleted_at": {
+    "maps_to": "packaging.deleted_at",
+    "note": "",
+    "synonyms": [
+      "packaging deleted at",
+      "deleted at"
+    ]
+  },
+  "packagings_id": {
+    "maps_to": "packagings.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "packagings id"
+    ]
+  },
+  "packagings_created_at": {
+    "maps_to": "packagings.created_at",
+    "note": "",
+    "synonyms": [
+      "packagings created at",
+      "created at"
+    ]
+  },
+  "packagings_updated_at": {
+    "maps_to": "packagings.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "packagings updated at"
+    ]
+  },
+  "packagings_deleted_at": {
+    "maps_to": "packagings.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "packagings deleted at"
+    ]
+  },
+  "packaging_barcode_log_id": {
+    "maps_to": "packaging_barcode_log.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "packaging barcode log id"
+    ]
+  },
+  "packaging_barcode_log_created_at": {
+    "maps_to": "packaging_barcode_log.created_at",
+    "note": "",
+    "synonyms": [
+      "packaging barcode log created at",
+      "created at"
+    ]
+  },
+  "packaging_products_id": {
+    "maps_to": "packaging_products.id",
+    "note": "",
+    "synonyms": [
+      "packaging products id",
+      "id"
+    ]
+  },
+  "packaging_products_deleted_at": {
+    "maps_to": "packaging_products.deleted_at",
+    "note": "",
+    "synonyms": [
+      "packaging products deleted at",
+      "deleted at"
+    ]
+  },
+  "packaging_products_created_at": {
+    "maps_to": "packaging_products.created_at",
+    "note": "",
+    "synonyms": [
+      "packaging products created at",
+      "created at"
+    ]
+  },
+  "packaging_products_updated_at": {
+    "maps_to": "packaging_products.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "packaging products updated at"
+    ]
+  },
+  "party_id": {
+    "maps_to": "party.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "party id"
+    ]
+  },
+  "party_created_at": {
+    "maps_to": "party.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "party created at"
+    ]
+  },
+  "party_updated_at": {
+    "maps_to": "party.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "party updated at"
+    ]
+  },
+  "party_deleted_at": {
+    "maps_to": "party.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "party deleted at"
+    ]
+  },
+  "party_followup_history_id": {
+    "maps_to": "party_followup_history.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "party followup history id"
+    ]
+  },
+  "party_followup_history_created_at": {
+    "maps_to": "party_followup_history.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "party followup history created at"
+    ]
+  },
+  "party_followup_history_updated_at": {
+    "maps_to": "party_followup_history.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "party followup history updated at"
+    ]
+  },
+  "party_followup_history_deleted_at": {
+    "maps_to": "party_followup_history.deleted_at",
+    "note": "",
+    "synonyms": [
+      "party followup history deleted at",
+      "deleted at"
+    ]
+  },
+  "party_opening_balance_id": {
+    "maps_to": "party_opening_balance.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "party opening balance id"
+    ]
+  },
+  "party_opening_balance_opening_balance": {
+    "maps_to": "party_opening_balance.opening_balance",
+    "note": "",
+    "synonyms": [
+      "party opening balance opening balance",
+      "opening balance"
+    ]
+  },
+  "party_opening_balance_created_at": {
+    "maps_to": "party_opening_balance.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "party opening balance created at"
+    ]
+  },
+  "party_opening_balance_updated_at": {
+    "maps_to": "party_opening_balance.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "party opening balance updated at"
+    ]
+  },
+  "party_opening_balance_deleted_at": {
+    "maps_to": "party_opening_balance.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "party opening balance deleted at"
+    ]
+  },
+  "password_resets_created_at": {
+    "maps_to": "password_resets.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "password resets created at"
+    ]
+  },
+  "permissions_id": {
+    "maps_to": "permissions.id",
+    "note": "",
+    "synonyms": [
+      "permissions id",
+      "id"
+    ]
+  },
+  "permissions_created_at": {
+    "maps_to": "permissions.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "permissions created at"
+    ]
+  },
+  "permissions_updated_at": {
+    "maps_to": "permissions.updated_at",
+    "note": "",
+    "synonyms": [
+      "permissions updated at",
+      "updated at"
+    ]
+  },
+  "personal_access_tokens_id": {
+    "maps_to": "personal_access_tokens.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "personal access tokens id"
+    ]
+  },
+  "personal_access_tokens_created_at": {
+    "maps_to": "personal_access_tokens.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "personal access tokens created at"
+    ]
+  },
+  "personal_access_tokens_updated_at": {
+    "maps_to": "personal_access_tokens.updated_at",
+    "note": "",
+    "synonyms": [
+      "personal access tokens updated at",
+      "updated at"
+    ]
+  },
+  "product_id": {
+    "maps_to": "product.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "product id"
+    ]
+  },
+  "product_deleted_at": {
+    "maps_to": "product.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "product deleted at"
+    ]
+  },
+  "product_created_at": {
+    "maps_to": "product.created_at",
+    "note": "",
+    "synonyms": [
+      "product created at",
+      "created at"
+    ]
+  },
+  "product_updated_at": {
+    "maps_to": "product.updated_at",
+    "note": "",
+    "synonyms": [
+      "product updated at",
+      "updated at"
+    ]
+  },
+  "production_id": {
+    "maps_to": "production.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "production id"
+    ]
+  },
+  "production_deleted_at": {
+    "maps_to": "production.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "production deleted at"
+    ]
+  },
+  "production_created_at": {
+    "maps_to": "production.created_at",
+    "note": "",
+    "synonyms": [
+      "production created at",
+      "created at"
+    ]
+  },
+  "production_updated_at": {
+    "maps_to": "production.updated_at",
+    "note": "",
+    "synonyms": [
+      "production updated at",
+      "updated at"
+    ]
+  },
+  "production_rights_setting_id": {
+    "maps_to": "production_rights_setting.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "production rights setting id"
+    ]
+  },
+  "product_color_id": {
+    "maps_to": "product_color.id",
+    "note": "",
+    "synonyms": [
+      "product color id",
+      "id"
+    ]
+  },
+  "product_color_deleted_at": {
+    "maps_to": "product_color.deleted_at",
+    "note": "",
+    "synonyms": [
+      "deleted at",
+      "product color deleted at"
+    ]
+  },
+  "product_color_created_at": {
+    "maps_to": "product_color.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "product color created at"
+    ]
+  },
+  "product_color_updated_at": {
+    "maps_to": "product_color.updated_at",
+    "note": "",
+    "synonyms": [
+      "product color updated at",
+      "updated at"
+    ]
+  },
+  "product_opening_stock_id": {
+    "maps_to": "product_opening_stock.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "product opening stock id"
+    ]
+  },
+  "product_opening_stock_deleted_at": {
+    "maps_to": "product_opening_stock.deleted_at",
+    "note": "",
+    "synonyms": [
+      "product opening stock deleted at",
+      "deleted at"
+    ]
+  },
+  "product_opening_stock_created_at": {
+    "maps_to": "product_opening_stock.created_at",
+    "note": "",
+    "synonyms": [
+      "created at",
+      "product opening stock created at"
+    ]
+  },
+  "product_opening_stock_updated_at": {
+    "maps_to": "product_opening_stock.updated_at",
+    "note": "",
+    "synonyms": [
+      "updated at",
+      "product opening stock updated at"
+    ]
+  },
+  "product_packaging_detail_id": {
+    "maps_to": "product_packaging_detail.id",
+    "note": "",
+    "synonyms": [
+      "id",
+      "product packaging detail id"
+    ]
   }
 }

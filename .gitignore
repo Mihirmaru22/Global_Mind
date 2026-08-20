@@ -1,32 +1,59 @@
-# Environment / secrets
-.env
-.venv/
-venv/
-
+```
 # Python
 __pycache__/
 *.pyc
 *.pyo
-*.egg-info/
-dist/
+*.pyd
+*.py~
+*.py.class
+*.py.backup
+*.swp
+*.swo
+
+# Distribution / packaging
+.Python
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Pytest
 .pytest_cache/
 
-# Runtime data (chats, uploads, vector cache, generated SQLite DB)
-data/
-# Keep the drop-folder so users know where to place files for auto-ingestion
-!data/inbox/
-!data/inbox/.gitkeep
+# Mypy
+.mypy_cache/
 
-# Git bundles (occasional transfer artifacts — never committed)
-*.bundle
+# Data files
+data/*.jsonl
+data/*.json
+
+# Configuration
+config/experiments.yaml
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+*.env.*
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+```

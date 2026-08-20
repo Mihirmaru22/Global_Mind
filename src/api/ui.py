@@ -622,3 +622,21 @@ async def get_settings() -> dict[str, Any]:
 async def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Save UI settings."""
     return state_manager.save_settings(settings)
+
+
+@router.post("/settings/sync-schema")
+async def sync_schema() -> dict[str, Any]:
+    """Sync the live database schema into the vector store for Schema RAG.
+
+    Fetches all tables from the configured database, embeds each table's
+    CREATE TABLE statement as a separate chunk, and upserts them into
+    Qdrant.  Old schema chunks are deleted first to avoid stale data.
+    """
+    from src.pipeline.schema_ingestion import sync_live_schema
+
+    try:
+        result = await sync_live_schema()
+        return result
+    except Exception as e:
+        logger.error("Schema sync failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Schema sync failed: {e}")

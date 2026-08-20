@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 
 from src.core.provider_client import ProviderRouter
 from src.models.schemas import PageContent, PageStructure, ParsedDocument

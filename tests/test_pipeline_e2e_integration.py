@@ -7,7 +7,7 @@ import logging
 import tempfile
 from pathlib import Path
 import pytest
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 
 from src.core.config import settings
 from src.core.provider_client import ProviderRouter

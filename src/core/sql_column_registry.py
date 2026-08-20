@@ -139,6 +139,16 @@ class ColumnRegistry:
         # Build a map of alias → real table name from the query's FROM/JOIN.
         table_aliases = self._resolve_table_aliases(ast)
 
+        # SELECT aliases (e.g. SUM(qty) AS total_quantity) are legal in
+        # ORDER BY / GROUP BY / HAVING under MySQL semantics -- never flag
+        # an unqualified reference to one as a hallucinated column.
+        select_aliases: set[str] = set()
+        for _sel in ast.find_all(exp.Select):
+            for _proj in _sel.expressions:
+                _alias = _proj.args.get("alias")
+                if _alias is not None:
+                    select_aliases.add((_alias.name or "").lower())
+
         errors: list[str] = []
         hallucinated: list[str] = []
 
@@ -164,6 +174,8 @@ class ColumnRegistry:
                     )
                     hallucinated.append(f"{real_table}.{col_name}")
             else:
+                if col_name.lower() in select_aliases:
+                    continue
                 # Unqualified: check against all tables in the query's FROM/JOIN.
                 from_tables = set(table_aliases.values())
                 if from_tables:
@@ -172,6 +184,14 @@ class ColumnRegistry:
                         for t in from_tables
                     )
                     if not found_in_any:
+                        # In SQLite, double-quoted non-column tokens (e.g. WHERE status = "completed")
+                        # are evaluated as string literals by SQLite's legacy fallback ONLY when
+                        # compared against a known, valid column. A double-quoted token in a projection
+                        # (SELECT "fake" FROM t) or compared against a non-column (WHERE "fake" = 1)
+                        # remains a hallucinated column.
+                        if self._dialect == "sqlite" and self._is_sqlite_literal_fallback(col_node, from_tables, table_aliases):
+                            continue
+
                         table_list = ", ".join(sorted(from_tables))
                         errors.append(
                             f"Column '{col_name}' not found in any of the query's tables "
@@ -184,6 +204,37 @@ class ColumnRegistry:
             errors=errors,
             hallucinated_columns=hallucinated,
         )
+
+    def _is_sqlite_literal_fallback(
+        self,
+        col_node: exp.Column,
+        from_tables: set[str],
+        table_aliases: dict[str, str],
+    ) -> bool:
+        """Return True only if col_node is a double-quoted string literal compared against a real column."""
+        if not getattr(col_node.this, "quoted", False):
+            return False
+        if col_node.table:
+            return False
+
+        def _is_known_col(node: Any) -> bool:
+            if not isinstance(node, exp.Column):
+                return False
+            t_ref = node.table
+            c_name = (node.name or "").lower()
+            if t_ref:
+                real_t = table_aliases.get(t_ref.lower(), t_ref.lower())
+                return c_name in (self._tables.get(real_t) or set())
+            return any(c_name in (self._tables.get(t) or set()) for t in from_tables)
+
+        parent = col_node.parent
+        if isinstance(parent, (exp.Binary, exp.Predicate, exp.Like, exp.ILike)):
+            other = parent.expression if col_node is parent.this else getattr(parent, "this", None)
+            return _is_known_col(other)
+        elif isinstance(parent, exp.In):
+            if col_node is not parent.this:
+                return _is_known_col(parent.this)
+        return False
 
     def _resolve_table_aliases(self, ast: exp.Expression) -> dict[str, str]:
         """Build alias → real_table_name mapping from the query's FROM/JOIN."""
@@ -274,19 +325,43 @@ class ColumnRegistry:
                 inner = child.this
                 if isinstance(inner, exp.Column):
                     underlying = inner.name or ""
+                elif isinstance(child, exp.Count):
+                    underlying = "count"
 
             if not underlying:
                 continue
 
             # If the underlying column name is very different from the alias,
             # and the alias looks like it was lifted from the question — flag it.
-            underlying_words = set(re.findall(r"\w+", underlying.lower()))
-            if not (alias_words & underlying_words):
-                warnings.append(
-                    f"Alias '{alias_name}' on column '{underlying}' appears derived "
-                    f"from the question, not the data. Use a descriptive alias based "
-                    f"on the actual column (e.g. '{underlying}' or "
-                    f"'{underlying.replace('_id', '_name')}')."
-                )
+            underlying_words = {
+                w.lower()
+                for w in re.split(r"[^a-zA-Z]+", underlying)
+                if len(w) > 2
+            }
+            if alias_words & underlying_words:
+                continue
+
+            # Allow legitimate financial, volume, production, and entity metric aliases
+            _METRIC_WORDS = frozenset({
+                "revenue", "sales", "amount", "total", "spent", "cost", "value",
+                "turnover", "price", "count", "quantity", "qty", "sum", "avg",
+                "quoted", "billed", "invoiced", "order", "orders", "deal", "deals",
+                "lead", "leads", "inquiry", "inquiries", "successful", "converted",
+                "rejected", "active", "pending", "client", "clients", "customer",
+                "customers", "party", "parties", "batch", "batches", "carton", "cartons",
+                "apq", "production", "product", "produced", "finished", "completed",
+                "output", "target", "planned", "actual", "challan", "dispatch",
+                "dispatched", "delivered", "delivery", "stock", "inventory",
+                "available", "onhand", "balance", "moq",
+            })
+            if (alias_words & _METRIC_WORDS) and (underlying_words & _METRIC_WORDS or underlying in ("id", "apq", "qty")):
+                continue
+
+            warnings.append(
+                f"Alias '{alias_name}' on column '{underlying}' appears derived "
+                f"from the question, not the data. Use a descriptive alias based "
+                f"on the actual column (e.g. '{underlying}' or "
+                f"'{underlying.replace('_id', '_name')}')."
+            )
 
         return warnings
