@@ -25,34 +25,59 @@ class JoinPath:
 
 
 class JoinGraphBuilder:
-    """Builds and validates join paths from schema atlas."""
+    """Builds and validates join paths from schema atlas and canonical relationship registry."""
     
-    def __init__(self, schema_atlas: Dict[str, Any]):
-        self.schema_atlas = schema_atlas
-        self.tables = set()
+    def __init__(self, schema_atlas: Dict[str, Any], relationships: Optional[List[Dict[str, Any]]] = None):
+        self.schema_atlas = schema_atlas or {}
+        self.relationships = relationships
+        self.tables: Set[str] = set()
         self.foreign_keys: List[ForeignKey] = []
         self.valid_joins: Set[Tuple[str, str]] = set()
         self._build_graph()
     
     def _build_graph(self):
-        """Extract tables and foreign keys from schema atlas."""
+        """Extract tables and foreign keys from schema atlas and canonical relationships registry."""
+        # 1. From schema atlas
         for table_name, table_info in self.schema_atlas.get("tables", {}).items():
-            self.tables.add(table_name)
-            
-            # Extract foreign keys
+            self.tables.add(table_name.lower())
             for fk in table_info.get("foreign_keys", []):
                 if isinstance(fk, dict):
-                    self.foreign_keys.append(ForeignKey(
-                        table=table_name,
-                        column=fk.get("column", ""),
-                        references_table=fk.get("references_table", ""),
-                        references_column=fk.get("references_column", "")
-                    ))
-                    # Register valid join paths (bidirectional)
                     ref_table = fk.get("references_table", "")
                     if ref_table:
-                        self.valid_joins.add((table_name, ref_table))
-                        self.valid_joins.add((ref_table, table_name))
+                        self.foreign_keys.append(ForeignKey(
+                            table=table_name.lower(),
+                            column=fk.get("column", ""),
+                            references_table=ref_table.lower(),
+                            references_column=fk.get("references_column", "")
+                        ))
+                        self.valid_joins.add((table_name.lower(), ref_table.lower()))
+                        self.valid_joins.add((ref_table.lower(), table_name.lower()))
+        
+        # 2. From canonical sql_relationships.json
+        rels = self.relationships
+        if rels is None:
+            try:
+                from src.stages.s12b_sql_retrieval import _get_raw_relationships
+                rels = _get_raw_relationships()
+            except Exception:
+                rels = []
+        
+        for r in (rels or []):
+            frm = (r.get("from_table") or "").lower()
+            to = (r.get("to_table") or "").lower()
+            fcol = r.get("from_column", "")
+            tcol = r.get("to_column", "")
+            if frm and to:
+                self.tables.add(frm)
+                self.tables.add(to)
+                self.foreign_keys.append(ForeignKey(
+                    table=frm,
+                    column=fcol,
+                    references_table=to,
+                    references_column=tcol
+                ))
+                self.valid_joins.add((frm, to))
+                self.valid_joins.add((to, frm))
         
         logger.info(f"Built join graph with {len(self.tables)} tables and {len(self.foreign_keys)} foreign keys")
     
