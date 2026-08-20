@@ -19,7 +19,7 @@ tasks:
         model: openai/gpt-oss-20b
         priority: 2
       - provider: openrouter
-        model: qwen/qwen-2.5-72b-instruct:free
+        model: meta-llama/llama-3.3-70b-instruct:free
         priority: 3
 
   # Stages 4/5 — Vision-LLM OCR and layout analysis
@@ -104,6 +104,9 @@ tasks:
       - provider: gemini
         model: gemini-2.5-flash
         priority: 4
+      - provider: openrouter
+        model: meta-llama/llama-3.3-70b-instruct:free
+        priority: 5
 
   extraction:
     providers:
