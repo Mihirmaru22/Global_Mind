@@ -1,0 +1,31 @@
+# Validation Thresholds Configuration
+
+cardinality:
+  max_rows: 10000
+  cross_join_threshold: 1000
+  warning_ratio: 0.8
+
+join_validation:
+  max_joins: 5
+  require_fk_relationship: true
+
+temporal:
+  require_soft_delete: true
+  max_date_range_days: 730  # 2 years
+
+aggregation:
+  require_group_by: true
+  require_cast_for_varchar: true
+
+complexity:
+  max_subquery_depth: 3
+  max_query_length: 2000
+
+confidence:
+  high_threshold: 0.8
+  medium_threshold: 0.5
+  low_threshold: 0.0
+  
+review:
+  auto_flag_below: 0.5
+  require_human_below: 0.3

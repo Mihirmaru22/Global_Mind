@@ -1302,6 +1302,7 @@
         "Enum Translation: `status` allowed values are 'Pending', 'In-Progress', 'Success', 'Reject'.",
         "Sales Rep Allocation: Assigned sales representative is stored in `lead_assign_to`, which foreign-keys to `users.id` (`users.name`).",
         "Follow-up Medium Typo: Column is named `followup_medimum` (with an extra 'm'). Allowed values: 'Email', 'Call', 'PersonalMeeting', 'WhatsappMessage'.",
+        "Follow-up Date Filtering: For open leads waiting for follow-up, do NOT restrict to >= CURDATE() unless 'future' or 'upcoming' is explicitly requested; filter by `status IN ('Pending', 'In-Progress') AND next_followup_date IS NOT NULL` to capture all open leads waiting for follow-up.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [

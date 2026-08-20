@@ -138,23 +138,25 @@ class ColumnRegistry:
 
         # Build a map of alias → real table name from the query's FROM/JOIN.
         table_aliases = self._resolve_table_aliases(ast)
-
-        # SELECT aliases (e.g. SUM(qty) AS total_quantity) are legal in
-        # ORDER BY / GROUP BY / HAVING under MySQL semantics -- never flag
-        # an unqualified reference to one as a hallucinated column.
+        
+        # Collect all SELECT & projected aliases (e.g. "SELECT x AS total" or "SUM(x) AS total")
+        # These are legal in ORDER BY / GROUP BY / HAVING under SQL semantics.
         select_aliases: set[str] = set()
-        for _sel in ast.find_all(exp.Select):
-            for _proj in _sel.expressions:
-                _alias = _proj.args.get("alias")
-                if _alias is not None:
-                    select_aliases.add((_alias.name or "").lower())
+        for alias_node in ast.find_all(exp.Alias):
+            name = (alias_node.alias or alias_node.name or "").strip().lower()
+            if name:
+                select_aliases.add(name)
 
         errors: list[str] = []
         hallucinated: list[str] = []
 
         for col_node in ast.find_all(exp.Column):
-            col_name = (col_node.name or "").strip()
+            col_name = (col_node.name or "").strip().lower()
             if not col_name:
+                continue
+
+            # Skip if this is a SELECT alias being referenced in ORDER BY/GROUP BY
+            if col_name in select_aliases:
                 continue
 
             # Resolve the table for this column.
@@ -237,7 +239,7 @@ class ColumnRegistry:
         return False
 
     def _resolve_table_aliases(self, ast: exp.Expression) -> dict[str, str]:
-        """Build alias → real_table_name mapping from the query's FROM/JOIN."""
+        """Build alias → real_table_name mapping from the query's FROM/JOIN and CTEs."""
         aliases: dict[str, str] = {}
         for table_node in ast.find_all(exp.Table):
             real_name = (table_node.name or "").lower()
@@ -246,6 +248,10 @@ class ColumnRegistry:
                 aliases[alias.lower()] = real_name
             if real_name:
                 aliases[real_name] = real_name
+        for cte_node in ast.find_all(exp.CTE):
+            cte_alias = (cte_node.alias or "").lower()
+            if cte_alias:
+                aliases[cte_alias] = cte_alias
         return aliases
 
     # ------------------------------------------------------------------

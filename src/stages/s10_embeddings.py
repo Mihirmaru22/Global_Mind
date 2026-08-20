@@ -195,6 +195,9 @@ class GeminiEmbeddingAdapter:
 # Service — adapter orchestration + ARCH-4 guard
 # ---------------------------------------------------------------------------
 
+_UNSET = object()
+
+
 class EmbeddingService:
     """Orchestrates embedding adapters: primary first, fallback only when safe.
 
@@ -211,11 +214,13 @@ class EmbeddingService:
         self,
         rate_limiter: RateLimiter | None = None,
         primary: EmbeddingAdapter | None = None,
-        fallback: EmbeddingAdapter | None = None,
+        fallback: Any = _UNSET,
     ) -> None:
         rl = rate_limiter or get_shared_rate_limiter()
         self._primary: EmbeddingAdapter = primary or self._default_primary(rl)
-        self._fallback: EmbeddingAdapter | None = fallback if fallback is not None else self._default_fallback(rl)
+        self._fallback: EmbeddingAdapter | None = (
+            fallback if fallback is not _UNSET else self._default_fallback(rl)
+        )
 
     # ------------------------------------------------------------------
     # Adapter factories
