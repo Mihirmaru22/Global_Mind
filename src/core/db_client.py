@@ -59,8 +59,8 @@ async def run_readonly_query(
         # Enforce hard row cap safely via AST
         tree = sqlglot.parse_one(sql, read=profile.sqlglot_dialect)
 
-        # Only inject LIMIT for SELECT statements
-        if isinstance(tree, exp.Select):
+        # Only inject LIMIT for SELECT and UNION statements
+        if isinstance(tree, (exp.Select, exp.Union)):
             existing = tree.args.get("limit")
             if existing is None:
                 tree.set("limit", exp.Limit(expression=exp.Literal.number(row_cap)))

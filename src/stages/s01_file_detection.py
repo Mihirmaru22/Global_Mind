@@ -145,10 +145,16 @@ def detect_file(file_path: str | Path) -> FileDetectionResult:
         category = _EXT_MAP.get(extension, FileCategory.UNKNOWN)
         mime = "application/octet-stream"
 
-    # Cross-check: if magic says one thing and extension says another,
-    # trust magic bytes but log the discrepancy.
     ext_category = _EXT_MAP.get(extension, FileCategory.UNKNOWN)
-    if ext_category != FileCategory.UNKNOWN and category != ext_category:
+    
+    # Specific text formats (markdown, csv, tsv, json, etc.) are reported as generic text/plain
+    # by libmagic because they lack binary magic headers. Refine category using extension.
+    if category == FileCategory.PLAINTEXT and ext_category in (
+        FileCategory.MARKDOWN, FileCategory.CSV, FileCategory.TSV, 
+        FileCategory.JSON, FileCategory.HTML, FileCategory.XML
+    ):
+        category = ext_category
+    elif ext_category != FileCategory.UNKNOWN and category != ext_category:
         logger.warning(
             "File type mismatch for '%s': magic says %s (%s), extension says %s — trusting magic",
             path.name,

@@ -15,22 +15,77 @@ SCHEMA_FILE = REPO / "evals" / "globalmind" / "globalmind_schema.json"
 OLD_GLOSSARY_FILE = REPO / "config" / "sql_glossary.json"
 OUT_FILE = REPO / "config" / "sql_column_glossary.json"
 
-# Manual overrides for terms that need complex logic or CASTs.
+# Manual overrides for terms that need complex logic, CASTs, or business definitions.
 OVERRIDES = {
     "revenue": {
-        "maps_to": "SUM(sales_order_products.rate * sales_order_products.qty)",
-        "note": "No revenue column exists. Must derive from rate × qty.",
-        "synonyms": ["total sales", "sales value", "turnover"],
+        "maps_to": "SUM(product.rate * sales_order_products.qty)",
+        "note": "Booked base sales value (excluding tax) from sales orders. If question specifically asks for invoiced/tax-inclusive revenue or billing, use proforma.grand_total.",
+        "synonyms": ["total sales", "sales value", "turnover", "sales amount", "base sales", "money made"],
+    },
+    "invoiced_revenue": {
+        "maps_to": "SUM(proforma.grand_total)",
+        "note": "Invoiced total amount including GST and discounts from proforma invoices.",
+        "synonyms": ["invoiced total", "billed amount", "invoice revenue", "grand total", "net billing", "billed sales"],
+    },
+    "tax_amount": {
+        "maps_to": "SUM(proforma.gst_amount)",
+        "note": "Total GST tax amount from proforma invoices.",
+        "synonyms": ["gst amount", "tax collected", "total gst", "tax value", "gst total"],
     },
     "stock_quantity": {
         "maps_to": "CAST(stock.qty AS UNSIGNED)",
         "note": "stock.qty is VARCHAR — CAST before aggregating.",
-        "synonyms": ["inventory", "on-hand", "stock level", "available quantity"],
+        "synonyms": ["inventory", "on-hand", "stock level", "available quantity", "stock on hand"],
     },
     "customer": {
-        "maps_to": "party.company_name",
-        "note": "party table holds both customers and suppliers.",
-        "synonyms": ["client", "buyer", "account"],
+        "maps_to": "party.party_name",
+        "note": "party table holds both customers (profile_type='Party') and suppliers (profile_type='Company').",
+        "synonyms": ["client", "buyer", "account", "customer name", "purchaser"],
+    },
+    "dispatched_quantity": {
+        "maps_to": "delivery_challan_products.qty",
+        "note": "Quantity dispatched via delivery challans.",
+        "synonyms": ["dispatched", "shipped", "sent out", "delivery quantity", "dispatch count"],
+    },
+    "packed_cartons": {
+        "maps_to": "packagings.packing_qty_count",
+        "note": "Verified packed carton count (carton_verify_status='V').",
+        "synonyms": ["cartons", "packed boxes", "ready cartons", "boxed stock", "warehouse boxes"],
+    },
+    "quotation": {
+        "maps_to": "SUM(quotation_products.final_amount)",
+        "note": "Price estimates, proposals, and quotations sent to customers.",
+        "synonyms": ["quote", "estimate", "proposal", "price estimate", "quotations", "estimates", "proposals", "price estimates"],
+    },
+    "vendor": {
+        "maps_to": "party.party_name",
+        "note": "Suppliers and raw material vendors (party.profile_type='Company').",
+        "synonyms": ["supplier", "seller", "raw material vendor", "suppliers", "vendors", "sellers"],
+    },
+    "purchase_quantity": {
+        "maps_to": "purchase_products.qty",
+        "note": "Quantity of raw materials or stock purchased from suppliers.",
+        "synonyms": ["supplies bought", "materials purchased", "procured items", "purchase qty", "bought quantity"],
+    },
+    "transporter": {
+        "maps_to": "delivery_challan.transport_name",
+        "note": "Logistics carrier or transport company used for dispatch.",
+        "synonyms": ["logistics company", "carrier", "shipping company", "transport agency", "logistics partner"],
+    },
+    "lead_inquiry": {
+        "maps_to": "lead.company_name",
+        "note": "Sales inquiries and potential client leads.",
+        "synonyms": ["sales lead", "inquiry", "prospect", "new inquiry", "business lead", "leads", "inquiries", "prospects"],
+    },
+    "opening_balance": {
+        "maps_to": "party_opening_balance.opening_balance",
+        "note": "Initial starting balance for customers or suppliers.",
+        "synonyms": ["initial balance", "starting balance", "opening dues", "prior balance", "carried forward balance"],
+    },
+    "stock_adjustment": {
+        "maps_to": "stock_adjustment.qty",
+        "note": "Manual inventory corrections and adjustments.",
+        "synonyms": ["inventory correction", "stock write-off", "manual adjustment", "stock correction", "reconciled quantity"],
     },
 }
 

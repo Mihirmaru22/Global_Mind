@@ -31,14 +31,24 @@ SCHEMA_DOCUMENT_ID = "live_db_schema"
 def _split_mysql_tables(rows: list[dict[str, Any]]) -> dict[str, str]:
     """Group MySQL information_schema rows into per-table CREATE-TABLE-like text."""
     tables: dict[str, list[str]] = {}
-    for row in rows:
+    for i, row in enumerate(rows):
+        if row.get("sql"):
+            # Direct CREATE statement present
+            name = row.get("name") or row.get("table_name") or f"table_{i}"
+            tables[name] = [row["sql"]]
+            continue
+        tname = row.get("table_name") or row.get("TABLE_NAME") or row.get("name")
+        cname = row.get("column_name") or row.get("COLUMN_NAME", "")
+        ctype = row.get("data_type") or row.get("DATA_TYPE", "")
+        if not tname:
+            continue
         comment = row.get("column_comment") or ""
         suffix = f"  -- {comment}" if comment else ""
-        tables.setdefault(row["table_name"], []).append(
-            f"  {row['column_name']} {row['data_type']}{suffix}"
+        tables.setdefault(tname, []).append(
+            f"  {cname} {ctype}{suffix}".strip()
         )
     return {
-        name: f"TABLE {name} (\n" + ",\n".join(cols) + "\n)"
+        name: cols[0] if (len(cols) == 1 and cols[0].startswith("CREATE TABLE")) else f"TABLE {name} (\n" + ",\n".join(cols) + "\n)"
         for name, cols in tables.items()
     }
 
@@ -63,6 +73,51 @@ def _split_schema_by_table(
     raise ValueError(f"Unsupported dialect key {dialect.key!r}")
 
 
+def _load_table_metadata() -> dict[str, dict[str, Any]]:
+    """Load table domain and metadata from evals/globalmind/globalmind_schema.json if present."""
+    from pathlib import Path
+    schema_file = Path(__file__).resolve().parents[2] / "evals" / "globalmind" / "globalmind_schema.json"
+    if not schema_file.exists():
+        return {}
+    try:
+        import json
+        data = json.loads(schema_file.read_text(encoding="utf-8"))
+        tables = data.get("tables", [])
+        return {t["name"].lower(): t for t in tables if isinstance(t, dict) and "name" in t}
+    except Exception as e:
+        logger.warning("Could not load schema metadata from %s: %s", schema_file, e)
+        return {}
+
+
+def _enrich_table_schema(
+    table_name: str,
+    schema_text: str,
+    table_meta: dict[str, Any] | None = None,
+    fk_lines: list[str] | None = None,
+) -> str:
+    """Format an enriched table chunk with domain header, primary key, and foreign keys."""
+    lines: list[str] = []
+
+    if table_meta:
+        domain = table_meta.get("domain")
+        pk = table_meta.get("primary_key")
+        parts = [f"-- Table: {table_name}"]
+        if domain:
+            parts.append(f"Domain: {domain}")
+        if pk:
+            pk_str = ", ".join(pk) if isinstance(pk, list) else str(pk)
+            parts.append(f"Primary Key: ({pk_str})")
+        lines.append(" | ".join(parts))
+
+    lines.append(schema_text)
+
+    if fk_lines:
+        lines.append("-- Relationships / Foreign Keys:")
+        lines.extend(fk_lines)
+
+    return "\n".join(lines)
+
+
 async def sync_live_schema(
     embedding_service: EmbeddingService | None = None,
     vector_store: QdrantStore | None = None,
@@ -71,6 +126,8 @@ async def sync_live_schema(
 
     Returns a summary dict with table count and status.
     """
+    from pathlib import Path
+    import json
     from src.core.rate_limiter import get_shared_rate_limiter
 
     rate_limiter = get_shared_rate_limiter()
@@ -109,21 +166,42 @@ async def sync_live_schema(
     except Exception as e:
         logger.warning("Could not fetch FK info for schema sync: %s", e)
 
-    # 4. Build Chunk objects — one per table
+    # If DB introspection gave no FKs (databases without formal FK constraints),
+    # fall back to inferred relationships from config/sql_relationships.json
+    if not fk_map:
+        try:
+            rel_path = Path(__file__).resolve().parents[2] / "config" / "sql_relationships.json"
+            if rel_path.exists():
+                rel_data = json.loads(rel_path.read_text(encoding="utf-8"))
+                rels = rel_data.get("relationships") if isinstance(rel_data, dict) else rel_data
+                for r in rels or []:
+                    frm, fcol = r.get("from_table"), r.get("from_column")
+                    to, tcol = r.get("to_table"), r.get("to_column")
+                    if frm and fcol and to and tcol:
+                        fk_line = f"  FOREIGN KEY ({fcol}) REFERENCES {to}({tcol})"
+                        fk_map.setdefault(frm, []).append(fk_line)
+        except Exception as e:
+            logger.warning("Could not load fallback inferred relationships: %s", e)
+
+    # 4. Build Chunk objects — one per table, enriched with domain metadata and FKs
+    meta_map = _load_table_metadata()
     chunks: list[Chunk] = []
     for table_name, schema_text in table_schemas.items():
-        # Append FK info to the table's schema text
-        if table_name in fk_map:
-            schema_text += "\n" + "\n".join(fk_map[table_name])
+        enriched_content = _enrich_table_schema(
+            table_name=table_name,
+            schema_text=schema_text,
+            table_meta=meta_map.get(table_name.lower()),
+            fk_lines=fk_map.get(table_name),
+        )
 
-        chunk_id = f"schema_{table_name}_{hashlib.md5(schema_text.encode()).hexdigest()[:8]}"
+        chunk_id = f"schema_{table_name}"
         chunks.append(
             Chunk(
                 chunk_id=chunk_id,
                 document_id=SCHEMA_DOCUMENT_ID,
                 chunk_type=ChunkType.SQL_SCHEMA,
-                content=schema_text,
-                token_count=len(schema_text) // 4,  # rough estimate
+                content=enriched_content,
+                token_count=len(enriched_content) // 4,  # rough estimate
                 document_type=DocumentType.DATABASE,
                 source_file=f"live_database/{table_name}",
             )
@@ -132,18 +210,19 @@ async def sync_live_schema(
     if not chunks:
         return {"status": "error", "message": "No tables found in schema"}
 
-    # 5. Delete old schema chunks from Qdrant
-    try:
-        await store.delete_document(SCHEMA_DOCUMENT_ID)
-        logger.info("Deleted old schema chunks from Qdrant")
-    except Exception as e:
-        logger.warning("Could not delete old schema chunks (may not exist yet): %s", e)
-
-    # 6. Embed all table chunks
+    # 5. Embed all table chunks FIRST — if embedding fails/rate-limits, old schema remains safe
     vectors, sparse_vectors = await embeddings.embed_chunks(chunks)
 
-    # 7. Upsert into Qdrant
+    # 6. Upsert new chunks into Qdrant — with deterministic per-table IDs, existing chunks
+    # are atomically updated in place with zero downtime or empty-store window
     await store.upsert(chunks, vectors, sparse_vectors)
+
+    # 7. Invalidate in-memory schema cache on SQLRetriever so next query picks up new schema
+    try:
+        from src.stages.s12b_sql_retrieval import SQLRetriever
+        SQLRetriever.clear_schema_cache()
+    except Exception as e:
+        logger.warning("Could not clear SQLRetriever schema cache: %s", e)
 
     logger.info(
         "Schema sync complete: %d tables embedded and upserted to Qdrant",

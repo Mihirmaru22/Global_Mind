@@ -41,6 +41,24 @@ class TestSafeReadQuery:
             "SELECT COUNT(*) FROM gpu_sales"
         )
 
+    def test_allows_union_and_union_all(self) -> None:
+        assert _retriever("mysql")._is_safe_read_query(
+            "SELECT model, price FROM gpu_sales UNION ALL SELECT model, price FROM legacy_sales"
+        )
+        assert _retriever("sqlite")._is_safe_read_query(
+            "SELECT model FROM gpu_sales UNION SELECT model FROM legacy_sales"
+        )
+
+    def test_blocks_dos_and_lock_functions(self) -> None:
+        r = _retriever("mysql")
+        assert not r._is_safe_read_query("SELECT BENCHMARK(100000000, MD5('x'))")
+        assert not r._is_safe_read_query("SELECT SLEEP(10)")
+        assert not r._is_safe_read_query("SELECT GET_LOCK('rag_lock', 10)")
+        assert not r._is_safe_read_query("SELECT IS_FREE_LOCK('rag_lock')")
+        assert not r._is_safe_read_query(
+            "SELECT model FROM gpu_sales UNION ALL SELECT SLEEP(5) FROM gpu_sales"
+        )
+
     def test_blocks_non_select(self) -> None:
         r = _retriever("mysql")
         assert not r._is_safe_read_query("DELETE FROM gpu_sales")
@@ -163,6 +181,8 @@ class TestSQLiteQueryPath:
         conn.close()
 
         import src.core.db_client as db_client_mod
+        from src.core import config
+        monkeypatch.setattr(config.settings, "db_engine", "sqlite")
         monkeypatch.setattr(db_client_mod, "DB_PATH", db_path)
         return db_path
 
@@ -184,6 +204,14 @@ class TestSQLiteQueryPath:
         assert len(rows) == 2
 
     @pytest.mark.asyncio
+    async def test_union_limit_is_injected_or_clamped(self, sqlite_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from src.core.db_client import run_readonly_query
+        import src.core.db_client as db_client_mod
+        monkeypatch.setattr(db_client_mod, "MAX_ROWS", 1)
+        rows = await run_readonly_query("SELECT model FROM gpu_sales UNION ALL SELECT model FROM gpu_sales")
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
     async def test_oversized_limit_is_clamped(self, sqlite_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import src.core.db_client as db_client_mod
         monkeypatch.setattr(db_client_mod, "MAX_ROWS", 1)
@@ -193,6 +221,8 @@ class TestSQLiteQueryPath:
     @pytest.mark.asyncio
     async def test_missing_db_file_returns_empty_list(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import src.core.db_client as db_client_mod
+        from src.core import config
+        monkeypatch.setattr(config.settings, "db_engine", "sqlite")
         monkeypatch.setattr(db_client_mod, "DB_PATH", tmp_path / "does_not_exist.db")
         rows = await db_client_mod.run_readonly_query("SELECT * FROM gpu_sales")
         assert rows == []
