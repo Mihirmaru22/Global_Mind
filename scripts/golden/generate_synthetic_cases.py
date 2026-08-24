@@ -1,0 +1,335 @@
+"""Generate a robust synthetic dataset of golden SQL repair test cases."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from src.utils.golden_models import GoldenCase
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+GOLDEN_CASES_FILE = PROJECT_ROOT / "tests" / "golden" / "sql_repair" / "cases.json"
+
+SYNTHETIC_CASES: list[dict[str, Any]] = [
+    # -------------------------------------------------------------------------
+    # 1. column_not_found (4 cases)
+    # -------------------------------------------------------------------------
+    {
+        "case_id": "col_001",
+        "description": "Hallucinated column region_name on regions table instead of name",
+        "user_question": "Show all regions and their names",
+        "failed_sql": "SELECT id, region_name FROM regions ORDER BY region_name",
+        "error_message": 'column "region_name" does not exist in table "regions"',
+        "error_type": "column_not_found",
+        "schema_context": {
+            "regions": ["id", "name", "code", "created_at"]
+        },
+        "expected_sql_contains": ["SELECT", "id", "name", "FROM regions"],
+        "must_not_contain": ["region_name", "SELECT *"],
+        "ideal_sql": "SELECT id, name FROM regions ORDER BY name",
+    },
+    {
+        "case_id": "col_002",
+        "description": "Queried customer_name directly on sales_order instead of party.party_name",
+        "user_question": "List orders with customer names",
+        "failed_sql": "SELECT order_number, customer_name, total_amount FROM sales_order",
+        "error_message": 'column "customer_name" does not exist in table "sales_order"',
+        "error_type": "column_not_found",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "party_id", "total_amount"],
+            "party": ["id", "party_name", "party_type"]
+        },
+        "expected_sql_contains": ["party_name", "JOIN party", "sales_order"],
+        "must_not_contain": ["customer_name", "SELECT *"],
+        "ideal_sql": "SELECT sales_order.order_number, party.party_name, sales_order.total_amount FROM sales_order JOIN party ON sales_order.party_id = party.id",
+    },
+    {
+        "case_id": "col_003",
+        "description": "Used order_total instead of total_amount column on sales_order",
+        "user_question": "What is the total revenue across all sales orders?",
+        "failed_sql": "SELECT SUM(order_total) AS total_revenue FROM sales_order",
+        "error_message": 'column "order_total" does not exist in relation "sales_order"',
+        "error_type": "column_not_found",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "party_id", "total_amount", "status"]
+        },
+        "expected_sql_contains": ["SUM(total_amount)", "FROM sales_order"],
+        "must_not_contain": ["order_total", "SELECT *"],
+        "ideal_sql": "SELECT SUM(total_amount) AS total_revenue FROM sales_order",
+    },
+    {
+        "case_id": "col_004",
+        "description": "Used created_date instead of created_at on invoices table",
+        "user_question": "Show invoices created in 2026",
+        "failed_sql": "SELECT invoice_number, amount FROM invoices WHERE created_date >= '2026-01-01'",
+        "error_message": 'column "created_date" does not exist in table "invoices"',
+        "error_type": "column_not_found",
+        "schema_context": {
+            "invoices": ["id", "invoice_number", "amount", "created_at", "due_date"]
+        },
+        "expected_sql_contains": ["created_at", "FROM invoices"],
+        "must_not_contain": ["created_date", "SELECT *"],
+        "ideal_sql": "SELECT invoice_number, amount FROM invoices WHERE created_at >= '2026-01-01'",
+    },
+
+    # -------------------------------------------------------------------------
+    # 2. table_not_found (3 cases)
+    # -------------------------------------------------------------------------
+    {
+        "case_id": "tbl_001",
+        "description": "Queried non-existent table sales instead of sales_order",
+        "user_question": "Get count of completed sales",
+        "failed_sql": "SELECT COUNT(*) FROM sales WHERE status = 'completed'",
+        "error_message": 'relation "sales" does not exist',
+        "error_type": "table_not_found",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "status", "total_amount"],
+            "purchase_order": ["id", "po_number", "status"]
+        },
+        "expected_sql_contains": ["COUNT(*)", "FROM sales_order", "status = 'completed'"],
+        "must_not_contain": ["FROM sales", "SELECT *"],
+        "ideal_sql": "SELECT COUNT(*) FROM sales_order WHERE status = 'completed'",
+    },
+    {
+        "case_id": "tbl_002",
+        "description": "Queried non-existent table items instead of products",
+        "user_question": "List all active product names and prices",
+        "failed_sql": "SELECT item_name, unit_price FROM items WHERE is_active = true",
+        "error_message": 'relation "items" does not exist',
+        "error_type": "table_not_found",
+        "schema_context": {
+            "products": ["id", "name", "sku", "price", "is_active"]
+        },
+        "expected_sql_contains": ["FROM products", "name", "price", "is_active"],
+        "must_not_contain": ["FROM items", "item_name", "unit_price"],
+        "ideal_sql": "SELECT name, price FROM products WHERE is_active = true",
+    },
+    {
+        "case_id": "tbl_003",
+        "description": "Queried non-existent table user_accounts instead of users",
+        "user_question": "Find users with admin role",
+        "failed_sql": "SELECT username, email FROM user_accounts WHERE role = 'admin'",
+        "error_message": 'relation "user_accounts" does not exist',
+        "error_type": "table_not_found",
+        "schema_context": {
+            "users": ["id", "username", "email", "role", "is_active"]
+        },
+        "expected_sql_contains": ["FROM users", "username", "email", "role = 'admin'"],
+        "must_not_contain": ["FROM user_accounts"],
+        "ideal_sql": "SELECT username, email FROM users WHERE role = 'admin'",
+    },
+
+    # -------------------------------------------------------------------------
+    # 3. ambiguous_column (3 cases)
+    # -------------------------------------------------------------------------
+    {
+        "case_id": "amb_001",
+        "description": "Unqualified id column in joined query between sales_order and party",
+        "user_question": "Get order numbers and party names with their ID",
+        "failed_sql": "SELECT id, order_number, party_name FROM sales_order JOIN party ON sales_order.party_id = party.id",
+        "error_message": 'column reference "id" is ambiguous',
+        "error_type": "ambiguous_column",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "party_id", "total_amount"],
+            "party": ["id", "party_name", "party_type"]
+        },
+        "expected_sql_contains": ["sales_order.id", "order_number", "party_name", "JOIN party"],
+        "must_not_contain": ["SELECT id,", "SELECT id "],
+        "ideal_sql": "SELECT sales_order.id, sales_order.order_number, party.party_name FROM sales_order JOIN party ON sales_order.party_id = party.id",
+    },
+    {
+        "case_id": "amb_002",
+        "description": "Unqualified created_at in WHERE filter when joining sales_order and invoices",
+        "user_question": "Total invoice amounts for orders created after 2026-01-01",
+        "failed_sql": "SELECT SUM(invoices.amount) FROM sales_order JOIN invoices ON sales_order.id = invoices.order_id WHERE created_at >= '2026-01-01'",
+        "error_message": 'column reference "created_at" is ambiguous',
+        "error_type": "ambiguous_column",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "created_at"],
+            "invoices": ["id", "order_id", "amount", "created_at"]
+        },
+        "expected_sql_contains": ["sales_order.created_at", "invoices.amount", "JOIN invoices"],
+        "must_not_contain": ["WHERE created_at"],
+        "ideal_sql": "SELECT SUM(invoices.amount) FROM sales_order JOIN invoices ON sales_order.id = invoices.order_id WHERE sales_order.created_at >= '2026-01-01'",
+    },
+    {
+        "case_id": "amb_003",
+        "description": "Unqualified status in GROUP BY when joining sales_order and purchase_order",
+        "user_question": "Count orders by status for sales and purchase",
+        "failed_sql": "SELECT status, COUNT(*) FROM sales_order JOIN invoices ON sales_order.id = invoices.order_id GROUP BY status",
+        "error_message": 'column reference "status" is ambiguous',
+        "error_type": "ambiguous_column",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "status"],
+            "invoices": ["id", "order_id", "status"]
+        },
+        "expected_sql_contains": ["sales_order.status", "GROUP BY sales_order.status"],
+        "must_not_contain": ["SELECT status,", "GROUP BY status"],
+        "ideal_sql": "SELECT sales_order.status, COUNT(*) FROM sales_order JOIN invoices ON sales_order.id = invoices.order_id GROUP BY sales_order.status",
+    },
+
+    # -------------------------------------------------------------------------
+    # 4. syntax_error (3 cases)
+    # -------------------------------------------------------------------------
+    {
+        "case_id": "syn_001",
+        "description": "Missing comma between columns in SELECT list",
+        "user_question": "List order numbers and total amounts",
+        "failed_sql": "SELECT order_number total_amount FROM sales_order ORDER BY id DESC",
+        "error_message": 'syntax error at or near "total_amount"',
+        "error_type": "syntax_error",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "total_amount", "created_at"]
+        },
+        "expected_sql_contains": ["order_number, total_amount", "FROM sales_order"],
+        "must_not_contain": ["order_number total_amount"],
+        "ideal_sql": "SELECT order_number, total_amount FROM sales_order ORDER BY id DESC",
+    },
+    {
+        "case_id": "syn_002",
+        "description": "Unclosed parenthesis in aggregate function",
+        "user_question": "Calculate total amount of all invoices",
+        "failed_sql": "SELECT SUM(amount FROM invoices WHERE status = 'paid'",
+        "error_message": 'syntax error at or near "FROM"',
+        "error_type": "syntax_error",
+        "schema_context": {
+            "invoices": ["id", "amount", "status"]
+        },
+        "expected_sql_contains": ["SUM(amount)", "FROM invoices", "WHERE status = 'paid'"],
+        "must_not_contain": ["SUM(amount FROM"],
+        "ideal_sql": "SELECT SUM(amount) FROM invoices WHERE status = 'paid'",
+    },
+    {
+        "case_id": "syn_003",
+        "description": "WHERE clause placed after GROUP BY clause",
+        "user_question": "Count sales orders by status where total is greater than 100",
+        "failed_sql": "SELECT status, COUNT(*) FROM sales_order GROUP BY status WHERE total_amount > 100",
+        "error_message": 'syntax error at or near "WHERE"',
+        "error_type": "syntax_error",
+        "schema_context": {
+            "sales_order": ["id", "status", "total_amount"]
+        },
+        "expected_sql_contains": ["WHERE total_amount > 100", "GROUP BY status"],
+        "must_not_contain": ["GROUP BY status WHERE"],
+        "ideal_sql": "SELECT status, COUNT(*) FROM sales_order WHERE total_amount > 100 GROUP BY status",
+    },
+
+    # -------------------------------------------------------------------------
+    # 5. type_mismatch (3 cases)
+    # -------------------------------------------------------------------------
+    {
+        "case_id": "typ_001",
+        "description": "Direct arithmetic addition on varchar column amount_str",
+        "user_question": "Calculate adjusted order total with 10 shipping fee",
+        "failed_sql": "SELECT id, amount_str + 10 AS adjusted_total FROM mock_orders",
+        "error_message": 'operator does not exist: character varying + integer',
+        "error_type": "type_mismatch",
+        "schema_context": {
+            "mock_orders": ["id", "amount_str", "created_at"]
+        },
+        "expected_sql_contains": ["CAST(amount_str AS NUMERIC)", "+ 10", "FROM mock_orders"],
+        "must_not_contain": ["amount_str + 10"],
+        "ideal_sql": "SELECT id, CAST(amount_str AS NUMERIC) + 10 AS adjusted_total FROM mock_orders",
+    },
+    {
+        "case_id": "typ_002",
+        "description": "Comparing timestamp with exact date string requiring date truncation or cast",
+        "user_question": "Find all orders placed specifically on 2026-02-01",
+        "failed_sql": "SELECT id, order_number FROM sales_order WHERE created_at = '2026-02-01'",
+        "error_message": 'operator does not exist: timestamp without time zone = text',
+        "error_type": "type_mismatch",
+        "schema_context": {
+            "sales_order": ["id", "order_number", "created_at"]
+        },
+        "expected_sql_contains": ["CAST(created_at AS DATE) = '2026-02-01'", "FROM sales_order"],
+        "must_not_contain": ["created_at = '2026-02-01'"],
+        "ideal_sql": "SELECT id, order_number FROM sales_order WHERE CAST(created_at AS DATE) = '2026-02-01'",
+    },
+    {
+        "case_id": "typ_003",
+        "description": "Incompatible boolean comparison on integer flag column",
+        "user_question": "List all active users where is_active is 1",
+        "failed_sql": "SELECT username, email FROM users WHERE is_active = 'true'",
+        "error_message": 'operator does not exist: integer = text',
+        "error_type": "type_mismatch",
+        "schema_context": {
+            "users": ["id", "username", "email", "is_active"]
+        },
+        "expected_sql_contains": ["is_active = 1", "FROM users"],
+        "must_not_contain": ["is_active = 'true'"],
+        "ideal_sql": "SELECT username, email FROM users WHERE is_active = 1",
+    },
+
+    # -------------------------------------------------------------------------
+    # 6. missing_join (3 cases)
+    # -------------------------------------------------------------------------
+    {
+        "case_id": "jn_001",
+        "description": "Referencing products.name without joining products table",
+        "user_question": "List ordered product names and quantity",
+        "failed_sql": "SELECT products.name, sales_order_products.quantity FROM sales_order_products",
+        "error_message": 'missing FROM-clause entry for table "products"',
+        "error_type": "missing_join",
+        "schema_context": {
+            "sales_order_products": ["id", "sales_order_id", "product_id", "quantity"],
+            "products": ["id", "name", "sku", "price"]
+        },
+        "expected_sql_contains": ["JOIN products", "sales_order_products.product_id = products.id", "products.name", "quantity"],
+        "must_not_contain": ["FROM sales_order_products\nORDER", "FROM sales_order_products;"],
+        "ideal_sql": "SELECT products.name, sales_order_products.quantity FROM sales_order_products JOIN products ON sales_order_products.product_id = products.id",
+    },
+    {
+        "case_id": "jn_002",
+        "description": "Filtering on regions.code from party table without joining regions",
+        "user_question": "Find parties located in region US-EAST",
+        "failed_sql": "SELECT party.party_name FROM party WHERE regions.code = 'US-EAST'",
+        "error_message": 'missing FROM-clause entry for table "regions"',
+        "error_type": "missing_join",
+        "schema_context": {
+            "party": ["id", "party_name", "region_id"],
+            "regions": ["id", "name", "code"]
+        },
+        "expected_sql_contains": ["JOIN regions", "party.region_id = regions.id", "regions.code = 'US-EAST'"],
+        "must_not_contain": ["FROM party WHERE regions.code"],
+        "ideal_sql": "SELECT party.party_name FROM party JOIN regions ON party.region_id = regions.id WHERE regions.code = 'US-EAST'",
+    },
+    {
+        "case_id": "jn_003",
+        "description": "Referencing categories table without joining through products",
+        "user_question": "Calculate sales by product category name",
+        "failed_sql": "SELECT categories.category_name, SUM(sales_order_products.amount) FROM sales_order_products GROUP BY categories.category_name",
+        "error_message": 'missing FROM-clause entry for table "categories"',
+        "error_type": "missing_join",
+        "schema_context": {
+            "sales_order_products": ["id", "product_id", "amount"],
+            "products": ["id", "category_id", "name"],
+            "categories": ["id", "category_name"]
+        },
+        "expected_sql_contains": ["JOIN products", "JOIN categories", "GROUP BY categories.category_name"],
+        "must_not_contain": ["FROM sales_order_products GROUP BY"],
+        "ideal_sql": "SELECT categories.category_name, SUM(sales_order_products.amount) FROM sales_order_products JOIN products ON sales_order_products.product_id = products.id JOIN categories ON products.category_id = categories.id GROUP BY categories.category_name",
+    },
+]
+
+
+def generate_synthetic_cases(output_file: Path | None = None) -> list[GoldenCase]:
+    """Validate and write synthetic golden cases to JSON."""
+    target_path = output_file or GOLDEN_CASES_FILE
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    validated_cases: list[GoldenCase] = []
+    for raw in SYNTHETIC_CASES:
+        case_obj = GoldenCase(**raw)
+        validated_cases.append(case_obj)
+
+    serialized = [c.model_dump() for c in validated_cases]
+    with open(target_path, "w", encoding="utf-8") as f:
+        json.dump(serialized, f, indent=2, ensure_ascii=False)
+
+    print(f"Successfully generated {len(validated_cases)} synthetic golden test cases at: {target_path}")
+    return validated_cases
+
+
+if __name__ == "__main__":
+    generate_synthetic_cases()

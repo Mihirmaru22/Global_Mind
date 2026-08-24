@@ -1,0 +1,192 @@
+[
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "This is a mock answer based on the context.",
+    "error_message": "Unsafe or unparseable SQL generated: This is a mock answer based on the context.",
+    "error_type": "sql_validation_error",
+    "schema_context": {},
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:09.003262+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "DROP TABLE customers",
+    "error_message": "Unsafe or unparseable SQL generated: DROP TABLE customers",
+    "error_type": "sql_validation_error",
+    "schema_context": {
+      "customers": []
+    },
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:18.881301+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "DELETE FROM orders",
+    "error_message": "Unsafe or unparseable SQL generated: DELETE FROM orders",
+    "error_type": "sql_validation_error",
+    "schema_context": {
+      "orders": []
+    },
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:19.142494+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "SELECT 1; DROP TABLE customers",
+    "error_message": "Unsafe or unparseable SQL generated: SELECT 1; DROP TABLE customers",
+    "error_type": "sql_validation_error",
+    "schema_context": {
+      "customers": []
+    },
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:19.396315+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "SELECT name FROM customers INTO OUTFILE '/tmp/x'",
+    "error_message": "Unsafe or unparseable SQL generated: SELECT name FROM customers INTO OUTFILE '[path]'",
+    "error_type": "sql_validation_error",
+    "schema_context": {},
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:19.660003+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "SELECT LOAD_FILE('/etc/passwd') AS x",
+    "error_message": "Unsafe or unparseable SQL generated: SELECT LOAD_FILE('[path]') AS x",
+    "error_type": "sql_validation_error",
+    "schema_context": {},
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:19.935603+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "UPDATE orders SET amount = 0",
+    "error_message": "Unsafe or unparseable SQL generated: UPDATE orders SET amount = 0",
+    "error_type": "sql_validation_error",
+    "schema_context": {
+      "orders": []
+    },
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:20.203249+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "SELCT nope FROM",
+    "error_message": "Unsafe or unparseable SQL generated: SELCT nope FROM",
+    "error_type": "sql_validation_error",
+    "schema_context": {},
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:20.464213+00:00",
+      "stage": "sql_validation"
+    }
+  },
+  {
+    "case_id": "draft_gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+    "description": "Ingested failure from query gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b: sql_validation_error",
+    "user_question": "[HUMAN_REVIEW_REQUIRED: Add natural language query]",
+    "failed_sql": "SELECT made_up_col FROM customers",
+    "error_message": "Column 'made_up_col' not found in any of the query's tables (customers). Check spelling or qualify with table name.",
+    "error_type": "sql_validation_error",
+    "schema_context": {
+      "customers": []
+    },
+    "expected_sql_contains": [
+      "[HUMAN_REVIEW_REQUIRED: Add expected substrings]"
+    ],
+    "must_not_contain": [
+      "[HUMAN_REVIEW_REQUIRED: Add forbidden substrings]"
+    ],
+    "metadata": {
+      "source_query_id": "gm-q-1fbb63f3-4664-4e3f-a907-b7592dd0c42b",
+      "original_timestamp": "2026-08-24T07:44:20.739870+00:00",
+      "stage": "sql_validation"
+    }
+  }
+]
