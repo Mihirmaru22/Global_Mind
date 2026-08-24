@@ -7,11 +7,9 @@ DB: `mysql` (mysql env)
 
 | Status | Count |
 |---|---:|
+| NO_SQL | 1 |
 | PASS_INTENT | 2 |
-| PASS_VALUE_MATCH | 7 |
-| SYNTAX_ERROR | 1 |
-| VALUE_MISMATCH | 17 |
-| no_prediction | 923 |
+| no_prediction | 947 |
 
 ## By Suite
 
@@ -31,11 +29,10 @@ DB: `mysql` (mysql env)
 - no_prediction: 120
 
 ### table_count_smoke
-- PASS_VALUE_MATCH: 7
-- SYNTAX_ERROR: 1
-- VALUE_MISMATCH: 17
-- no_prediction: 45
+- no_prediction: 70
+
 
 ### table_select_smoke
+- NO_SQL: 1
 - PASS_INTENT: 2
-- no_prediction: 68
+- no_prediction: 67
