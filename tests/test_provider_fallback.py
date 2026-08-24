@@ -19,6 +19,15 @@ from src.core.provider_client import (
     _rate_limit_retry_after,
 )
 from src.core.rate_limiter import ProviderLimits, RateLimiter, get_shared_rate_limiter
+from src.utils.circuit_breaker import get_shared_circuit_breaker
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit_breaker():
+    cb = get_shared_circuit_breaker()
+    cb.reset_all()
+    yield
+    cb.reset_all()
 
 
 class _Err429(Exception):
@@ -157,6 +166,7 @@ def _instant_sleep(monkeypatch):
     burning real seconds. Returns the list of wait durations requested."""
     import src.core.provider_client as pc
     import src.core.rate_limiter as rl_mod
+    import src.utils.circuit_breaker as cb_mod
 
     clock = {"t": 10_000.0}
     waited: list[float] = []
@@ -166,6 +176,7 @@ def _instant_sleep(monkeypatch):
         clock["t"] += seconds
 
     monkeypatch.setattr(rl_mod.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(cb_mod.time, "time", lambda: clock["t"])
     monkeypatch.setattr(pc.asyncio, "sleep", _fake_sleep)
     return waited
 
