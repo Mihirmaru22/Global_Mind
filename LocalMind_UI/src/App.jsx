@@ -2,7 +2,6 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { Layout } from './components/Layout.jsx'
 import About from './pages/About.jsx'
-import Documents from './pages/Documents.jsx'
 import Home from './pages/Home.jsx'
 import Settings from './pages/Settings.jsx'
 import { useAppStore } from './store/store.js'
@@ -22,7 +21,6 @@ function App() {
         <Route element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="chat" element={<Home />} />
-          <Route path="documents" element={<Documents />} />
           <Route path="settings" element={<Settings />} />
           <Route path="about" element={<About />} />
         </Route>

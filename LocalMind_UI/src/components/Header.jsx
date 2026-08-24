@@ -7,14 +7,6 @@ import Button from './Button.jsx'
 import { generateChatDocument } from '../services/api.js'
 import { exportChatTranscript, exportProfessionalDocument } from '../utils/pdfExport.js'
 
-const titleMap = {
-  '/': 'Chat',
-  '/chat': 'Chat',
-  '/documents': 'Documents',
-  '/settings': 'Settings',
-  '/about': 'About',
-}
-
 export default function Header() {
   const location = useLocation()
   const toggleSidebar = useAppStore((state) => state.toggleSidebar)
@@ -23,9 +15,7 @@ export default function Header() {
   const activeChatId = useAppStore((state) => state.activeChatId)
   const chats = useAppStore((state) => state.chats)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
-  const title = titleMap[location.pathname] || 'Local Mind'
-  const hideTitle =
-    location.pathname === '/' || location.pathname === '/chat' || location.pathname === '/settings'
+  const isChatRoute = location.pathname === '/' || location.pathname === '/chat'
   const activeChat = chats.find((chat) => chat.id === activeChatId)
   const messages = messagesByChatId[activeChatId] || []
   const exportableMessages = messages.filter(
@@ -85,51 +75,42 @@ export default function Header() {
         >
           <Menu size={18} />
         </Button>
-        {!sidebarCollapsed ? null : (
+      </div>
+
+      {isChatRoute ? (
+        <div className="header__actions" ref={menuRef}>
           <button
+            className="icon-button"
             type="button"
-            className="icon-button desktop-toggle"
-            onClick={toggleSidebarCollapse}
-            aria-label="Open sidebar"
+            aria-label="Export as PDF"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
+            disabled={!canExport || busy}
           >
-            <PanelLeftOpen size={18} />
+            {busy ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
           </button>
-        )}
-        {hideTitle ? null : <h1 className="header__title">{title}</h1>}
-      </div>
 
-      <div className="header__actions" ref={menuRef}>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label="Export as PDF"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((v) => !v)}
-          disabled={!canExport || busy}
-        >
-          {busy ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
-        </button>
-
-        {menuOpen ? (
-          <div className="export-menu" role="menu">
-            <button type="button" className="export-menu__item" role="menuitem" onClick={handleTranscript}>
-              <FileText size={16} />
-              <span>
-                <strong>Chat transcript</strong>
-                <em>The conversation, formatted with charts</em>
-              </span>
-            </button>
-            <button type="button" className="export-menu__item" role="menuitem" onClick={handleProfessional}>
-              <Sparkles size={16} />
-              <span>
-                <strong>Professional document</strong>
-                <em>A polished report generated from this chat, charts added</em>
-              </span>
-            </button>
-          </div>
-        ) : null}
-      </div>
+          {menuOpen ? (
+            <div className="export-menu" role="menu">
+              <button type="button" className="export-menu__item" role="menuitem" onClick={handleTranscript}>
+                <FileText size={16} />
+                <span>
+                  <strong>Chat transcript</strong>
+                  <em>The conversation, formatted with charts</em>
+                </span>
+              </button>
+              <button type="button" className="export-menu__item" role="menuitem" onClick={handleProfessional}>
+                <Sparkles size={16} />
+                <span>
+                  <strong>Professional document</strong>
+                  <em>A polished report generated from this chat, charts added</em>
+                </span>
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </header>
   )
 }

@@ -404,7 +404,7 @@ export const useAppStore = create((set, get) => ({
         toast.info('No files found', {
           id: toastId,
           description: 'Nothing in the inbox folder to ingest.',
-          duration: Infinity,
+          duration: 4000,
         })
         return
       }
@@ -426,41 +426,20 @@ export const useAppStore = create((set, get) => ({
         notify(`${ingested} new file${plural(ingested)} ingested`, {
           id: toastId,
           description,
-          duration: Infinity,
+          duration: 4000,
         })
       } else {
         toast.info('No new files', {
           id: toastId,
           description: description || 'Everything in the inbox folder is already ingested.',
-          duration: Infinity,
+          duration: 4000,
         })
       }
     } catch (error) {
       toast.error('Inbox scan failed', {
         id: toastId,
         description: error.message || 'The server could not scan the inbox folder.',
-        duration: Infinity,
-      })
-    }
-  },
-
-  // Sync the live database schema into Qdrant for Schema RAG.
-  runSchemaSync: async () => {
-    const toastId = toast.loading('Syncing database schema...')
-    try {
-      const result = await syncSchema()
-      const tables = result?.tables_synced || 0
-      
-      toast.success('Schema sync complete', {
-        id: toastId,
-        description: `Successfully embedded ${tables} table${plural(tables)} into the vector store.`,
-        duration: 5000,
-      })
-    } catch (error) {
-      toast.error('Schema sync failed', {
-        id: toastId,
-        description: error.response?.data?.detail || error.message || 'Could not sync schema.',
-        duration: Infinity,
+        duration: 6000,
       })
     }
   },
@@ -787,6 +766,27 @@ export const useAppStore = create((set, get) => ({
       doneVerb: 'Ingested',
       failVerb: 'Ingestion',
     }),
+
+  // Sync the live database schema into Qdrant for Schema RAG.
+  runSchemaSync: async () => {
+    const toastId = toast.loading('Syncing database schema...')
+    try {
+      const result = await syncSchema()
+      const tables = result?.tables_synced || 0
+
+      toast.success('Schema sync complete', {
+        id: toastId,
+        description: `Successfully embedded ${tables} table${plural(tables)} into the vector store.`,
+        duration: 5000,
+      })
+    } catch (error) {
+      toast.error('Schema sync failed', {
+        id: toastId,
+        description: error.response?.data?.detail || error.message || 'Could not sync schema.',
+        duration: 6000,
+      })
+    }
+  },
 
   // Replace an existing document with a new file. Uses the same streaming card
   // so the user sees the full pipeline run; the backend keeps the old version

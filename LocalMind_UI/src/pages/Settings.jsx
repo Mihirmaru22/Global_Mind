@@ -1,5 +1,11 @@
-import { Check, Server, SlidersHorizontal, Sparkles, Database } from 'lucide-react'
+import { useRef, useState } from 'react'
+import dayjs from 'dayjs'
+import { Check, Sparkles, Database, RefreshCw, RotateCcw, Trash2, Upload, Loader2 } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
+import Button from '../components/Button.jsx'
+import Loader from '../components/Loader.jsx'
 import { useAppStore } from '../store/store.js'
 
 const themeOptions = [
@@ -53,16 +59,44 @@ const themeOptions = [
   },
 ]
 
-const fallbackProviders = [
-  { id: 'auto', label: 'Auto (recommended)' },
-  { id: 'openrouter', label: 'OpenRouter' },
-]
+function formatBytes(bytes) {
+  const value = Number(bytes)
+  if (!value || value < 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  return `${size < 10 && unit > 0 ? size.toFixed(1) : Math.round(size)} ${units[unit]}`
+}
+
+function fileExtension(name) {
+  const dot = (name || '').lastIndexOf('.')
+  return dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE'
+}
 
 export default function Settings() {
+  // Settings state
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
-  const providers = useAppStore((state) => state.providers)
   const runSchemaSync = useAppStore((state) => state.runSchemaSync)
+
+  // Documents state
+  const documents = useAppStore((state) => state.documents)
+  const refreshDocuments = useAppStore((state) => state.refreshDocuments)
+  const replaceDocument = useAppStore((state) => state.replaceDocument)
+  const deleteDocument = useAppStore((state) => state.deleteDocument)
+  const ingestDocument = useAppStore((state) => state.ingestDocument)
+  const loading = useAppStore((state) => state.loading)
+
+  const navigate = useNavigate()
+  const replaceInputRef = useRef(null)
+  const replaceTargetRef = useRef(null)
+  const uploadInputRef = useRef(null)
+  const [busyId, setBusyId] = useState(null)
+  const [isUploading, setIsUploading] = useState(false)
 
   const current = settings || {
     endpoint: '/api',
@@ -70,14 +104,67 @@ export default function Settings() {
     streamResponses: true,
     autoSync: true,
     theme: 'dark',
-    provider: 'openrouter',
   }
-
-  const providerOptions = providers?.length ? providers : fallbackProviders
-  const activeProvider = current.provider || 'auto'
 
   const setSetting = (patch) => {
     updateSettings(patch)
+  }
+
+  const handleUploadClick = () => {
+    uploadInputRef.current?.click()
+  }
+
+  const handleUploadFileChosen = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      setIsUploading(true)
+      navigate('/chat')
+      await ingestDocument(file)
+    } catch (error) {
+      console.error(error)
+      toast.error(`Upload failed. Check server logs.`)
+    } finally {
+      setIsUploading(false)
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = ''
+      }
+    }
+  }
+
+  const openReplacePicker = (docId) => {
+    replaceTargetRef.current = docId
+    if (replaceInputRef.current) {
+      replaceInputRef.current.value = ''
+      replaceInputRef.current.click()
+    }
+  }
+
+  const onReplaceFileChosen = async (event) => {
+    const file = event.target.files?.[0]
+    const targetId = replaceTargetRef.current
+    if (!file || !targetId) return
+    setBusyId(targetId)
+    try {
+      navigate('/chat')
+      await replaceDocument(targetId, file)
+    } finally {
+      setBusyId(null)
+      replaceTargetRef.current = null
+    }
+  }
+
+  const onDelete = async (doc) => {
+    if (!window.confirm(`Delete "${doc.name}"? This removes it from the knowledge base.`)) {
+      return
+    }
+    setBusyId(doc.id)
+    try {
+      await deleteDocument(doc.id)
+    } finally {
+      setBusyId(null)
+    }
   }
 
   return (
@@ -85,12 +172,10 @@ export default function Settings() {
       <div className="section__header settings-page__header">
         <div>
           <h2 className="section__title">Settings</h2>
-          <p className="section__subtitle">
-            Model behavior and appearance. Changes are saved automatically.
-          </p>
         </div>
       </div>
 
+      {/* --- Documents --- */}
       <motion.section
         className="settings-panel"
         initial={{ opacity: 0, y: 12 }}
@@ -98,52 +183,126 @@ export default function Settings() {
       >
         <div className="settings-panel__heading">
           <div className="settings-panel__title-wrap">
-            <SlidersHorizontal size={16} />
-            <h3 className="settings-panel__title">Model Configuration</h3>
+            <h3 className="settings-panel__title">Documents</h3>
           </div>
           <span className="settings-panel__rule" />
+          <div className="section__header-actions">
+            <Button
+              variant="secondary"
+              className="section__header-btn"
+              disabled={isUploading}
+              onClick={handleUploadClick}
+            >
+              {isUploading ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
+              <span>{isUploading ? 'Ingesting...' : 'Upload'}</span>
+            </Button>
+            <Button variant="secondary" className="section__header-btn" onClick={refreshDocuments}>
+              <RefreshCw size={16} />
+              <span>Refresh</span>
+            </Button>
+          </div>
         </div>
 
-        <div className="setting-row provider-row">
-          <div className="provider-row__head">
-            <div className="settings-panel__title-wrap">
-              <Server size={15} />
-              <label>Model Provider</label>
-            </div>
-            <p className="setting-help">
-              Preferred provider for answering. It's a soft preference — if it's
-              rate-limited or down, the pipeline automatically falls back to the
-              others. <strong>Auto</strong> uses the best provider per task.
+        {loading ? <Loader /> : null}
+
+        <input
+          ref={uploadInputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={handleUploadFileChosen}
+        />
+        <input
+          ref={replaceInputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={onReplaceFileChosen}
+        />
+
+        <div className="doc-list">
+          {documents.length === 0 && !loading ? (
+            <p className="section__subtitle">
+              No documents yet. Upload a file to ingest it.
             </p>
-          </div>
-          <div className="provider-grid">
-            {providerOptions.map((option) => {
-              const active = activeProvider === option.id
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={`provider-chip ${active ? 'provider-chip--active' : ''}`}
-                  onClick={() => setSetting({ provider: option.id })}
-                >
-                  <span className="provider-chip__label">{option.label}</span>
-                  {active ? (
-                    <span className="provider-chip__check">
-                      <Check size={12} />
-                    </span>
+          ) : null}
+
+          {documents.map((doc, index) => (
+            <motion.article
+              key={doc.id}
+              className="doc-row"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.03 }}
+            >
+              <div>
+                <p className="doc-row__title">
+                  {doc.name}
+                  {doc.versionCount > 1 ? (
+                    <span className="doc-row__badge"> · v{doc.versionCount}</span>
                   ) : null}
-                </button>
-              )
-            })}
-          </div>
+                </p>
+                <p className="doc-row__meta">
+                  {fileExtension(doc.name)} · {formatBytes(doc.sizeBytes)} · {doc.chunks ?? 0} chunks
+                  {doc.ingestedAt ? ` · Added ${dayjs(doc.ingestedAt).format('MMM D, HH:mm')}` : ''}
+                </p>
+              </div>
+              <div className="doc-row__actions">
+                <Button
+                  variant="secondary"
+                  disabled={busyId === doc.id}
+                  onClick={() => openReplacePicker(doc.id)}
+                >
+                  <RotateCcw size={16} />
+                  <span>Replace</span>
+                </Button>
+                <Button
+                  variant="danger"
+                  disabled={busyId === doc.id}
+                  onClick={() => onDelete(doc)}
+                >
+                  <Trash2 size={16} />
+                  <span>Delete</span>
+                </Button>
+              </div>
+            </motion.article>
+          ))}
         </div>
       </motion.section>
 
+      {/* --- Data Management --- */}
       <motion.section
         className="settings-panel"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.06 }}
+      >
+        <div className="settings-panel__heading">
+          <div className="settings-panel__title-wrap">
+            <Database size={16} />
+            <h3 className="settings-panel__title">Data Management</h3>
+          </div>
+          <span className="settings-panel__rule" />
+        </div>
+
+        <div className="setting-row">
+          <label>Database Schema Sync</label>
+          <p className="setting-help">
+            Fetches your live database tables, chunks them, and embeds them into the vector store.
+            Run this whenever you add, alter, or drop tables in your database so the AI knows about them.
+          </p>
+          <div style={{ marginTop: '1rem' }}>
+            <Button variant="primary" onClick={() => runSchemaSync()}>
+              Sync Database Schema
+            </Button>
+          </div>
+        </div>
+      </motion.section>
+
+      {/* --- Appearance --- */}
+      <motion.section
+        className="settings-panel"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.12 }}
       >
         <div className="settings-panel__heading">
           <div className="settings-panel__title-wrap">
@@ -154,7 +313,7 @@ export default function Settings() {
         </div>
 
         <div className="setting-row">
-          <label>Theme Selection</label>
+          <label>Theme</label>
           <div className="theme-grid">
             {themeOptions.map((theme) => {
               const active = current.theme === theme.mode
@@ -209,38 +368,6 @@ export default function Settings() {
                 </button>
               )
             })}
-          </div>
-        </div>
-      </motion.section>
-
-      <motion.section
-        className="settings-panel"
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.12 }}
-      >
-        <div className="settings-panel__heading">
-          <div className="settings-panel__title-wrap">
-            <Database size={16} />
-            <h3 className="settings-panel__title">Data Management</h3>
-          </div>
-          <span className="settings-panel__rule" />
-        </div>
-
-        <div className="setting-row">
-          <label>Database Schema Sync</label>
-          <p className="setting-help">
-            Fetches your live database tables, chunks them, and embeds them into the vector store.
-            Run this whenever you add, alter, or drop tables in your database so the AI knows about them.
-          </p>
-          <div style={{ marginTop: '1rem' }}>
-            <button
-              type="button"
-              className="button button--primary"
-              onClick={() => runSchemaSync()}
-            >
-              Sync Database Schema
-            </button>
           </div>
         </div>
       </motion.section>
