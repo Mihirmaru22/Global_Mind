@@ -302,6 +302,7 @@ export const useAppStore = create((set, get) => ({
   chats: demoChats,
   activeChatId: demoChats[0].id,
   messagesByChatId: {},
+  draftsByChatId: {},
   documents: [],
   overview: null,
   settings: null,
@@ -454,6 +455,13 @@ export const useAppStore = create((set, get) => ({
     }))
   },
 
+  setDraft: (chatId, text) => {
+    if (!chatId) return
+    set((state) => ({
+      draftsByChatId: { ...state.draftsByChatId, [chatId]: text },
+    }))
+  },
+
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   closeSidebar: () => set({ sidebarOpen: false }),
   toggleSidebarCollapse: () =>
@@ -464,6 +472,17 @@ export const useAppStore = create((set, get) => ({
     }),
 
   newChat: async () => {
+    const state = get()
+    const activeChat = state.chats.find((c) => c.id === state.activeChatId)
+    const activeMessages = state.messagesByChatId[state.activeChatId]
+
+    // If we're already sitting on a fresh, untitled, empty chat, stay on it
+    // instead of spawning another empty entry in the sidebar list.
+    if (activeChat?.isUntitled && (!activeMessages || activeMessages.length === 0)) {
+      set({ sidebarOpen: false })
+      return
+    }
+
     const chat = await createChat('New Chat')
     set((state) => ({
       chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, demoChats)],
@@ -527,6 +546,8 @@ export const useAppStore = create((set, get) => ({
     const remainingChats = state.chats.filter((chat) => chat.id !== chatId)
     const restMessages = { ...state.messagesByChatId }
     delete restMessages[chatId]
+    const restDrafts = { ...state.draftsByChatId }
+    delete restDrafts[chatId]
 
     try {
       await deleteChatApi(chatId)
@@ -540,6 +561,7 @@ export const useAppStore = create((set, get) => ({
         chats: [{ ...chat, title: 'New Chat', isUntitled: true }],
         activeChatId: chat.id,
         messagesByChatId: { [chat.id]: [] },
+        draftsByChatId: restDrafts,
         sidebarOpen: false,
       })
       return
@@ -549,6 +571,7 @@ export const useAppStore = create((set, get) => ({
       chats: remainingChats,
       activeChatId: state.activeChatId === chatId ? remainingChats[0].id : state.activeChatId,
       messagesByChatId: restMessages,
+      draftsByChatId: restDrafts,
       sidebarOpen: false,
     })
   },
@@ -574,6 +597,10 @@ export const useAppStore = create((set, get) => ({
       messagesByChatId: {
         ...state.messagesByChatId,
         [activeChatId]: [...(state.messagesByChatId[activeChatId] || []), userMessage, placeholder],
+      },
+      draftsByChatId: {
+        ...state.draftsByChatId,
+        [activeChatId]: '',
       },
       activeRequest: { id: requestId, chatId: activeChatId, placeholderId: placeholder.id },
       loading: true,

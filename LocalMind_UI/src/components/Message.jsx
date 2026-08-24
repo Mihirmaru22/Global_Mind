@@ -173,12 +173,15 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   useEffect(() => {
     if (!isEditing) return undefined
     const frame = window.requestAnimationFrame(() => {
-      editRef.current?.focus()
-      editRef.current?.setSelectionRange?.(draft.length, draft.length)
+      const el = editRef.current
+      if (!el) return
+      el.focus()
+      const endPos = el.value.length
+      el.setSelectionRange?.(endPos, endPos)
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [draft.length, isEditing])
+  }, [isEditing])
 
   useEffect(
     () => () => {
@@ -426,6 +429,14 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
                 </ReactMarkdown>
               </div>
               <div className="message__actions message__actions--user">
+                <button
+                  type="button"
+                  className={clsx('message__action', copied && 'message__action--active')}
+                  onClick={handleCopy}
+                  aria-label="Copy message"
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
                 <button
                   type="button"
                   className="message__action"

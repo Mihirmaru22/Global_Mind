@@ -498,27 +498,25 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
 }
 
 .new-chat-action {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
   width: 100%;
-  min-height: 36px;
+  min-height: 40px;
   padding: 8px 10px;
   border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-secondary);
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff8f4;
   font-size: 0.9rem;
   font-weight: 500;
-  text-align: left;
-  transition: background 150ms ease, color 150ms ease;
+  text-align: center;
+  transition: transform 150ms ease, filter 150ms ease;
 }
 
 .new-chat-action:hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  color: var(--text-primary);
-  transform: none;
-  filter: none;
+  transform: translateY(-1px);
+  filter: brightness(1.04);
 }
 
 :root[data-theme-mode='light'] .nav-item--active {
@@ -846,9 +844,10 @@ html[data-scrolling='true'] .chat-list::-webkit-scrollbar-thumb {
 }
 
 :root[data-theme='academic-dark'] .primary-button,
+:root[data-theme='academic-dark'] .new-chat-action,
 :root[data-theme='academic-dark'] .composer__send {
   background: #d0d0d0;
-  color: #666666;
+  color: #1c1c1c;
 }
 
 :root[data-theme='academic-dark'] .primary-button--danger {

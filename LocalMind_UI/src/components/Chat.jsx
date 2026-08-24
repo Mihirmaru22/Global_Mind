@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
 import InputBox from './InputBox.jsx'
@@ -10,12 +10,14 @@ import ProviderStatus from './ProviderStatus.jsx'
 export default function Chat() {
   const activeChatId = useAppStore((state) => state.activeChatId)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
+  const draftsByChatId = useAppStore((state) => state.draftsByChatId)
+  const setDraft = useAppStore((state) => state.setDraft)
   const sendPrompt = useAppStore((state) => state.sendPrompt)
   const stopGeneration = useAppStore((state) => state.stopGeneration)
   const activeRequest = useAppStore((state) => state.activeRequest)
   const chats = useAppStore((state) => state.chats)
   const loading = useAppStore((state) => state.loading)
-  const [value, setValue] = useState('')
+  const value = draftsByChatId[activeChatId] || ''
   const inputRef = useRef(null)
   const bottomRef = useRef(null)
   const isGenerating = Boolean(activeRequest)
@@ -105,12 +107,11 @@ export default function Chat() {
         <InputBox
           ref={inputRef}
           value={value}
-          onChange={setValue}
+          onChange={(text) => setDraft(activeChatId, text)}
           onSubmit={async () => {
             if (isGenerating) return
             const prompt = value.trim()
             if (!prompt) return
-            setValue('')
             await sendPrompt(prompt)
             inputRef.current?.focus()
           }}
