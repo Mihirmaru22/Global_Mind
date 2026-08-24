@@ -95,6 +95,7 @@ _MAX_RETRY_WAIT_SECONDS = 8.0
 _PERMANENT_ERROR_MARKERS = (
     "not found", "end of life", "gone", "does not exist", "invalid model",
     "unauthorized", "forbidden", "no api key", "daily rate limit",
+    "tokens per day", "tpd", "daily quota",
 )
 
 
@@ -378,10 +379,10 @@ class GeminiProvider:
         # An injected/pre-set client (tests) always wins. Otherwise reuse a
         # process-wide httpx client so per-request routers don't each leak a
         # fresh connection pool.
-        if self._http is not None:
+        if self._http is not None and not self._http.is_closed:
             return self._http
         global _shared_gemini_http
-        if _shared_gemini_http is None:
+        if _shared_gemini_http is None or _shared_gemini_http.is_closed:
             _shared_gemini_http = httpx.AsyncClient(timeout=120.0)
         self._http = _shared_gemini_http
         return _shared_gemini_http

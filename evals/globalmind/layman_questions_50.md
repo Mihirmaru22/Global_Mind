@@ -122,7 +122,7 @@ A benchmark suite of **50 distinct, zero-jargon business questions**. These repr
 34. **"How many delivery notes/challans were created today?"**
     * *Business Goal:* Daily dispatch activity snapshot.
 
-35. **"Show all shipments sent out to clients during the past week."**
+35. **"How much finished product did the factory complete over the past week?."**
     * *Business Goal:* Outbound delivery tracking for customer service inquiries.
 
 36. **"Which drivers handled the highest number of delivery runs recently?"**
