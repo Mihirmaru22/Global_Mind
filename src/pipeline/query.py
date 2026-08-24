@@ -26,6 +26,7 @@ from src.stages.s12_s13_s14_retrieval import (
     _source_mode,
 )
 from src.stages.s12b_sql_retrieval import SQLRetriever
+from src.utils.telemetry import get_or_create_query_id, log_telemetry, timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -105,124 +106,126 @@ class QueryPipeline:
                      resolve follow-ups into standalone queries and to keep the
                      answer coherent with the conversation.
         """
-        logger.info("=== Query: %s ===", question[:100])
+        query_id = get_or_create_query_id()
+        logger.info("=== Query [%s]: %s ===", query_id, question[:100])
 
-        # Short-circuit: "what files/documents do you have?" Ã¢â‚¬â€  answer from registry
-        if _is_document_listing_query(question):
-            # ARCH-9: registry reads block; run off the event loop.
-            answer = await asyncio.to_thread(_build_document_list_answer)
-            return QueryResult(
-                query=question,
-                answer=answer,
-                model_used="registry",
-                reasoning_task="document_listing",
+        with timed_stage("final_response", query_id=query_id) as final_stage:
+            # Short-circuit: "what files/documents do you have?" — answer from registry
+            if _is_document_listing_query(question):
+                # ARCH-9: registry reads block; run off the event loop.
+                answer = await asyncio.to_thread(_build_document_list_answer)
+                return QueryResult(
+                    query=question,
+                    answer=answer,
+                    model_used="registry",
+                    reasoning_task="document_listing",
+                )
+
+            # Consult the conversation ONLY when the message looks like it depends on
+            # it. A self-contained or new-topic question skips history entirely and is
+            # answered exactly as it would be with no conversation — so history never
+            # biases an unrelated question. When it is a follow-up, rewrite it into a
+            # standalone query so retrieval continues the current thread.
+            needs_context = bool(history) and _looks_like_followup(question)
+            search_query = question
+            if needs_context:
+                search_query = await _contextualize_query(question, history, self._router)
+                if search_query != question:
+                    logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
+            gen_history = history if needs_context else None
+
+            exhaustive = _is_exhaustive_query(search_query)
+            if exhaustive:
+                logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
+
+            # Both retrieval paths always run — never gated on a pre-guessed intent.
+            # SQL retrieval can abstain on its own (see SQLRetriever._generate_sql,
+            # NO_SQL) using the real schema, which is more reliable than a keyword/
+            # LLM guess made before either path has run.
+            sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
+
+            logger.info("[Stage 12] Retrieving vector chunks")
+            vector_chunks = await self._retriever.retrieve(
+                search_query,
+                top_k=settings.retrieval_top_k,
+                filters=filters,
+                exhaustive=exhaustive,
             )
+            logger.info("Retrieved %d vector chunks", len(vector_chunks))
 
-        # Consult the conversation ONLY when the message looks like it depends on
-        # it. A self-contained or new-topic question skips history entirely and is
-        # answered exactly as it would be with no conversation Ã¢â‚¬â€  so history never
-        # biases an unrelated question. When it is a follow-up, rewrite it into a
-        # standalone query so retrieval continues the current thread.
-        needs_context = bool(history) and _looks_like_followup(question)
-        search_query = question
-        if needs_context:
-            search_query = await _contextualize_query(question, history, self._router)
-            if search_query != question:
-                logger.info("Contextualized query: '%s' -> '%s'", question, search_query)
-        gen_history = history if needs_context else None
+            sql_chunks = await sql_task
+            sql_infra_error = self._sql_retriever.last_infra_error
+            if sql_chunks:
+                logger.info("SQL query succeeded and returned rows.")
+            else:
+                logger.info("SQL query returned no results or failed.")
 
-        exhaustive = _is_exhaustive_query(search_query)
-        if exhaustive:
-            logger.info("Exhaustive query detected Ã¢â‚¬â€  boosting top_k and skipping rerank")
+            if not vector_chunks and not sql_chunks:
+                if sql_infra_error:
+                    return QueryResult(
+                        query=question,
+                        answer=_SQL_UNAVAILABLE_MSG,
+                        model_used="none",
+                        reasoning_task="sql_unavailable",
+                    )
+                fallback_msg = "No relevant documents found. Please upload documents first."
 
-        # Both retrieval paths always run Ã¢â‚¬â€  never gated on a pre-guessed intent.
-        # SQL retrieval can abstain on its own (see SQLRetriever._generate_sql,
-        # NO_SQL) using the real schema, which is more reliable than a keyword/
-        # LLM guess made before either path has run.
-        sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
+                return QueryResult(
+                    query=question,
+                    answer=fallback_msg,
+                    model_used="none",
+                    reasoning_task="no_results",
+                )
 
-        logger.info("[Stage 12] Retrieving vector chunks")
-        vector_chunks = await self._retriever.retrieve(
-            search_query,
-            top_k=settings.retrieval_top_k,
-            filters=filters,
-            exhaustive=exhaustive,
-        )
-        logger.info("Retrieved %d vector chunks", len(vector_chunks))
+            # Stage 13 — Reranking. SQL chunks NEVER go here — solo or blended.
+            # A live-db table shouldn't leave your infra via the reranker's API call,
+            # and there's only ever one SQL chunk, so ranking it is meaningless.
+            # Only vector_chunks go to the reranker; _pin_sql_result_chunks (below)
+            # re-attaches the SQL chunk to the front unconditionally afterward, so
+            # it always survives to generation regardless of what the reranker did
+            # with the documents.
+            if exhaustive or not vector_chunks:
+                reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
+            else:
+                logger.info("[Stage 13] Reranking")
+                reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
+                reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+            reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
+            reranked = _pin_sql_result_chunks(reranked, sql_chunks)
+            logger.info("Final context: %d chunks", len(reranked))
 
-        sql_chunks = await sql_task
-        sql_infra_error = self._sql_retriever.last_infra_error
-        if sql_chunks:
-            logger.info("SQL query succeeded and returned rows.")
-        else:
-            logger.info("SQL query returned no results or failed.")
-
-        if not vector_chunks and not sql_chunks:
-            if sql_infra_error:
+            # Everything the documents returned was filtered out as irrelevant, and
+            # the SQL path went silent only because its models were unreachable — so
+            # say that, instead of letting generation report "not in my documents".
+            if not reranked and sql_infra_error:
                 return QueryResult(
                     query=question,
                     answer=_SQL_UNAVAILABLE_MSG,
                     model_used="none",
                     reasoning_task="sql_unavailable",
                 )
-            fallback_msg = "No relevant documents found. Please upload documents first."
 
-            return QueryResult(
-                query=question,
-                answer=fallback_msg,
-                model_used="none",
-                reasoning_task="no_results",
+            # Stage 14 — Generation (the user's original question + conversation,
+            # but only when the question actually depends on it)
+            logger.info("[Stage 14] Generating answer")
+            # Exhaustive queries keep every reranked chunk (recall matters); normal
+            # queries feed only the top few into the prompt to save input tokens.
+            context_limit = None if exhaustive else settings.generation_context_k
+            mode = _source_mode(reranked)
+            _log_pipeline_event("routing_decision", {
+                "mode": mode,
+                "sql_rows": len(sql_chunks),
+                "doc_chunks": len(vector_chunks),
+                "reranked": len(reranked),
+            }, query=question)
+            result = await self._generator.generate(
+                question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
             )
+            result.chunks_retrieved = len(vector_chunks + sql_chunks)
+            result.chunks_after_rerank = len(reranked)
 
-        # Stage 13 Ã¢â‚¬â€  Reranking. SQL chunks NEVER go here Ã¢â‚¬â€  solo or blended.
-        # A live-db table shouldn't leave your infra via the reranker's API call,
-        # and there's only ever one SQL chunk, so ranking it is meaningless.
-        # Only vector_chunks go to the reranker; _pin_sql_result_chunks (below)
-        # re-attaches the SQL chunk to the front unconditionally afterward, so
-        # it always survives to generation regardless of what the reranker did
-        # with the documents.
-        if exhaustive or not vector_chunks:
-            reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
-        else:
-            logger.info("[Stage 13] Reranking")
-            reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
-            reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-        reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
-        reranked = _pin_sql_result_chunks(reranked, sql_chunks)
-        logger.info("Final context: %d chunks", len(reranked))
-
-        # Everything the documents returned was filtered out as irrelevant, and
-        # the SQL path went silent only because its models were unreachable — so
-        # say that, instead of letting generation report "not in my documents".
-        if not reranked and sql_infra_error:
-            return QueryResult(
-                query=question,
-                answer=_SQL_UNAVAILABLE_MSG,
-                model_used="none",
-                reasoning_task="sql_unavailable",
-            )
-
-        # Stage 14 Ã¢â‚¬â€  Generation (the user's original question + conversation,
-        # but only when the question actually depends on it)
-        logger.info("[Stage 14] Generating answer")
-        # Exhaustive queries keep every reranked chunk (recall matters); normal
-        # queries feed only the top few into the prompt to save input tokens.
-        context_limit = None if exhaustive else settings.generation_context_k
-        mode = _source_mode(reranked)
-        _log_pipeline_event("routing_decision", {
-            "mode": mode,
-            "sql_rows": len(sql_chunks),
-            "doc_chunks": len(vector_chunks),
-            "reranked": len(reranked),
-        }, query=question)
-        result = await self._generator.generate(
-            question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
-        )
-        result.chunks_retrieved = len(vector_chunks + sql_chunks)
-        result.chunks_after_rerank = len(reranked)
-
-        logger.info("=== Query complete ===")
-        return result
+            logger.info("=== Query complete ===")
+            return result
 
     async def query_stream(
         self, question: str, filters: dict | None = None, history: list[dict] | None = None
