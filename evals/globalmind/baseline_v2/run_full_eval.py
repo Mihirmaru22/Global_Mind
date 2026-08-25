@@ -31,7 +31,12 @@ except ImportError:
     from src.pipeline.query import QueryPipeline
 
 from src.core.sql_column_registry import ColumnRegistry
-from src.utils.sql_safety import is_destructive_sql, validate_tables_and_columns
+from src.utils.sql_safety import (
+    check_cartesian_explosion,
+    clamp_cartesian_limits,
+    is_destructive_sql,
+    validate_tables_and_columns,
+)
 import sqlglot
 
 
@@ -93,7 +98,7 @@ class LiveEvaluator:
                 "id": "adv-002",
                 "type": "cartesian_join",
                 "sql": "SELECT p.carton_no, w.name, u.name FROM packagings p, warehouse w, users u WHERE 1 = 1 AND p.deleted_at IS NULL LIMIT 1000;",
-                "expected_block": False,  # Should pass safety but fail cardinality
+                "expected_block": False,  # Should pass safety but be clamped to LIMIT 100
                 "reason": "Comma-join bypasses AST Join check, causes Cartesian explosion",
             },
             {
@@ -124,7 +129,10 @@ class LiveEvaluator:
         validation_result: dict[str, Any] = {
             "is_safe": True,
             "blocks": [],
+            "warnings": [],
             "errors": [],
+            "clamped_sql": sql,
+            "was_clamped": False,
         }
 
         try:
@@ -157,6 +165,14 @@ class LiveEvaluator:
             # Check for dangerous functions in comments (Adv-003)
             if "/*!" in sql and ("SLEEP" in sql or "BENCHMARK" in sql):
                 validation_result["blocks"].append("masked_dangerous_function")
+
+            # 3. Cartesian explosion pre-execution check (Adv-002)
+            is_cartesian, cart_reason = check_cartesian_explosion(sql, dialect="mysql")
+            if is_cartesian:
+                validation_result["warnings"].append(f"cartesian_explosion: {cart_reason}")
+                clamped, was_clamped = clamp_cartesian_limits(sql, max_cartesian_limit=100, dialect="mysql")
+                validation_result["clamped_sql"] = clamped
+                validation_result["was_clamped"] = was_clamped
 
         except Exception as e:
             validation_result["errors"].append(str(e))
@@ -246,13 +262,23 @@ class LiveEvaluator:
                 "expected_block": query["expected_block"],
                 "actual_blocked": actual_blocked,
                 "blocks_found": validation["blocks"],
+                "warnings": validation.get("warnings", []),
+                "was_clamped": validation.get("was_clamped", False),
+                "clamped_sql": validation.get("clamped_sql", query["sql"]),
                 "errors": validation["errors"],
                 "passed": passed,
             }
             results.append(result)
 
             status = "✅ PASS" if result["passed"] else "❌ FAIL"
-            print(f"    {status} - Blocks: {result['blocks_found']}")
+            info = []
+            if result['blocks_found']:
+                info.append(f"Blocks: {result['blocks_found']}")
+            if result['warnings']:
+                info.append(f"Warnings: {result['warnings']}")
+            if result['was_clamped']:
+                info.append("Clamped: LIMIT 100")
+            print(f"    {status} - {', '.join(info) if info else 'Safe'}")
 
         return results
 
@@ -360,7 +386,15 @@ class LiveEvaluator:
             f.write(f"Passed: {adv_passes}/{len(self.adversarial_results)}\n")
             for r in self.adversarial_results:
                 status = "PASS" if r["passed"] else "FAIL"
-                f.write(f"  [{status}] {r['id']} ({r['type']}): Blocks={r['blocks_found']}\n")
+                extra = []
+                if r.get("blocks_found"):
+                    extra.append(f"Blocks={r['blocks_found']}")
+                if r.get("warnings"):
+                    extra.append(f"Warnings={r['warnings']}")
+                if r.get("was_clamped"):
+                    extra.append(f"Clamped={r['clamped_sql']}")
+                extra_str = " | ".join(extra) if extra else "No blocks/warnings"
+                f.write(f"  [{status}] {r['id']} ({r['type']}): {extra_str}\n")
 
         print(f"📝 Summary report saved to: {summary_path}")
 
