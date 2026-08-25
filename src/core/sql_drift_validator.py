@@ -23,16 +23,7 @@ RELATIONSHIPS_FILE = REPO_ROOT / "config" / "sql_relationships.json"
 
 def load_schema_tables_and_columns(schema_path: Path | None = None) -> dict[str, set[str]]:
     """Return {table_name: set_of_column_names} from the schema JSON."""
-    if schema_path and schema_path.exists():
-        path = schema_path
-    elif SCHEMA_FILE.exists():
-        path = SCHEMA_FILE
-    else:
-        candidates = [
-            REPO_ROOT / "sql_evl_validatation" / "globalmind_schema.json",
-            REPO_ROOT / "sql_Evel" / "globalmind_schema.json",
-        ]
-        path = next((c for c in candidates if c.exists()), SCHEMA_FILE)
+    path = schema_path if schema_path and schema_path.exists() else SCHEMA_FILE
 
     if not path.exists():
         return {}
