@@ -21,8 +21,8 @@ from src.stages.s11_vector_store import QdrantStore
 from src.stages.s12b_sql_retrieval import SQLRetriever
 
 console = Console()
-QUESTIONS_FILE = Path("evals/globalmind/layman_questions_50.md")
-REPORT_FILE = Path("evals/globalmind/eval_run_report.md")
+QUESTIONS_FILE = Path("evals/globalmind/reports/layman_questions_50.md")
+REPORT_FILE = Path("evals/globalmind/reports/eval_run_report.md")
 
 
 def extract_questions_from_md(md_path: Path) -> list[tuple[int, str, str]]:

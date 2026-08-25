@@ -49,3 +49,8 @@ Thumbs.db
 # Transfer / Bundle artifacts
 *.bundle
 *.log
+
+# Backups & Reports
+data/backups/
+config/backups/
+reports/*.md

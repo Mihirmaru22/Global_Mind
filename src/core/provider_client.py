@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Protocol, runtime_checkable
 
@@ -25,6 +26,10 @@ from openai import AsyncOpenAI
 from src.core.config import settings
 from src.core.rate_limiter import RateLimiter, get_shared_rate_limiter
 from src.models.schemas import TokenUsage
+from src.utils.circuit_breaker import CircuitBreakerOpenError, get_shared_circuit_breaker
+from src.utils.error_classification import classify_error
+from src.utils.query_budget import QueryBudgetExceededError, get_current_budget_controller
+from src.utils.telemetry import log_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +384,7 @@ class GeminiProvider:
         # An injected/pre-set client (tests) always wins. Otherwise reuse a
         # process-wide httpx client so per-request routers don't each leak a
         # fresh connection pool.
-        if self._http is not None and not self._http.is_closed:
+        if self._http is not None and not getattr(self._http, "is_closed", False):
             return self._http
         global _shared_gemini_http
         if _shared_gemini_http is None or _shared_gemini_http.is_closed:
@@ -642,6 +647,23 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
         ProviderOption("gemini", "gemini-2.5-flash", 3),
         ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
     ]),
+    "repair": TaskRoute([
+        ProviderOption("groq", "qwen/qwen3.6-27b", 1),
+        ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 2),
+        ProviderOption("gemini", "gemini-2.5-flash", 3),
+        ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
+    ]),
+    "synthesis": TaskRoute([
+        ProviderOption("gemini", "gemini-2.5-flash", 1),
+        ProviderOption("groq", "qwen/qwen3.6-27b", 2),
+        ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 3),
+        ProviderOption("openrouter", "meta-llama/llama-3.3-70b-instruct:free", 4),
+    ]),
+    "micro_synthesis": TaskRoute([
+        ProviderOption("groq", "openai/gpt-oss-20b", 1),
+        ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 2),
+        ProviderOption("gemini", "gemini-2.5-flash-lite", 3),
+    ]),
     "extraction": TaskRoute([
         ProviderOption("nvidia_nim", "meta/llama-3.1-70b-instruct", 1),
         ProviderOption("gemini", "gemini-2.5-flash", 2),
@@ -656,6 +678,44 @@ DEFAULT_ROUTES: dict[str, TaskRoute] = {
         ProviderOption("gemini", "gemini-2.5-flash-lite", 2),
     ]),
 }
+
+DEFAULT_TASK_ROUTING: dict[str, dict[str, list[str]]] = {
+    "reasoning": {
+        "preferred": ["gemini", "nvidia_nim"],
+        "fallback": ["groq", "openrouter"],
+    },
+    "repair": {
+        "preferred": ["groq", "nvidia_nim"],
+        "fallback": ["gemini", "openrouter"],
+    },
+    "synthesis": {
+        "preferred": ["groq", "gemini"],
+        "fallback": ["nvidia_nim", "openrouter"],
+    },
+    "micro_synthesis": {
+        "preferred": ["groq", "nvidia_nim"],
+        "fallback": ["gemini", "openrouter"],
+    },
+}
+
+_shared_task_routing: dict[str, dict[str, list[str]]] | None = None
+
+
+def get_task_routing_rules() -> dict[str, dict[str, list[str]]]:
+    """Return task routing rules parsed from providers.yaml (or defaults)."""
+    global _shared_task_routing
+    if _shared_task_routing is None:
+        try:
+            from src.core.config import load_provider_config
+            raw = load_provider_config()
+            routes = raw.get("provider_routing")
+            if routes and isinstance(routes, dict):
+                _shared_task_routing = routes
+            else:
+                _shared_task_routing = DEFAULT_TASK_ROUTING
+        except Exception:
+            _shared_task_routing = DEFAULT_TASK_ROUTING
+    return _shared_task_routing
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +804,7 @@ class ProviderRouter:
         # and rebuilding them (a YAML parse, provider construction) every request
         # was pure waste. Tests still override these instance attributes.
         self._rate_limiter = get_shared_rate_limiter()
-        self._routes = routes or get_shared_routes()
+        self._routes = dict(routes) if routes is not None else dict(get_shared_routes())
         self._providers: dict[str, LLMProvider] = get_shared_providers()
         # A soft pin: the caller's preferred provider is promoted to the front
         # of every task chain, but the rest of the chain stays intact as
@@ -796,13 +856,50 @@ class ProviderRouter:
             return None
 
     def _get_route(self, task: str) -> TaskRoute:
-        """Get the fallback chain for a task, falling back to general_qa.
-
-        Applies the soft provider pin (if any) so the preferred provider is
-        tried first while the rest of the chain remains as fallback.
-        """
+        """Get the fallback chain for a task, applying task routing v2 and soft provider pin."""
         base = self._routes.get(task, self._routes.get("general_qa", TaskRoute()))
-        return self._apply_preference(base, task)
+        routed = self._apply_task_routing(base, task)
+        return self._apply_preference(routed, task)
+
+    def _apply_task_routing(self, route: TaskRoute, task: str) -> TaskRoute:
+        """Re-order provider options based on task-to-provider routing preferences (Phase 13)."""
+        from src.utils.feature_flags import is_feature_enabled
+
+        if not is_feature_enabled("provider_routing_v2_enabled"):
+            return route
+
+        task_rules = get_task_routing_rules().get(task)
+        if not task_rules:
+            return route
+
+        preferred_providers = [p.lower() for p in task_rules.get("preferred", [])]
+        fallback_providers = [p.lower() for p in task_rules.get("fallback", [])]
+
+        options = list(route.options)
+        pref_options = []
+        fb_options = []
+        other_options = []
+
+        for p_name in preferred_providers:
+            for opt in options:
+                if opt.provider_name.lower() == p_name and opt not in pref_options:
+                    pref_options.append(opt)
+
+        for f_name in fallback_providers:
+            for opt in options:
+                if opt.provider_name.lower() == f_name and opt not in pref_options and opt not in fb_options:
+                    fb_options.append(opt)
+
+        for opt in options:
+            if opt not in pref_options and opt not in fb_options:
+                other_options.append(opt)
+
+        reordered = pref_options + fb_options + other_options
+        merged = [
+            ProviderOption(opt.provider_name, opt.model, priority=i + 1)
+            for i, opt in enumerate(reordered)
+        ]
+        return TaskRoute(merged)
 
     def _apply_preference(self, route: TaskRoute, task: str) -> TaskRoute:
         """Promote the pinned provider to the front of a task's fallback chain.
@@ -850,8 +947,8 @@ class ProviderRouter:
 
     async def chat(
         self,
-        task: str,
-        messages: list[dict[str, Any]],
+        task: str = "general_qa",
+        messages: list[dict[str, Any]] | None = None,
         *,
         temperature: float = 0.0,
         max_tokens: int = 4096,
@@ -865,18 +962,51 @@ class ProviderRouter:
         to _MAX_RETRY_WAIT_SECONDS) and retries — so a transient 429 no longer
         collapses the whole request.
         """
+        if messages is None:
+            messages = []
         options = sorted(self._get_route(task).options, key=lambda o: o.priority)
         errors: dict[str, str] = {}
         dead: set[str] = set()
+
+        task_rules = get_task_routing_rules().get(task, {})
+        preferred_list = task_rules.get("preferred", [])
+        top_preferred = preferred_list[0] if preferred_list else (options[0].provider_name if options else "unknown")
+
+        # Check Query Budget Controller before making calls
+        budget_ctrl = get_current_budget_controller()
+        is_repair = (task == "repair")
+        if budget_ctrl is not None and not budget_ctrl.can_proceed(is_repair=is_repair):
+            status = budget_ctrl.get_budget_status()
+            logger.warning("Query budget exhausted before chat call for task '%s': %s", task, status)
+            log_telemetry(
+                query_id="",
+                stage="sql_generation" if task == "reasoning" else ("synthesis" if task in ("general_qa", "summarization", "synthesis", "micro_synthesis") else "llm_call"),
+                latency_ms=0.0,
+                success=False,
+                failure_type="budget_exceeded",
+                extra={"task": task, "budget_status": status},
+            )
+            raise QueryBudgetExceededError(f"Query budget exhausted for query {budget_ctrl.query_id}: {status}")
+
+        cb = get_shared_circuit_breaker()
 
         for _pass in range(_MAX_FALLBACK_PASSES):
             for option in options:
                 if option.provider_name in dead:
                     continue
+                if cb.is_open(option.provider_name):
+                    logger.debug(
+                        "Circuit breaker is OPEN for provider '%s' — skipping without network call",
+                        option.provider_name,
+                    )
+                    errors[f"{option.provider_name}/{option.model}"] = "Circuit breaker open (cooling down)"
+                    continue
+
                 provider = self._providers.get(option.provider_name)
                 if provider is None or not provider.is_available:
                     continue
 
+                call_start_time = time.perf_counter()
                 try:
                     call_usage = TokenUsage()
                     result = await provider.chat(
@@ -887,13 +1017,55 @@ class ProviderRouter:
                         response_format=response_format,
                         usage=call_usage,
                     )
+                    call_latency = round((time.perf_counter() - call_start_time) * 1000.0, 2)
                     self.last_used = f"{option.provider_name}/{option.model}"
                     self.usage.add_call(call_usage)
+                    cb.record_success(option.provider_name)
+                    if budget_ctrl is not None:
+                        budget_ctrl.record_call(tokens_used=call_usage.total_tokens, is_repair=is_repair)
+                    fell_back = (option.provider_name != top_preferred)
+                    log_telemetry(
+                        query_id="",
+                        stage="sql_generation" if task == "reasoning" else ("synthesis" if task in ("general_qa", "summarization", "synthesis", "micro_synthesis") else "llm_call"),
+                        input_tokens=call_usage.input_tokens,
+                        output_tokens=call_usage.output_tokens,
+                        latency_ms=call_latency,
+                        success=True,
+                        provider=option.provider_name,
+                        model=option.model,
+                        extra={
+                            "task": task,
+                            "task_hint": task,
+                            "preferred_provider": top_preferred,
+                            "actual_provider_used": option.provider_name,
+                            "fell_back": fell_back,
+                        },
+                    )
                     logger.debug(
                         "Task '%s' completed via %s/%s", task, option.provider_name, option.model
                     )
                     return result
                 except Exception as e:
+                    call_latency = round((time.perf_counter() - call_start_time) * 1000.0, 2)
+                    cb.record_failure(option.provider_name, e)
+                    fell_back = (option.provider_name != top_preferred)
+                    log_telemetry(
+                        query_id="",
+                        stage="sql_generation" if task == "reasoning" else ("synthesis" if task in ("general_qa", "summarization", "synthesis", "micro_synthesis") else "llm_call"),
+                        latency_ms=call_latency,
+                        success=False,
+                        failure_type=classify_error(e),
+                        provider=option.provider_name,
+                        model=option.model,
+                        extra={
+                            "task": task,
+                            "task_hint": task,
+                            "preferred_provider": top_preferred,
+                            "actual_provider_used": option.provider_name,
+                            "fell_back": fell_back,
+                            "error": str(e),
+                        },
+                    )
                     self._note_rate_limit(option.provider_name, e)
                     errors[f"{option.provider_name}/{option.model}"] = str(e)
                     if not _is_transient_failure(e):
@@ -924,25 +1096,15 @@ class ProviderRouter:
 
         Returns None when nothing is recoverable soon (all providers permanently
         dead, or their cooldowns exceed _MAX_RETRY_WAIT_SECONDS — e.g. a daily
-        cap), so the caller stops instead of stalling on a hopeless wait.
+        cap or long backoff). Otherwise returns the smallest positive wait.
         """
-        waits: list[float] = []
-        for option in options:
-            if option.provider_name in dead:
-                continue
-            provider = self._providers.get(option.provider_name)
-            if provider is None or not provider.is_available:
-                continue
-            waits.append(self._rate_limiter.seconds_until_available(option.provider_name))
-        if not waits:
-            return None
-        shortest = min(waits)
-        # Only worth a retry if there's an actual cooldown to wait out that's
-        # within budget; a ~0 wait means the provider just failed and would only
-        # fail again immediately.
-        if shortest <= 0.05 or shortest > _MAX_RETRY_WAIT_SECONDS:
-            return None
-        return shortest + 0.1
+        waits = [
+            self._rate_limiter.seconds_until_available(opt.provider_name)
+            for opt in options
+            if opt.provider_name not in dead
+        ]
+        positive = [w for w in waits if 0.0 < w <= _MAX_RETRY_WAIT_SECONDS]
+        return min(positive) if positive else None
 
     def _note_rate_limit(self, provider_name: str, exc: Exception) -> None:
         """Record a provider cooldown when a call failed with HTTP 429.
@@ -959,31 +1121,61 @@ class ProviderRouter:
 
     async def chat_stream(
         self,
-        task: str,
-        messages: list[dict[str, Any]],
+        task: str = "general_qa",
+        messages: list[dict[str, Any]] | None = None,
         *,
         temperature: float = 0.0,
         max_tokens: int = 4096,
     ) -> AsyncGenerator[str, None]:
-        """Route a chat completion stream through the provider fallback chain.
+        """Stream a chat completion through the provider fallback chain.
 
-        Same permanent-vs-transient handling and bounded backoff-retry as
-        ``chat``. A provider that has already emitted output can't be retried
-        (that would duplicate the answer), so it fails hard as before.
+        Yields text chunks as they arrive. If a provider fails *before* emitting
+        any tokens, falls back to the next provider. If it fails *mid-stream*
+        (after partial output has already reached the caller), raises
+        immediately rather than appending a duplicate answer from another model.
         """
+        if messages is None:
+            messages = []
         options = sorted(self._get_route(task).options, key=lambda o: o.priority)
         errors: dict[str, str] = {}
         dead: set[str] = set()
+
+        # Check Query Budget Controller before making calls
+        budget_ctrl = get_current_budget_controller()
+        is_repair = (task == "repair")
+        if budget_ctrl is not None and not budget_ctrl.can_proceed(is_repair=is_repair):
+            status = budget_ctrl.get_budget_status()
+            logger.warning("Query budget exhausted before stream for task '%s': %s", task, status)
+            log_telemetry(
+                query_id="",
+                stage="synthesis" if task in ("general_qa", "summarization") else "llm_call",
+                latency_ms=0.0,
+                success=False,
+                failure_type="budget_exceeded",
+                extra={"task": task, "stream": True, "budget_status": status},
+            )
+            raise QueryBudgetExceededError(f"Query budget exhausted for query {budget_ctrl.query_id}: {status}")
+
+        cb = get_shared_circuit_breaker()
 
         for _pass in range(_MAX_FALLBACK_PASSES):
             for option in options:
                 if option.provider_name in dead:
                     continue
+                if cb.is_open(option.provider_name):
+                    logger.debug(
+                        "Circuit breaker is OPEN for provider '%s' (stream) — skipping",
+                        option.provider_name,
+                    )
+                    errors[f"{option.provider_name}/{option.model}"] = "Circuit breaker open (cooling down)"
+                    continue
+
                 provider = self._providers.get(option.provider_name)
                 if provider is None or not provider.is_available:
                     continue
 
                 emitted = False
+                call_start_time = time.perf_counter()
                 try:
                     call_usage = TokenUsage()
                     async for chunk in provider.chat_stream(
@@ -996,13 +1188,40 @@ class ProviderRouter:
                         emitted = True
                         yield chunk
 
+                    call_latency = round((time.perf_counter() - call_start_time) * 1000.0, 2)
                     self.last_used = f"{option.provider_name}/{option.model}"
                     self.usage.add_call(call_usage)
+                    cb.record_success(option.provider_name)
+                    if budget_ctrl is not None:
+                        budget_ctrl.record_call(tokens_used=call_usage.total_tokens, is_repair=is_repair)
+                    log_telemetry(
+                        query_id="",
+                        stage="synthesis" if task in ("general_qa", "summarization") else "llm_call",
+                        input_tokens=call_usage.input_tokens,
+                        output_tokens=call_usage.output_tokens,
+                        latency_ms=call_latency,
+                        success=True,
+                        provider=option.provider_name,
+                        model=option.model,
+                        extra={"task": task, "stream": True},
+                    )
                     logger.debug(
                         "Task stream '%s' completed via %s/%s", task, option.provider_name, option.model
                     )
                     return
                 except Exception as e:
+                    call_latency = round((time.perf_counter() - call_start_time) * 1000.0, 2)
+                    cb.record_failure(option.provider_name, e)
+                    log_telemetry(
+                        query_id="",
+                        stage="synthesis" if task in ("general_qa", "summarization") else "llm_call",
+                        latency_ms=call_latency,
+                        success=False,
+                        failure_type=classify_error(e),
+                        provider=option.provider_name,
+                        model=option.model,
+                        extra={"task": task, "stream": True, "error": str(e)},
+                    )
                     self._note_rate_limit(option.provider_name, e)
                     errors[f"{option.provider_name}/{option.model}"] = str(e)
                     if not _is_transient_failure(e):
