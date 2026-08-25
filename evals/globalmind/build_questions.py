@@ -64,6 +64,16 @@ _TABLE_NOUNS = {
     "lead_history": "lead follow-up history",
     "product_opening_stock": "opening stock balances",
     "stock_adjustment": "stock adjustments",
+    "product_packaging_detail": "packaging specifications",
+    "lead_product_sample_detail": "product sample shipments",
+    "dc_temp": "staged delivery challan records",
+    "party_followup_history": "party interaction history",
+    "lead_attachment": "lead attachments",
+    "purchase_attachment": "purchase invoice attachments",
+    "delivery_dispatch_attachment": "delivery dispatch attachments",
+    "lead_interested": "lead interest records",
+    "packaging_barcode_log": "packaging barcode logs",
+    "countries": "countries",
 }
 
 _CORE_BREADTH_TABLES = [
@@ -671,14 +681,200 @@ def _curated_priority1() -> list[dict]:
     return Q
 
 
+def _curated_priority2() -> list[dict]:
+    """Next-Tier Missing Tables by Relationship Count (Priority Batch 2: gm-134 to gm-163)."""
+    Q: list[dict] = []
+
+    def add(domain, difficulty, type_, question, route, tables, twist, rubric):
+        Q.append({
+            "domain": domain, "difficulty": difficulty, "type": type_,
+            "question": question, "route": route, "tables": tables,
+            "twist": twist, "rubric": rubric,
+        })
+
+    # 1. product_packaging_detail (Packaging specifications)
+    add("Packaging", "hard_twisted", "spec_variance",
+        "which products have a packaging specification quantity in product_packaging_detail that differs from the average packed quantity in actual packagings?",
+        "SQL", ["product_packaging_detail", "packagings", "product"],
+        "join product_packaging_detail to product and packagings on product_id; compare defined spec qty (product_packaging_detail.qty) against AVG(packagings.qty)",
+        "Joins product_packaging_detail to packagings and product on product_id; aggregates AVG(packagings.qty) and compares against product_packaging_detail.qty; groups by product.product_name.")
+    add("Packaging", "medium", "join",
+        "list all products with their designated carton packaging master name and specified unit capacity per carton",
+        "SQL", ["product_packaging_detail", "product", "packagings"],
+        "join product_packaging_detail.product_id -> product.id and carton_product_id -> packagings.id",
+        "Joins product_packaging_detail to product (product_name) and packagings (carton container), returning product_name, carton_no, and spec qty.")
+    add("Packaging", "edge_case", "null_filter",
+        "find all active products that do not have any packaging specification defined in product_packaging_detail",
+        "SQL", ["product", "product_packaging_detail"],
+        "anti-join: product LEFT JOIN product_packaging_detail ON product.id = product_packaging_detail.product_id WHERE product_packaging_detail.id IS NULL",
+        "Uses LEFT JOIN or NOT EXISTS to find products missing packaging specifications; excludes soft-deleted products.")
+
+    # 2. lead_product_sample_detail (Sample tracking & Funnel)
+    add("CRM", "hard_twisted", "funnel_completion",
+        "for all leads sent product samples via courier, track how many successfully converted to a quotation and a proforma invoice",
+        "SQL", ["lead_product_sample_detail", "lead", "quotation", "proforma"],
+        "sample-to-quotation-to-PI funnel: join lead_product_sample_detail.lead_id -> lead.id, LEFT JOIN quotation on quotation.lead_id = lead.id, LEFT JOIN proforma on proforma.quotation_id = quotation.id; aggregate distinct milestone IDs",
+        "Traces full sample conversion funnel starting from lead_product_sample_detail through quotation and proforma; counts distinct milestone IDs.")
+    add("CRM", "hard_twisted", "temporal_delay",
+        "which courier sample dispatches experienced a delivery delay where the actual courier date exceeded the expected delivery date?",
+        "SQL", ["lead_product_sample_detail", "lead"],
+        "temporal filter on sample logistics: delivery_type = 'Courier' AND courier_date > courier_expected_delivery",
+        "Filters lead_product_sample_detail for courier delivery delays; joins lead on lead_id to return contact name and tracking_no.")
+    add("CRM", "medium", "join",
+        "show all sample shipments handled via transport with lead name, transport agency name, LR number, and dispatch date",
+        "SQL", ["lead_product_sample_detail", "lead"],
+        "filter delivery_type = 'Transport'; join lead_id -> lead.id; return lead.name, transport_name, lr_number, transport_date",
+        "Joins lead_product_sample_detail to lead; filters delivery_type='Transport'; returns readable contact name and freight transport details.")
+    add("CRM", "edge_case", "missing_document",
+        "identify any dispatched samples where tracking number or LR number is present but the document attachment is missing",
+        "SQL", ["lead_product_sample_detail", "lead"],
+        "attachment check: (tracking_no IS NOT NULL AND (courier_document IS NULL OR courier_document = '')) OR (lr_number IS NOT NULL AND (transport_document IS NULL OR transport_document = ''))",
+        "Filters for missing proof-of-dispatch documents on tracked sample shipments; joins lead for lead reference.")
+
+    # 3. dc_temp (Delivery challan temp ledger)
+    add("Inventory", "hard_twisted", "temp_reconciliation",
+        "find all carton numbers recorded in dc_temp that do not exist in the verified packagings ledger",
+        "SQL", ["dc_temp", "packagings"],
+        "reconciliation anti-join: dc_temp LEFT JOIN packagings ON dc_temp.carton_no = packagings.carton_no WHERE packagings.id IS NULL",
+        "Anti-joins temporary delivery challan cartons in dc_temp against verified packagings to detect unrecorded or invalid cartons.")
+    add("Inventory", "medium", "join",
+        "list distinct carton names and total carton counts staged in the temporary delivery challan staging table",
+        "SQL", ["dc_temp"],
+        "group by carton_name; aggregate COUNT(*), COUNT(DISTINCT carton_no)",
+        "Aggregates staged carton records in dc_temp grouped by carton_name.")
+    add("Inventory", "edge_case", "null_filter",
+        "are there any temporary DC records in dc_temp with blank or NULL carton numbers?",
+        "SQL", ["dc_temp"],
+        "NULL / empty check: carton_no IS NULL OR carton_no = ''",
+        "Filters dc_temp for missing carton identifiers.")
+
+    # 4. party_followup_history (CRM follow-up audit)
+    add("CRM", "hard_twisted", "followup_efficiency",
+        "which sales representative has the highest follow-up completion rate (Success status vs Reject or Pending) for party interactions?",
+        "SQL", ["party_followup_history", "users", "party"],
+        "CRM audit ratio: SUM(CASE WHEN status='Success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*); join assign_to_user -> users.id",
+        "Joins party_followup_history.assign_to_user to users.id; computes success percentage; filters HAVING COUNT(*) >= 3; ranks DESC LIMIT 1.")
+    add("CRM", "medium", "temporal_join",
+        "list all pending party follow-ups where reminder_date is scheduled for this week with customer name and assigned representative",
+        "SQL", ["party_followup_history", "party", "users"],
+        "join party_id -> party.id, assign_to_user -> users.id; filter status='Pending' AND reminder_date BETWEEN CURRENT_DATE AND DATE_ADD(CURRENT_DATE, INTERVAL 7 DAY)",
+        "Joins party_followup_history to party and users; filters on pending status and upcoming reminder date range.")
+    add("CRM", "edge_case", "data_quality",
+        "find party follow-up entries marked as 'Reject' that have an empty or blank remark",
+        "SQL", ["party_followup_history", "party"],
+        "data quality check: status = 'Reject' AND (remark IS NULL OR remark = '' OR TRIM(remark) = '')",
+        "Filters party_followup_history for rejected follow-ups lacking explanation remarks; joins party for party_name.")
+
+    # 5. lead_attachment (Lead document tracking)
+    add("CRM", "hard_twisted", "attachment_funnel",
+        "how many leads with uploaded technical attachments went on to generate a sales order compared to leads without attachments?",
+        "SQL", ["lead", "lead_attachment", "sales_order"],
+        "conversion comparison: compare sales order conversion rate for leads with lead_attachment vs leads without",
+        "Joins lead to lead_attachment and sales_order (via quotation/so or direct); aggregates converted orders grouped by attachment presence.")
+    add("CRM", "medium", "join",
+        "list all leads that have more than 2 document attachments uploaded along with the lead creator user name",
+        "SQL", ["lead_attachment", "lead", "users"],
+        "join lead_attachment.lead_id -> lead.id and lead.created_id -> users.id; group by lead.id HAVING COUNT(lead_attachment.id) > 2",
+        "Joins lead_attachment to lead and users; groups by lead; filters HAVING COUNT(lead_attachment.id) > 2.")
+    add("CRM", "edge_case", "null_attachment",
+        "find any lead attachment records where the attachment file path is NULL or empty string",
+        "SQL", ["lead_attachment", "lead"],
+        "file integrity filter: lead_attachment.attachment IS NULL OR lead_attachment.attachment = ''",
+        "Filters lead_attachment for empty or broken file paths; joins lead on lead_id.")
+
+    # 6. purchase_attachment (Purchase document tracking)
+    add("Purchase", "hard_twisted", "purchase_audit",
+        "which suppliers have purchases exceeding 50,000 rupees in total value that are missing an uploaded invoice attachment in purchase_attachment?",
+        "SQL", ["purchase", "purchase_products", "purchase_attachment", "party", "product"],
+        "anti-join with derived value: calculate SUM(product.rate * purchase_products.qty) per purchase; LEFT JOIN purchase_attachment on purchase_attachment.pi_id = purchase.id WHERE purchase_attachment.id IS NULL HAVING total_value > 50000",
+        "Computes purchase value from rate*qty, anti-joins purchase_attachment, filters purchases missing invoice uploads above value threshold.")
+    add("Purchase", "medium", "join",
+        "show all purchase invoice attachments uploaded in the current financial year with supplier name and purchase date",
+        "SQL", ["purchase_attachment", "purchase", "party", "financial_year"],
+        "join purchase_attachment.pi_id -> purchase.id, purchase.party_id -> party.id, purchase_attachment.financial_id -> financial_year.id (current_year='Y')",
+        "Joins purchase_attachment to purchase, party, and financial_year; filters current_year='Y'; returns party_name, purchase_date, upload_invoice.")
+    add("Purchase", "edge_case", "missing_upload",
+        "identify any purchase attachment entries where upload_invoice is NULL or recorded as empty",
+        "SQL", ["purchase_attachment", "purchase"],
+        "NULL file check: upload_invoice IS NULL OR upload_invoice = ''",
+        "Filters purchase_attachment for NULL/empty upload_invoice; joins purchase for purchase reference.")
+
+    # 7. delivery_dispatch_attachment (Delivery dispatch tracking)
+    add("Sales", "hard_twisted", "dispatch_compliance",
+        "calculate the compliance percentage of delivery challans that have a valid transport dispatch attachment uploaded for the current financial year",
+        "SQL", ["delivery_challan", "delivery_dispatch_attachment", "financial_year"],
+        "compliance ratio: COUNT(DISTINCT delivery_dispatch_attachment.dc_id) * 100.0 / COUNT(DISTINCT delivery_challan.id) for current financial year",
+        "Joins delivery_challan with delivery_dispatch_attachment and financial_year (current_year='Y'); computes attachment upload compliance percentage.")
+    add("Sales", "medium", "join",
+        "list all delivery challans with their uploaded transport dispatch attachment path, customer name, and challan date",
+        "SQL", ["delivery_dispatch_attachment", "delivery_challan", "party"],
+        "join delivery_dispatch_attachment.dc_id -> delivery_challan.id and delivery_challan.party_id -> party.id",
+        "Joins delivery_dispatch_attachment to delivery_challan and party; returns party_name, dc_no, dc_date, transport_attachment.")
+    add("Sales", "edge_case", "null_attachment",
+        "find all delivery challans that have been delivered (status='D') but have no transport attachment record in delivery_dispatch_attachment",
+        "SQL", ["delivery_challan", "delivery_dispatch_attachment"],
+        "anti-join on delivered status: delivery_challan.status = 'D' AND delivery_dispatch_attachment.id IS NULL",
+        "Anti-joins delivery_challan to delivery_dispatch_attachment for delivered shipments missing transport proof.")
+
+    # 8. lead_interested (Lead product interest mapping)
+    add("CRM", "hard_twisted", "interest_conversion",
+        "which product category has the highest number of interested leads that converted into actual quotation requests?",
+        "SQL", ["lead_interested", "category", "lead", "lead_history"],
+        "interest-to-quotation conversion: join lead_interested.category_id -> category.id, lead_interested.lead_id -> lead.id, join lead_history ON lead_history.lead_id = lead.id WHERE lead_history.request_for_quotation = 'Yes'",
+        "Joins lead_interested to category, lead, and lead_history; counts distinct converted leads per category; orders DESC LIMIT 1.")
+    add("CRM", "medium", "join",
+        "show the count of leads interested in custom products versus standard catalog products for each category",
+        "SQL", ["lead_interested", "category"],
+        "conditional aggregation: SUM(CASE WHEN int_in_custom_product IS NOT NULL AND int_in_custom_product != '' THEN 1 ELSE 0 END) vs SUM(CASE WHEN interested_in IS NOT NULL THEN 1 ELSE 0 END) grouped by category.name",
+        "Groups lead_interested by category.name; compares custom product interest against standard interest using conditional sums.")
+    add("CRM", "edge_case", "data_quality",
+        "find all lead_interested entries where both interested_in and int_in_custom_product are NULL or blank",
+        "SQL", ["lead_interested", "lead"],
+        "data quality check: (interested_in IS NULL OR interested_in = '') AND (int_in_custom_product IS NULL OR int_in_custom_product = '')",
+        "Filters lead_interested records containing no interest specifications; joins lead for lead reference.")
+
+    # 9. packaging_barcode_log (Barcode scan audit)
+    add("Packaging", "hard_twisted", "scan_velocity",
+        "which warehouse operator scanned the highest number of distinct packaging cartons in packaging_barcode_log in a single day?",
+        "SQL", ["packaging_barcode_log", "users"],
+        "scan audit aggregation: GROUP BY packaging_date, COALESCE(users.name, packaging_barcode_log.user); aggregate COUNT(DISTINCT carton_no); order DESC LIMIT 1",
+        "Groups packaging_barcode_log by packaging_date and operator (join created_id -> users.id or user column); ranks by COUNT(DISTINCT carton_no) DESC LIMIT 1.")
+    add("Packaging", "medium", "join",
+        "list the daily count of scanned cartons and distinct batches logged in packaging_barcode_log for the last 30 days",
+        "SQL", ["packaging_barcode_log"],
+        "temporal aggregation: GROUP BY packaging_date; aggregate COUNT(DISTINCT carton_no), COUNT(DISTINCT batch_no); filter packaging_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)",
+        "Groups packaging_barcode_log by packaging_date over 30 days; computes daily carton and batch scan counts.")
+    add("Packaging", "edge_case", "null_filter",
+        "identify any barcode scan logs where the carton number or batch number is recorded as NULL or zero",
+        "SQL", ["packaging_barcode_log"],
+        "anomaly check: carton_no IS NULL OR carton_no = 0 OR batch_no IS NULL OR batch_no = 0",
+        "Filters packaging_barcode_log for invalid or missing carton/batch numbers.")
+
+    # 10. countries (Master geo lookup)
+    add("Party", "medium", "geo_join",
+        "how many customers and leads are registered in each country?",
+        "SQL", ["countries", "party", "lead"],
+        "dual entity geo distribution: LEFT JOIN party on party.country_id = countries.id, LEFT JOIN lead on lead.country_id = countries.id; COUNT(DISTINCT party.id), COUNT(DISTINCT lead.id) grouped by countries.name",
+        "Joins countries to party and lead on country_id; aggregates distinct parties and leads per country.")
+    add("Sales", "hard_twisted", "cross_border_sales",
+        "what is the total sales order value from international customers located outside India?",
+        "SQL", ["countries", "party", "sales_order", "sales_order_products", "product"],
+        "cross-border revenue derivation: join party.country_id -> countries.id, party -> sales_order -> sales_order_products -> product; SUM(product.rate * sales_order_products.qty) WHERE countries.name != 'India'",
+        "Computes sales order value from rate*qty for parties joined to foreign countries (non-India).")
+
+    return Q
+
+
 def main() -> None:
     curated = _curated()
     seen = {q["question"] for q in curated}
     breadth = _schema_breadth(seen)
     seen.update(q["question"] for q in breadth)
     priority1 = _curated_priority1()
+    seen.update(q["question"] for q in priority1)
+    priority2 = _curated_priority2()
 
-    questions = curated + breadth + priority1
+    questions = curated + breadth + priority1 + priority2
 
     with OUT.open("w", encoding="utf-8") as fh:
         for i, q in enumerate(questions, 1):
