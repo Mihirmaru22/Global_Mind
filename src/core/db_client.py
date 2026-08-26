@@ -59,16 +59,23 @@ async def run_readonly_query(
         # Enforce hard row cap safely via AST
         tree = sqlglot.parse_one(sql, read=profile.sqlglot_dialect)
 
+        # Check Cartesian explosion risk (comma-joins without JOIN / CROSS JOIN)
+        from src.utils.sql_safety import check_cartesian_explosion
+        is_cartesian, cart_reason = check_cartesian_explosion(sql, dialect=profile.sqlglot_dialect)
+        effective_cap = min(row_cap, 100) if is_cartesian else row_cap
+        if is_cartesian:
+            logger.warning("Cartesian explosion risk detected (%s). Clamping execution limit to %d.", cart_reason, effective_cap)
+
         # Only inject LIMIT for SELECT and UNION statements
         if isinstance(tree, (exp.Select, exp.Union)):
             existing = tree.args.get("limit")
             if existing is None:
-                tree.set("limit", exp.Limit(expression=exp.Literal.number(row_cap)))
+                tree.set("limit", exp.Limit(expression=exp.Literal.number(effective_cap)))
             else:
                 try:
-                    # If there's already a limit > row_cap, clamp it down
-                    if int(existing.expression.this) > row_cap:
-                        existing.set("expression", exp.Literal.number(row_cap))
+                    # If there's already a limit > effective_cap, clamp it down
+                    if int(existing.expression.this) > effective_cap:
+                        existing.set("expression", exp.Literal.number(effective_cap))
                 except (TypeError, ValueError, AttributeError):
                     pass
 

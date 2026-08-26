@@ -123,12 +123,90 @@ def is_destructive_sql(sql: str, dialect: str | None = None) -> bool:
     return False
 
 
+def check_cartesian_explosion(sql: str, dialect: str | None = None) -> tuple[bool, str]:
+    """Detect unbounded Cartesian products and implicit comma-joins across multiple tables.
+
+    Returns:
+        (True, reason) if query contains explicit CROSS JOIN or comma-separated tables without explicit ON/USING conditions.
+        (False, "") if query has explicit ON/USING join predicates or is a single-table query.
+    """
+    if not sql or not sql.strip():
+        return False, ""
+
+    try:
+        ast = sqlglot.parse_one(sql, read=dialect)
+    except Exception as exc:
+        logger.debug("Failed to parse SQL in check_cartesian_explosion: %s", exc)
+        return False, ""
+
+    for select in ast.find_all(exp.Select):
+        # 1. Check for explicit CROSS JOIN or implicit comma-joins in JOIN clauses
+        for join in select.args.get("joins") or []:
+            kind = (join.args.get("kind") or "").upper()
+            join_sql = join.sql().upper()
+            if "CROSS" in kind or "CROSS JOIN" in join_sql:
+                return True, "Explicit CROSS JOIN detected."
+
+            on_clause = join.args.get("on")
+            using_clause = join.args.get("using")
+            if on_clause is None and using_clause is None:
+                tbl_name = _clean_ident(join.this.name if hasattr(join.this, "name") else (join.this.alias or join.this.sql()))
+                return (
+                    True,
+                    f"Implicit comma-join on table '{tbl_name}' detected without explicit ON condition (Cartesian risk).",
+                )
+
+        # 2. Comma-separated tables in FROM clause
+        from_clause = select.args.get("from")
+        if from_clause and from_clause.expressions:
+            extra_count = len(from_clause.expressions)
+            return (
+                True,
+                f"Implicit comma-join with {extra_count + 1} tables detected without explicit ON condition (Cartesian risk).",
+            )
+
+    return False, ""
+
+
+def clamp_cartesian_limits(
+    sql: str, max_cartesian_limit: int = 100, dialect: str | None = None
+) -> tuple[str, bool]:
+    """If Cartesian explosion risk is detected, clamp/override LIMIT to max_cartesian_limit.
+
+    Returns:
+        (clamped_sql, was_clamped)
+    """
+    is_cartesian, _ = check_cartesian_explosion(sql, dialect=dialect)
+    if not is_cartesian:
+        return sql, False
+
+    try:
+        ast = sqlglot.parse_one(sql, read=dialect)
+        if isinstance(ast, (exp.Select, exp.Union)):
+            existing = ast.args.get("limit")
+            if existing is None:
+                ast.set("limit", exp.Limit(expression=exp.Literal.number(max_cartesian_limit)))
+                return ast.sql(dialect=dialect), True
+            else:
+                try:
+                    curr_val = int(existing.expression.this)
+                    if curr_val > max_cartesian_limit:
+                        existing.set("expression", exp.Literal.number(max_cartesian_limit))
+                        return ast.sql(dialect=dialect), True
+                except (TypeError, ValueError, AttributeError):
+                    pass
+    except Exception as exc:
+        logger.debug("Failed to clamp Cartesian limit: %s", exc)
+
+    return sql, False
+
+
 def check_dangerous_patterns(sql: str, dialect: str | None = None) -> list[str]:
     """Scan SQL for anti-patterns and performance hazards.
 
-    Blocks:
+    Blocks/Flags:
     1. SELECT * (wildcard selections)
-    2. CROSS JOIN (unbounded Cartesian products)
+    2. CROSS JOIN / Multi-table comma-joins (unbounded Cartesian products)
     """
     if not sql or not sql.strip():
         return ["SQL statement is empty."]
@@ -148,15 +226,12 @@ def check_dangerous_patterns(sql: str, dialect: str | None = None) -> list[str]:
             "Wildcard selection (SELECT *) is forbidden. Explicitly name the required columns."
         )
 
-    # 2. Flag explicit CROSS JOIN
-    for join in ast.find_all(exp.Join):
-        kind = (join.args.get("kind") or "").upper()
-        join_sql = join.sql().upper()
-        if "CROSS" in kind or "CROSS JOIN" in join_sql:
-            warnings.append(
-                "CROSS JOIN is forbidden. Use explicit INNER/LEFT JOIN with an ON condition."
-            )
-            break
+    # 2. Flag Cartesian explosion (explicit CROSS JOIN or comma-joins)
+    is_cartesian, reason = check_cartesian_explosion(sql, dialect=dialect)
+    if is_cartesian:
+        warnings.append(
+            f"Cartesian product detected: {reason} Use explicit INNER/LEFT JOIN with an ON condition."
+        )
 
     return warnings
 
