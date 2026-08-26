@@ -126,7 +126,7 @@ export default function Documents() {
         <div>
           <h2 className="section__title">Documents</h2>
           <p className="section__subtitle">
-            Upload files to your knowledge base. Ingestion happens here — no chat is created.
+            Upload your files to add them to the knowledge base. You can reupload a file to replace it, or delete it if you no longer need it.
           </p>
         </div>
         <div className="section__header-actions">

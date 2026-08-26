@@ -7,33 +7,46 @@
      saturated primary vibrates against a dark surface). 500 is reserved for
      the single branded CTA (New chat / Send), never used as body text. */
   --brand-900: #6e2a12;
-  --brand-800: #85341a;
-  --brand-700: #99462a;
-  --brand-600: #a8532f;
-  --brand-500: #c66b40;
-  --brand-400: #c77d54;
-  --brand-300: #d99a72;
-  --brand-200: #eab48a;
-  --brand-100: #f3d3b8;
-  --brand-50:  #f9e8d8;
+  --brand-800: #914b32;
+  --brand-700: #a85d3f;
+  --brand-600: #b46a50;
+  --brand-500: #c98262;
+  --brand-400: #d8a089;
+  --brand-300: #e7c1b0;
+  --brand-200: #f1ded5;
+  --brand-100: #f7ece7;
+  --brand-50:  #fffcf9;
+
+  --primary: #c98262;
+  --primary-hover: #a85d3f;
+  --primary-soft: #3a2923;
+  --primary-border: #c98262;
 
   --bg: #151515;
   --bg-soft: #171717;
-  --panel: #161616;
-  --panel-strong: #1c1c1c;
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --panel-border-strong: rgba(255, 255, 255, 0.14);
-  --text-primary: rgba(255, 255, 255, 0.87);
-  --text-secondary: rgba(255, 255, 255, 0.60);
-  --text-muted: rgba(255, 255, 255, 0.38);
-  --accent: var(--brand-200);
-  --accent-strong: var(--brand-300);
-  --accent-on: #1a0f08;
-  --accent-soft: rgba(234, 180, 138, 0.12);
-  --cta-bg: var(--brand-500);
-  --cta-on: #1a0f08;
-  --success: #22c55e;
-  --danger: #e5605a;
+  --panel: #1b1b1a;
+  --panel-strong: #20201f;
+  --panel-border: #383836;
+  --panel-border-strong: #4a4945;
+  --text-primary: #e8e6e1;
+  --text-secondary: #b2b0aa;
+  --text-muted: #7d7c76;
+  --icon-primary: #d8d6d0;
+  --icon-secondary: #96948e;
+  --input-bg: #20201f;
+  --input-border: #41413e;
+  --focus-ring: #c98262;
+  --divider: #30302e;
+  --accent: var(--primary);
+  --accent-strong: var(--primary-border);
+  --accent-on: #151515;
+  --accent-soft: var(--primary-soft);
+  --cta-bg: var(--primary);
+  --cta-on: #151515;
+  --success: #79a583;
+  --warning: #d0a064;
+  --danger: #d47b70;
+  --info: #82a8be;
 
   /* Flat, matte elevation — a lighter surface tint, not a shadow+gloss. */
   --elevate-1: rgba(255, 255, 255, 0.03);
@@ -67,57 +80,65 @@
 
   /* Custom dark theme colors */
   --sidebar-bg: #111111;
-  --composer-bg: #20201F;
+  --composer-bg: #20201f;
   --chat-item-active-bg: #343434;
-  --placeholder-color: #7D7C76;
+  --placeholder-color: #7d7c76;
 }
 
 :root[data-theme='dark'] {
   --bg: #151515;
   --bg-soft: #171717;
-  --panel: #161616;
-  --panel-strong: #1c1c1c;
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --panel-border-strong: rgba(255, 255, 255, 0.14);
-  --text-primary: rgba(255, 255, 255, 0.87);
-  --text-secondary: rgba(255, 255, 255, 0.60);
-  --text-muted: rgba(255, 255, 255, 0.38);
-  --accent: var(--brand-200);
-  --accent-strong: var(--brand-300);
-  --accent-on: #1a0f08;
-  --accent-soft: rgba(234, 180, 138, 0.12);
-  --cta-bg: var(--brand-500);
-  --cta-on: #1a0f08;
+  --panel: #1b1b1a;
+  --panel-strong: #20201f;
+  --panel-border: #383836;
+  --panel-border-strong: #4a4945;
+  --text-primary: #e8e6e1;
+  --text-secondary: #b2b0aa;
+  --text-muted: #7d7c76;
+  --accent: var(--primary);
+  --accent-strong: var(--primary-border);
+  --accent-on: #151515;
+  --accent-soft: var(--primary-soft);
+  --cta-bg: var(--primary);
+  --cta-on: #151515;
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   --scrollbar-thumb: color-mix(in srgb, var(--panel-border-strong) 74%, var(--accent) 26%);
   --scrollbar-thumb-active: color-mix(in srgb, var(--accent) 46%, var(--panel-border-strong) 54%);
 
-  /* Custom dark theme colors */
   --sidebar-bg: #111111;
-  --composer-bg: #20201F;
+  --composer-bg: #20201f;
   --chat-item-active-bg: #343434;
-  --placeholder-color: #7D7C76;
+  --placeholder-color: #7d7c76;
 }
 
 :root[data-theme-mode='light'] {
   color-scheme: light;
-  --bg: #fdf8f5;
-  --bg-soft: #f7f3ef;
-  --panel: #ffffff;
-  --panel-strong: #f2ede9;
-  --panel-border: #e5e1da;
-  --panel-border-strong: #d7c1ba;
-  --text-primary: #211a18;
-  --text-secondary: #55433d;
-  --text-muted: #85736d;
-  --accent: var(--brand-700);
-  --accent-strong: var(--brand-800);
-  --accent-on: #ffffff;
-  --accent-soft: rgba(153, 70, 42, 0.08);
-  --cta-bg: var(--brand-700);
-  --cta-on: #fff8f4;
-  --success: #15803d;
-  --danger: #c23a34;
+  --primary: #a85d3f;
+  --primary-hover: #914b32;
+  --primary-soft: #f1ded5;
+  --primary-border: #a85d3f;
+
+  --bg: #faf7f4;
+  --bg-soft: #f4efeb;
+  --panel: #fffcf9;
+  --panel-strong: #ffffff;
+  --panel-border: #ded7d1;
+  --panel-border-strong: #c9bfb8;
+  --text-primary: #171513;
+  --text-secondary: #756d68;
+  --text-muted: #9a918b;
+  --icon-primary: #332d29;
+  --icon-secondary: #756d68;
+  --accent: var(--primary);
+  --accent-strong: var(--primary-border);
+  --accent-on: #fffcf9;
+  --accent-soft: var(--primary-soft);
+  --cta-bg: var(--primary);
+  --cta-on: #fffcf9;
+  --success: #4f7a5a;
+  --warning: #a8753d;
+  --danger: #a84d42;
+  --info: #55758a;
 
   /* Light theme keeps real shadows for elevation (per Material guidance —
      only dark theme swaps shadow for a lighter-surface overlay). */
@@ -130,11 +151,10 @@
   --scrollbar-thumb: color-mix(in srgb, var(--panel-border-strong) 76%, var(--accent) 24%);
   --scrollbar-thumb-active: color-mix(in srgb, var(--accent) 34%, var(--panel-border-strong) 66%);
 
-  /* Light theme defaults */
-  --sidebar-bg: var(--panel);
-  --composer-bg: var(--panel);
-  --chat-item-active-bg: color-mix(in srgb, var(--text-primary) 8%, transparent);
-  --placeholder-color: var(--text-muted);
+  --sidebar-bg: #fffcf9;
+  --composer-bg: #f4efeb;
+  --chat-item-active-bg: #edece8;
+  --placeholder-color: #9a918b;
 }
 
 * {
@@ -168,7 +188,7 @@ body::before {
   pointer-events: none;
   background-image: radial-gradient(
     circle at 50% 0%,
-    color-mix(in srgb, var(--accent) 4%, transparent),
+    color-mix(in srgb, var(--accent) 8%, transparent),
     transparent 40%
   );
   opacity: 0.5;
@@ -444,6 +464,7 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
     border-color 180ms ease,
     color 180ms ease;
   font-size: 0.95rem;
+  font-weight: 500;
 }
 
 .nav-item:hover {
@@ -457,7 +478,7 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   border-color: transparent;
   box-shadow: inset 2px 0 0 var(--accent-strong);
 }
-
+ 
 .sidebar__new-chat-row {
   padding: 4px 6px;
   margin: 8px 0 4px;
@@ -644,7 +665,7 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   white-space: nowrap;
   font-family: var(--font-ui);
   font-size: 14px;
-  font-weight: 400;
+  font-weight: 500;
   line-height: 1.3;
   color: inherit;
   will-change: transform;
@@ -3128,6 +3149,7 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
   width: 100%;
   font-size: 0.88rem;
   color: var(--text-muted);
+  font-weight: 500;
   min-height: 36px;
   padding: 8px 10px;
   border-radius: 8px;
@@ -3153,6 +3175,7 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
   gap: 18px;
+  margin-top: 18px;
   align-items: start;
 }
 
@@ -3331,37 +3354,37 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
 }
 
 .theme-option__preview--dark {
-  background: #121212;
+  background: #1b1b1a;
 }
 
 .theme-option__preview--dark .theme-option__preview-rail {
-  background: #1c1c1c;
+  background: #111111;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .theme-option__preview--dark .theme-option__preview-bar {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(216, 214, 208, 0.24);
 }
 
 .theme-option__preview--dark .theme-option__preview-bar--accent {
-  background: #c66b40;
+  background: #c98262;
 }
 
 .theme-option__preview--light {
-  background: #fdf8f5;
+  background: #fffcf9;
 }
 
 .theme-option__preview--light .theme-option__preview-rail {
-  background: #f2ede9;
+  background: #f4efeb;
   border-right: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .theme-option__preview--light .theme-option__preview-bar {
-  background: rgba(33, 26, 24, 0.18);
+  background: rgba(117, 109, 104, 0.18);
 }
 
 .theme-option__preview--light .theme-option__preview-bar--accent {
-  background: #99462a;
+  background: #a85d3f;
 }
 
 /* System: literally half of each preview, split diagonally — this one
@@ -3370,7 +3393,7 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
   position: relative;
   display: block;
   overflow: hidden;
-  background: #fdf8f5;
+  background: #fffcf9;
 }
 
 .theme-option__preview--system .theme-option__preview-rail {
@@ -3378,7 +3401,7 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
   inset: 0 auto 0 0;
   z-index: 2;
   width: 26%;
-  background: linear-gradient(180deg, #191919 0%, #101010 100%);
+  background: linear-gradient(180deg, #1b1b1a 0%, #111111 100%);
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow:
     inset -1px 0 0 rgba(255, 255, 255, 0.03),
@@ -3400,7 +3423,7 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
   left: 26%;
   z-index: 1;
   width: 48%;
-  background: linear-gradient(180deg, #121212 0%, #0e0e0e 100%);
+  background: linear-gradient(180deg, #111111 0%, #1b1b1a 100%);
   clip-path: polygon(0 0, 82% 0, 63% 100%, 0 100%);
 }
 
@@ -3409,7 +3432,7 @@ html[data-scrolling='true'] .error-screen__stack::-webkit-scrollbar-thumb {
   z-index: 0;
   width: 40%;
   padding-left: 16px;
-  background: #fdf8f5;
+  background: #fffcf9;
   clip-path: polygon(14% 0, 100% 0, 100% 100%, 0 100%);
 }
 
