@@ -1784,7 +1784,10 @@ Output readability & database-specific schema rules:
         try:
             # parse() (not parse_one) surfaces stacked statements so they can be
             # rejected rather than silently reduced to the first one.
-            statements = [s for s in sqlglot.parse(sql, read=self._dialect.sqlglot_dialect) if s is not None]
+            statements = [
+                s for s in sqlglot.parse(sql, read=self._dialect.sqlglot_dialect)
+                if s is not None and not isinstance(s, exp.Semicolon) and s.sql().strip()
+            ]
         except Exception as e:
             logger.error(f"sqlglot rejected query '{sql}': {e}")
             return False

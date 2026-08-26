@@ -203,7 +203,10 @@ def is_destructive_sql(sql: str, dialect: str | None = None) -> bool:
         return True
 
     try:
-        statements = [s for s in sqlglot.parse(sql, read=dialect) if s is not None]
+        statements = [
+            s for s in sqlglot.parse(sql, read=dialect)
+            if s is not None and not isinstance(s, exp.Semicolon) and s.sql().strip()
+        ]
     except Exception as exc:
         logger.warning("sqlglot failed to parse statement in is_destructive_sql: %s. Treating as destructive for safety.", exc)
         return True

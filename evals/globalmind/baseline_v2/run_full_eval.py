@@ -181,8 +181,8 @@ class LiveEvaluator:
 
         return validation_result
 
-    def run_single_question(self, question: dict[str, Any]) -> dict[str, Any]:
-        """Run a single question through the pipeline"""
+    async def run_single_question_async(self, question: dict[str, Any]) -> dict[str, Any]:
+        """Run a single question through the pipeline asynchronously"""
         start_time = time.time()
         result: dict[str, Any] = {
             "id": question.get("id"),
@@ -199,13 +199,16 @@ class LiveEvaluator:
 
         try:
             q_text = question.get("question", "")
-            if hasattr(self.pipeline, "run"):
-                response = self.pipeline.run(q_text)
-            elif hasattr(self.pipeline, "query"):
+            if hasattr(self.pipeline, "query"):
                 if asyncio.iscoroutinefunction(self.pipeline.query):
-                    response = asyncio.run(self.pipeline.query(q_text))
+                    response = await self.pipeline.query(q_text)
                 else:
                     response = self.pipeline.query(q_text)
+            elif hasattr(self.pipeline, "run"):
+                if asyncio.iscoroutinefunction(self.pipeline.run):
+                    response = await self.pipeline.run(q_text)
+                else:
+                    response = self.pipeline.run(q_text)
             else:
                 response = None
 
@@ -241,6 +244,10 @@ class LiveEvaluator:
                 result["validator_blocked"] = True
 
         return result
+
+    def run_single_question(self, question: dict[str, Any]) -> dict[str, Any]:
+        """Synchronous wrapper for run_single_question_async"""
+        return asyncio.run(self.run_single_question_async(question))
 
     def run_adversarial_suite(self) -> list[dict[str, Any]]:
         """Run the 5 adversarial queries"""
@@ -284,9 +291,11 @@ class LiveEvaluator:
 
         return results
 
-    def run_full_evaluation(self, questions: list[dict[str, Any]], max_workers: int = 4) -> None:
-        """Run evaluation on all questions"""
-        print(f"\n🚀 Starting Live Evaluation on {len(questions)} questions...")
+    async def _run_full_evaluation_async(
+        self, questions: list[dict[str, Any]], max_workers: int = 1, delay: float = 0.0
+    ) -> None:
+        """Run evaluation on all questions within persistent async loop"""
+        print(f"\n🚀 Starting Live Evaluation on {len(questions)} questions (delay: {delay}s, workers: {max_workers})...")
 
         successful = 0
         failed = 0
@@ -297,7 +306,7 @@ class LiveEvaluator:
         for i, q in enumerate(questions):
             print(f"[{i+1}/{len(questions)}] Running {q['id']} ({q.get('difficulty', 'unknown')})...", flush=True)
 
-            result = self.run_single_question(q)
+            result = await self.run_single_question_async(q)
             self.results.append(result)
 
             if result["success"]:
@@ -324,6 +333,9 @@ class LiveEvaluator:
                 self.metrics["domain_breakdown"].get(domain, 0) + 1
             )
 
+            if delay > 0 and i < len(questions) - 1:
+                await asyncio.sleep(delay)
+
         # Save aggregates
         self.metrics["total_questions"] = len(questions)
         self.metrics["successful_executions"] = successful
@@ -336,6 +348,12 @@ class LiveEvaluator:
             if len(latencies) > 20
             else (max(latencies) if latencies else 0.0)
         )
+
+    def run_full_evaluation(
+        self, questions: list[dict[str, Any]], max_workers: int = 1, delay: float = 0.0
+    ) -> None:
+        """Run evaluation on all questions maintaining a persistent async event loop"""
+        asyncio.run(self._run_full_evaluation_async(questions, max_workers=max_workers, delay=delay))
 
     def generate_report(self, output_dir: str = "evals/globalmind/results") -> None:
         """Generate comprehensive JSON and CSV reports"""
@@ -441,6 +459,8 @@ def main() -> None:
     parser.add_argument("--db", type=str, default="global_mind.db", help="Path to SQLite database")
     parser.add_argument("--adversarial-only", action="store_true", help="Run only adversarial tests")
     parser.add_argument("--limit", type=int, help="Limit number of questions to run")
+    parser.add_argument("--delay", type=float, default=0.0, help="Delay in seconds between questions to prevent rate limits")
+    parser.add_argument("--max-workers", type=int, default=1, help="Max parallel workers (default: 1)")
 
     args = parser.parse_args()
 
@@ -463,7 +483,7 @@ def main() -> None:
         questions = questions[: args.limit]
         print(f"⚠️  Limited to {args.limit} questions")
 
-    evaluator.run_full_evaluation(questions)
+    evaluator.run_full_evaluation(questions, max_workers=args.max_workers, delay=args.delay)
     evaluator.generate_report()
 
     print("\n✅ Evaluation Complete! Check 'evals/globalmind/results/' for reports.")
