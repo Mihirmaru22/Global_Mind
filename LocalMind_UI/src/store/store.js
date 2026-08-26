@@ -338,6 +338,10 @@ export const useAppStore = create((set, get) => ({
   pinnedChatIds: readStoredIdSet(PINNED_CHATS_KEY),
   selectedDocId: null,
   activeRequest: null,
+  // true = user clicked "New Chat" but hasn't sent a message yet.
+  // In this state activeChatId is null and no backend chat has been created.
+  // The real chat is created lazily on the first sendPrompt().
+  pendingChat: false,
   // Live progress for a document being ingested/replaced in the Documents
   // page. Not tied to a chat message — the whole point is that ingestion no
   // longer creates a chat. Cleared once the pipeline finishes.
@@ -475,7 +479,7 @@ export const useAppStore = create((set, get) => ({
   },
 
   selectChat: async (chatId) => {
-    set({ activeChatId: chatId, sidebarOpen: false })
+    set({ activeChatId: chatId, sidebarOpen: false, pendingChat: false })
     const { messagesByChatId } = get()
     if (messagesByChatId[chatId]) return
     const messages = await getMessages(chatId)
@@ -485,9 +489,10 @@ export const useAppStore = create((set, get) => ({
   },
 
   setDraft: (chatId, text) => {
-    if (!chatId) return
+    // When in pending mode (no real chat yet), store the draft under '__pending__'
+    const key = chatId || '__pending__'
     set((state) => ({
-      draftsByChatId: { ...state.draftsByChatId, [chatId]: text },
+      draftsByChatId: { ...state.draftsByChatId, [key]: text },
     }))
   },
 
@@ -500,25 +505,26 @@ export const useAppStore = create((set, get) => ({
       return { sidebarCollapsed: nextValue }
     }),
 
-  newChat: async () => {
-    const state = get()
-    const activeChat = state.chats.find((c) => c.id === state.activeChatId)
-    const activeMessages = state.messagesByChatId[state.activeChatId]
+  newChat: () => {
+    const { pendingChat, activeChatId, messagesByChatId, chats } = get()
 
-    // If we're already sitting on a fresh, untitled, empty chat, stay on it
-    // instead of spawning another empty entry in the sidebar list.
-    if (activeChat?.isUntitled && (!activeMessages || activeMessages.length === 0)) {
+    // Already in pending mode (clicked New Chat, haven't sent anything yet) — stay put.
+    if (pendingChat) {
       set({ sidebarOpen: false })
       return
     }
 
-    const chat = await createChat('New Chat')
-    set((state) => ({
-      chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, demoChats)],
-      activeChatId: chat.id,
-      sidebarOpen: false,
-      messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
-    }))
+    // Already on an existing untitled empty chat — treat it as the pending slot.
+    const activeChat = chats.find((c) => c.id === activeChatId)
+    const activeMessages = messagesByChatId[activeChatId] || []
+    if (activeChat?.isUntitled && activeMessages.length === 0) {
+      set({ sidebarOpen: false })
+      return
+    }
+
+    // Enter pending mode: no API call, no sidebar entry yet.
+    // The chat is created for real on the first sendPrompt().
+    set({ activeChatId: null, pendingChat: true, sidebarOpen: false })
   },
 
   renameChat: async (chatId, title) => {
@@ -606,8 +612,32 @@ export const useAppStore = create((set, get) => ({
   },
 
   sendPrompt: async (content) => {
-    const { activeChatId } = get()
-    if (!activeChatId || !content.trim() || get().activeRequest) return
+    let { activeChatId, pendingChat } = get()
+    if (!content.trim() || get().activeRequest) return
+
+    // ── Lazy chat creation ─────────────────────────────────────────────────
+    // If the user clicked "New Chat" but hasn't sent anything yet, now is the
+    // moment we actually create the backend chat and add it to the sidebar.
+    if (pendingChat || !activeChatId) {
+      const chat = await createChat('New Chat')
+      const pendingDraft = get().draftsByChatId['__pending__']
+      set((state) => {
+        const nextDrafts = { ...state.draftsByChatId }
+        delete nextDrafts['__pending__']
+        if (pendingDraft) nextDrafts[chat.id] = pendingDraft
+        return {
+          chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, demoChats)],
+          activeChatId: chat.id,
+          pendingChat: false,
+          messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
+          draftsByChatId: nextDrafts,
+        }
+      })
+      activeChatId = chat.id
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    if (!activeChatId) return
 
     const prompt = content.trim()
     const activeChat = get().chats.find((chat) => chat.id === activeChatId)
@@ -773,6 +803,9 @@ export const useAppStore = create((set, get) => ({
     const messageIndex = messages.findIndex((message) => message.id === messageId)
     const message = messages[messageIndex]
     if (!message || message.role !== 'user') return
+    // A user turn stays editable until another user turn appears after it.
+    // Assistant replies in between do not lock it; the next user message does.
+    if (messages.slice(messageIndex + 1).some((entry) => entry.role === 'user')) return
 
     const requestId = ++requestSequence
     const placeholder = createLoadingAssistantMessage(requestId)

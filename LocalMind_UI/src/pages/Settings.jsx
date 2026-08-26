@@ -1,4 +1,4 @@
-import { Check, Database } from 'lucide-react'
+import { Check, Database, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import Button from '../components/Button.jsx'
 import { useAppStore } from '../store/store.js'
@@ -33,6 +33,7 @@ export default function Settings() {
       >
         <div className="settings-panel__heading">
           <div className="settings-panel__title-wrap">
+            <Sparkles size={16} />
             <h3 className="settings-panel__title">Appearance</h3>
           </div>
           <span className="settings-panel__rule" />
@@ -52,17 +53,36 @@ export default function Settings() {
                   className={`theme-option ${selected ? 'theme-option--selected' : ''}`}
                   onClick={() => setSetting({ theme: option.value })}
                 >
-                  <span className={`theme-option__preview theme-option__preview--${option.value}`}>
-                    <span className="theme-option__preview-rail" />
-                    <span className="theme-option__preview-body">
-                      <span className="theme-option__preview-bar theme-option__preview-bar--accent" />
-                      <span className="theme-option__preview-bar" />
-                      <span className="theme-option__preview-bar" />
+                  {option.value === 'system' ? (
+                    <span className="theme-option__preview theme-option__preview--system">
+                      <span className="theme-option__preview-rail" />
+                      <span className="theme-option__preview-system theme-option__preview-system--dark">
+                        <span className="theme-option__preview-bar theme-option__preview-bar--accent" />
+                        <span className="theme-option__preview-bar" />
+                        <span className="theme-option__preview-bar" />
+                      </span>
+                      <span className="theme-option__preview-system theme-option__preview-system--light">
+                        <span className="theme-option__preview-bar theme-option__preview-bar--accent" />
+                        <span className="theme-option__preview-bar" />
+                        <span className="theme-option__preview-bar" />
+                      </span>
+                      {selected ? (
+                        <span className="theme-option__check"><Check size={11} strokeWidth={3} /></span>
+                      ) : null}
                     </span>
-                    {selected ? (
-                      <span className="theme-option__check"><Check size={11} strokeWidth={3} /></span>
-                    ) : null}
-                  </span>
+                  ) : (
+                    <span className={`theme-option__preview theme-option__preview--${option.value}`}>
+                      <span className="theme-option__preview-rail" />
+                      <span className="theme-option__preview-body">
+                        <span className="theme-option__preview-bar theme-option__preview-bar--accent" />
+                        <span className="theme-option__preview-bar" />
+                        <span className="theme-option__preview-bar" />
+                      </span>
+                      {selected ? (
+                        <span className="theme-option__check"><Check size={11} strokeWidth={3} /></span>
+                      ) : null}
+                    </span>
+                  )}
                   <span className="theme-option__label">{option.label}</span>
                 </button>
               )

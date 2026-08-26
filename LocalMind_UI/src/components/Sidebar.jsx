@@ -1,7 +1,7 @@
 import {
   Library,
   MessageSquare,
-  MoreHorizontal,
+  MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
@@ -13,24 +13,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import dayjs from 'dayjs'
-import relativeTime from 'dayjs/plugin/relativeTime'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/store.js'
-
-dayjs.extend(relativeTime)
-
-// Short relative time ("2m ago", "Yesterday") — no date-header grouping.
-// A flat, searchable-by-scanning list holds up fine at the scale this app
-// actually sees; if/when a search box gets added this is what it'd filter.
-function formatRelativeTime(iso) {
-  if (!iso) return ''
-  const d = dayjs(iso)
-  const now = dayjs()
-  if (now.diff(d, 'day') < 1 && now.isSame(d, 'day')) return d.fromNow()
-  if (now.diff(d, 'day') === 1 || (now.diff(d, 'hour') < 48 && !now.isSame(d, 'day'))) return 'Yesterday'
-  return d.fromNow()
-}
 
 function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
   const titleRef = useRef(null)
@@ -75,7 +59,6 @@ function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
             {chat.title}
           </span>
         </span>
-        <span className="chat-item__time">{formatRelativeTime(chat.updatedAt)}</span>
       </button>
 
       <div className="chat-item__actions">
@@ -85,7 +68,7 @@ function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
           aria-label={`Chat actions for ${chat.title}`}
           onClick={(e) => onToggleMenu(chat, e)}
         >
-          <MoreHorizontal size={15} />
+          <MoreVertical size={15} />
         </button>
       </div>
     </div>

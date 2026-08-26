@@ -127,7 +127,7 @@ function useTypewriterText(text, enabled) {
   return displayedText
 }
 
-export default function Message({ message, index = 0, chatId, isLast = false }) {
+export default function Message({ message, index = 0, chatId, isLast = false, hasLaterUserMessage = false }) {
   const markMessageAsSeen = useAppStore((state) => state.markMessageAsSeen)
   const setMessageFeedback = useAppStore((state) => state.setMessageFeedback)
   const regenerateMessage = useAppStore((state) => state.regenerateMessage)
@@ -159,7 +159,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
     (isAssistant && !isLoading && typedContent.length < (message.content || '').length) || isStreaming
   const feedback = message.feedback || null
   const canRegenerate = isAssistant && !isLoading && !isStreaming && isLast
-  const canEdit = !isAssistant && !loading
+  const canEdit = !isAssistant && !loading && !hasLaterUserMessage
   const versions = message.versions || []
   const activeVersion = message.activeVersion ?? Math.max(0, versions.length - 1)
   const hasVersions = versions.length > 1 && !isLoading && !isStreaming
@@ -434,15 +434,16 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
-                <button
-                  type="button"
-                  className="message__action"
-                  onClick={() => setIsEditing(true)}
-                  aria-label="Edit message"
-                  disabled={!canEdit}
-                >
-                  <PencilLine size={14} />
-                </button>
+                {canEdit ? (
+                  <button
+                    type="button"
+                    className="message__action"
+                    onClick={() => setIsEditing(true)}
+                    aria-label="Edit message"
+                  >
+                    <PencilLine size={14} />
+                  </button>
+                ) : null}
               </div>
             </>
           )}

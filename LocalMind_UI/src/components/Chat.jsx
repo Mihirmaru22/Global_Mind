@@ -17,7 +17,7 @@ export default function Chat() {
   const activeRequest = useAppStore((state) => state.activeRequest)
   const chats = useAppStore((state) => state.chats)
   const loading = useAppStore((state) => state.loading)
-  const value = draftsByChatId[activeChatId] || ''
+  const value = draftsByChatId[activeChatId || '__pending__'] || ''
   const inputRef = useRef(null)
   const bottomRef = useRef(null)
   const isGenerating = Boolean(activeRequest)
@@ -64,6 +64,7 @@ export default function Chat() {
                   message={message}
                   index={index}
                   chatId={activeChatId}
+                  hasLaterUserMessage={messages.slice(index + 1).some((entry) => entry.role === 'user')}
                   isLast={index === messages.length - 1}
                 />
               ))
