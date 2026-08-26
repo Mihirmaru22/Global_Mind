@@ -36,6 +36,7 @@ from src.utils.failure_capture import capture_sql_failure
 from src.utils.feature_flags import is_feature_enabled
 from src.utils.query_budget import QueryBudgetExceededError, get_or_create_budget_controller
 from src.utils.schema_budget import DEFAULT_SCHEMA_TOKEN_BUDGET, select_schema_within_budget
+from src.utils.stream_token_counter import TokenBudgetExceededError
 from src.utils.schema_compactor import compact_ddl, extract_join_hints
 from src.utils.schema_token_estimator import estimate_schema_tokens
 from src.utils.sql_safety import (
@@ -1713,6 +1714,42 @@ Schema:
                 return ""
 
             return sql
+        except (TokenBudgetExceededError, QueryBudgetExceededError) as budget_err:
+            err_count = getattr(budget_err, "count", budget_ctrl.get_current_usage() if budget_ctrl else 8000)
+            err_limit = getattr(budget_err, "limit", budget_ctrl.max_tokens if budget_ctrl else 8000)
+            logger.warning(
+                "Budget hit at %d tokens (limit: %d). Increasing limit by +1K and attempting compressed retry...",
+                err_count,
+                err_limit,
+            )
+            if budget_ctrl:
+                budget_ctrl.increase_limit(1000)
+
+            try:
+                compressed_prompt = (
+                    f"You are an expert SQL generator for {self._dialect.name}. "
+                    "Output ONLY the final SQL query in a ```sql ... ``` code block. "
+                    "Strictly NO explanations, NO markdown prose, NO chain-of-thought.\n\n"
+                    f"Schema:\n{schema}"
+                )
+                response = await self._router.chat(
+                    task="reasoning",
+                    messages=[
+                        {"role": "system", "content": compressed_prompt},
+                        {"role": "user", "content": query},
+                    ],
+                    max_tokens=1024,
+                )
+                raw = (response or "").strip()
+                if raw and not _ABSTAIN_RE.match(raw):
+                    _, sql = extract_cot_and_sql(raw)
+                    if sql and not _ABSTAIN_RE.match(sql):
+                        logger.info("Compressed SQL retry succeeded after token budget cutoff.")
+                        return sql
+            except Exception as retry_err:
+                logger.error("Compressed SQL retry failed after budget cutoff: %s", retry_err)
+            self.last_infra_error = "token_budget_exceeded"
+            return ""
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
             # Distinguish an infrastructure outage (every provider for the
