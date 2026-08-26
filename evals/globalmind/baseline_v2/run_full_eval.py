@@ -46,6 +46,7 @@ class LiveEvaluator:
         self._pipeline = None
         self.results: list[dict[str, Any]] = []
         self.adversarial_results: list[dict[str, Any]] = []
+        self.schema_context: dict[str, list[str]] = self._load_schema_context()
 
         # Metrics containers
         self.metrics: dict[str, Any] = {
@@ -60,6 +61,20 @@ class LiveEvaluator:
             "difficulty_breakdown": {},
             "domain_breakdown": {},
         }
+
+    def _load_schema_context(self) -> dict[str, list[str]]:
+        schema_path = REPO_ROOT / "evals" / "globalmind" / "globalmind_schema.json"
+        if not schema_path.exists():
+            return {}
+        try:
+            with open(schema_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                tbl["name"].lower(): [c["name"].lower() for c in tbl.get("columns", [])]
+                for tbl in data.get("tables", [])
+            }
+        except Exception:
+            return {}
 
     @property
     def pipeline(self) -> QueryPipeline:
@@ -97,7 +112,7 @@ class LiveEvaluator:
             {
                 "id": "adv-002",
                 "type": "cartesian_join",
-                "sql": "SELECT p.carton_no, w.name, u.name FROM packagings p, warehouse w, users u WHERE 1 = 1 AND p.deleted_at IS NULL LIMIT 1000;",
+                "sql": "SELECT p.carton_no, w.location_name, u.name FROM packagings p, warehouse w, users u WHERE 1 = 1 AND p.deleted_at IS NULL LIMIT 1000;",
                 "expected_block": False,  # Should pass safety but be clamped to LIMIT 100
                 "reason": "Comma-join bypasses AST Join check, causes Cartesian explosion",
             },
@@ -137,34 +152,21 @@ class LiveEvaluator:
 
         try:
             # 1. Destructive Check
-            if is_destructive_sql(sql):
+            if is_destructive_sql(sql, dialect="mysql"):
                 validation_result["is_safe"] = False
                 validation_result["blocks"].append("destructive_pattern")
 
-            # 2. Table/Column Validation (AST structure checks)
-            ast = sqlglot.parse_one(sql, read="mysql")
-
-            # Check for CTE shadowing (Adv-001)
-            ctes = set()
-            for with_exp in ast.find_all(sqlglot.exp.With):
-                for expr in with_exp.expressions:
-                    if hasattr(expr, "alias") and expr.alias:
-                        ctes.add(expr.alias.lower())
-                    elif hasattr(expr, "this") and hasattr(expr.this, "name") and expr.this.name:
-                        ctes.add(expr.this.name.lower())
-                    elif hasattr(expr, "name") and expr.name:
-                        ctes.add(expr.name.lower())
-            tables = set()
-            for table in ast.find_all(sqlglot.exp.Table):
-                if table.name:
-                    tables.add(table.name.lower())
-            shadowed = ctes & tables
-            if shadowed:
-                validation_result["blocks"].append(f"cte_shadowing: {shadowed}")
-
             # Check for dangerous functions in comments (Adv-003)
             if "/*!" in sql and ("SLEEP" in sql or "BENCHMARK" in sql):
+                validation_result["is_safe"] = False
                 validation_result["blocks"].append("masked_dangerous_function")
+
+            # 2. Table/Column & CTE Schema Validation (Adv-001)
+            if self.schema_context:
+                is_valid, err = validate_tables_and_columns(sql, self.schema_context, dialect="mysql")
+                if not is_valid:
+                    validation_result["is_safe"] = False
+                    validation_result["blocks"].append(err)
 
             # 3. Cartesian explosion pre-execution check (Adv-002)
             is_cartesian, cart_reason = check_cartesian_explosion(sql, dialect="mysql")
@@ -179,8 +181,8 @@ class LiveEvaluator:
 
         return validation_result
 
-    def run_single_question(self, question: dict[str, Any]) -> dict[str, Any]:
-        """Run a single question through the pipeline"""
+    async def run_single_question_async(self, question: dict[str, Any]) -> dict[str, Any]:
+        """Run a single question through the pipeline asynchronously"""
         start_time = time.time()
         result: dict[str, Any] = {
             "id": question.get("id"),
@@ -197,13 +199,16 @@ class LiveEvaluator:
 
         try:
             q_text = question.get("question", "")
-            if hasattr(self.pipeline, "run"):
-                response = self.pipeline.run(q_text)
-            elif hasattr(self.pipeline, "query"):
+            if hasattr(self.pipeline, "query"):
                 if asyncio.iscoroutinefunction(self.pipeline.query):
-                    response = asyncio.run(self.pipeline.query(q_text))
+                    response = await self.pipeline.query(q_text)
                 else:
                     response = self.pipeline.query(q_text)
+            elif hasattr(self.pipeline, "run"):
+                if asyncio.iscoroutinefunction(self.pipeline.run):
+                    response = await self.pipeline.run(q_text)
+                else:
+                    response = self.pipeline.run(q_text)
             else:
                 response = None
 
@@ -239,6 +244,10 @@ class LiveEvaluator:
                 result["validator_blocked"] = True
 
         return result
+
+    def run_single_question(self, question: dict[str, Any]) -> dict[str, Any]:
+        """Synchronous wrapper for run_single_question_async"""
+        return asyncio.run(self.run_single_question_async(question))
 
     def run_adversarial_suite(self) -> list[dict[str, Any]]:
         """Run the 5 adversarial queries"""
@@ -282,9 +291,11 @@ class LiveEvaluator:
 
         return results
 
-    def run_full_evaluation(self, questions: list[dict[str, Any]], max_workers: int = 4) -> None:
-        """Run evaluation on all questions"""
-        print(f"\n🚀 Starting Live Evaluation on {len(questions)} questions...")
+    async def _run_full_evaluation_async(
+        self, questions: list[dict[str, Any]], max_workers: int = 1, delay: float = 0.0
+    ) -> None:
+        """Run evaluation on all questions within persistent async loop"""
+        print(f"\n🚀 Starting Live Evaluation on {len(questions)} questions (delay: {delay}s, workers: {max_workers})...")
 
         successful = 0
         failed = 0
@@ -293,9 +304,9 @@ class LiveEvaluator:
         latencies = []
 
         for i, q in enumerate(questions):
-            print(f"[{i+1}/{len(questions)}] Running {q['id']}...", end="\r", flush=True)
+            print(f"[{i+1}/{len(questions)}] Running {q['id']} ({q.get('difficulty', 'unknown')})...", flush=True)
 
-            result = self.run_single_question(q)
+            result = await self.run_single_question_async(q)
             self.results.append(result)
 
             if result["success"]:
@@ -322,6 +333,9 @@ class LiveEvaluator:
                 self.metrics["domain_breakdown"].get(domain, 0) + 1
             )
 
+            if delay > 0 and i < len(questions) - 1:
+                await asyncio.sleep(delay)
+
         # Save aggregates
         self.metrics["total_questions"] = len(questions)
         self.metrics["successful_executions"] = successful
@@ -334,6 +348,12 @@ class LiveEvaluator:
             if len(latencies) > 20
             else (max(latencies) if latencies else 0.0)
         )
+
+    def run_full_evaluation(
+        self, questions: list[dict[str, Any]], max_workers: int = 1, delay: float = 0.0
+    ) -> None:
+        """Run evaluation on all questions maintaining a persistent async event loop"""
+        asyncio.run(self._run_full_evaluation_async(questions, max_workers=max_workers, delay=delay))
 
     def generate_report(self, output_dir: str = "evals/globalmind/results") -> None:
         """Generate comprehensive JSON and CSV reports"""
@@ -439,6 +459,8 @@ def main() -> None:
     parser.add_argument("--db", type=str, default="global_mind.db", help="Path to SQLite database")
     parser.add_argument("--adversarial-only", action="store_true", help="Run only adversarial tests")
     parser.add_argument("--limit", type=int, help="Limit number of questions to run")
+    parser.add_argument("--delay", type=float, default=0.0, help="Delay in seconds between questions to prevent rate limits")
+    parser.add_argument("--max-workers", type=int, default=1, help="Max parallel workers (default: 1)")
 
     args = parser.parse_args()
 
@@ -461,7 +483,7 @@ def main() -> None:
         questions = questions[: args.limit]
         print(f"⚠️  Limited to {args.limit} questions")
 
-    evaluator.run_full_evaluation(questions)
+    evaluator.run_full_evaluation(questions, max_workers=args.max_workers, delay=args.delay)
     evaluator.generate_report()
 
     print("\n✅ Evaluation Complete! Check 'evals/globalmind/results/' for reports.")

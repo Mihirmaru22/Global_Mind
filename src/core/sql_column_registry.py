@@ -16,7 +16,9 @@ extra DB round-trips.  Two validation passes:
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +27,35 @@ import sqlglot
 from sqlglot import exp
 
 logger = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GLOSSARY_PATH = REPO_ROOT / "config" / "sql_glossary.json"
+COLUMN_GLOSSARY_PATH = REPO_ROOT / "config" / "sql_column_glossary.json"
+
+_CACHED_GLOSSARY: set[str] | None = None
+
+_METRIC_WORDS = frozenset({
+    "revenue", "sales", "amount", "total", "spent", "cost", "value",
+    "turnover", "price", "count", "quantity", "qty", "sum", "avg",
+    "quoted", "billed", "invoiced", "order", "orders", "deal", "deals",
+    "lead", "leads", "inquiry", "inquiries", "successful", "converted",
+    "rejected", "active", "pending", "client", "clients", "customer",
+    "customers", "party", "parties", "batch", "batches", "carton", "cartons",
+    "apq", "production", "product", "produced", "finished", "completed",
+    "output", "target", "planned", "actual", "challan", "dispatch",
+    "dispatched", "delivered", "delivery", "stock", "inventory",
+    "available", "onhand", "balance", "moq", "status", "id", "date",
+    "created_at", "updated_at", "deleted_at", "month", "year", "quarter",
+    "rank", "row_num", "rn", "num", "min", "max", "diff", "rate", "margin",
+    "profit", "tax", "gst", "subtotal", "grand_total", "discount",
+    "no", "pct", "percent", "percentage", "share", "ratio",
+    "name", "type", "code", "desc", "description", "category",
+    "day", "week", "time", "hour", "flag", "val", "weight", "net", "gross",
+    "user", "users", "vendor", "employee", "limit", "credit",
+    "debit", "opening", "closing", "so", "po", "dc", "churn",
+    "unit", "line", "item", "seq", "level", "state", "city", "country",
+    "note", "notes", "remark", "remarks", "is", "has", "can",
+})
 
 
 @dataclass
@@ -139,6 +170,67 @@ class ColumnRegistry:
         # Build a map of alias → real table name from the query's FROM/JOIN.
         table_aliases = self._resolve_table_aliases(ast)
         
+        # Check for CTE table shadowing and extract CTE projections
+        errors: list[str] = []
+        hallucinated: list[str] = []
+        cte_projected: dict[str, set[str]] = {}
+
+        # Collect all known schema columns across all tables for CTE projection validation
+        all_schema_columns: set[str] = set()
+        for cols in self._tables.values():
+            all_schema_columns.update(cols)
+
+        for with_node in ast.find_all(exp.With):
+            for cte in with_node.expressions:
+                cte_name = (cte.alias or (cte.this.name if hasattr(cte.this, "name") else cte.this.sql())).lower().strip("`\"'[]")
+                if cte_name in self._tables:
+                    errors.append(
+                        f"CTE table shadowing: CTE '{cte_name}' shadows physical table '{cte_name}' in schema."
+                    )
+                    return ValidationResult(
+                        is_valid=False,
+                        errors=errors,
+                        hallucinated_columns=[f"{cte_name}.*"],
+                    )
+
+                # Check physical tables referenced inside CTE
+                for t_node in cte.find_all(exp.Table):
+                    t_name = (t_node.name or "").lower().strip("`\"'[]")
+                    if t_name and t_name not in self._tables and t_name not in cte_projected:
+                        errors.append(
+                            f"Table '{t_name}' referenced in CTE '{cte_name}' does not exist in schema."
+                        )
+                        hallucinated.append(t_name)
+
+                # Extract and validate columns projected by this CTE
+                cols = set()
+                for sel in cte.find_all(exp.Select):
+                    for proj in sel.expressions:
+                        proj_col = ""
+                        if isinstance(proj, exp.Alias):
+                            proj_col = (proj.alias or "").lower().strip("`\"'[]")
+                        elif isinstance(proj, exp.Column):
+                            proj_col = (proj.name or "").lower().strip("`\"'[]")
+                        elif hasattr(proj, "name") and proj.name:
+                            proj_col = str(proj.name).lower().strip("`\"'[]")
+                        elif isinstance(proj, exp.Star) or (isinstance(proj, exp.Column) and isinstance(proj.this, exp.Star)):
+                            for t_node in sel.find_all(exp.Table):
+                                t_name = (t_node.name or "").lower().strip("`\"'[]")
+                                if t_name in self._tables:
+                                    cols.update(self._tables[t_name])
+
+                        has_from = bool(list(sel.find_all(exp.Table)))
+                        should_check_projection = isinstance(proj, exp.Alias) or not has_from
+                        if proj_col and proj_col != "*":
+                            if should_check_projection and not self._is_allowed_cte_column_concept(proj_col, all_schema_columns):
+                                errors.append(
+                                    f"CTE '{cte_name}' defines hallucinated/unrecognized column '{proj_col}'. "
+                                    f"CTE projected columns must match schema columns or glossary concepts."
+                                )
+                                hallucinated.append(f"{cte_name}.{proj_col}")
+                            cols.add(proj_col)
+                cte_projected[cte_name] = cols
+
         # Collect all SELECT & projected aliases (e.g. "SELECT x AS total" or "SUM(x) AS total")
         # These are legal in ORDER BY / GROUP BY / HAVING under SQL semantics.
         select_aliases: set[str] = set()
@@ -146,9 +238,6 @@ class ColumnRegistry:
             name = (alias_node.alias or alias_node.name or "").strip().lower()
             if name:
                 select_aliases.add(name)
-
-        errors: list[str] = []
-        hallucinated: list[str] = []
 
         for col_node in ast.find_all(exp.Column):
             col_name = (col_node.name or "").strip().lower()
@@ -159,8 +248,48 @@ class ColumnRegistry:
             if col_name in select_aliases:
                 continue
 
-            # Resolve the table for this column.
             table_ref = col_node.table
+
+            # If column is inside a CTE definition, validate strictly against tables within that CTE
+            enclosing_cte = col_node.find_ancestor(exp.CTE)
+            if enclosing_cte:
+                cte_table_aliases: dict[str, str] = {}
+                for t_node in enclosing_cte.find_all(exp.Table):
+                    r_name = (t_node.name or "").lower()
+                    if t_node.alias:
+                        cte_table_aliases[t_node.alias.lower()] = r_name
+                    if r_name:
+                        cte_table_aliases[r_name] = r_name
+
+                if table_ref:
+                    real_table = cte_table_aliases.get(table_ref.lower(), table_ref.lower())
+                    known_cols = self._tables.get(real_table)
+                    if known_cols is not None and col_name.lower() not in known_cols:
+                        display_cols = self._tables_original.get(real_table, sorted(known_cols))
+                        shown = display_cols[:20]
+                        suffix = f" (+{len(display_cols) - 20} more)" if len(display_cols) > 20 else ""
+                        errors.append(
+                            f"Column '{col_name}' does not exist on table '{real_table}'. "
+                            f"Available columns: {', '.join(shown)}{suffix}"
+                        )
+                        hallucinated.append(col_name)
+                else:
+                    cte_from_tables = set(cte_table_aliases.values())
+                    if cte_from_tables:
+                        found_in_any = any(
+                            col_name.lower() in (self._tables.get(t) or set())
+                            for t in cte_from_tables
+                        )
+                        if not found_in_any:
+                            table_list = ", ".join(sorted(cte_from_tables))
+                            errors.append(
+                                f"Column '{col_name}' not found in any of the query's tables "
+                                f"({table_list}). Check spelling or qualify with table name."
+                            )
+                            hallucinated.append(col_name)
+                continue
+
+            # Outer query column validation
             if table_ref:
                 # Qualified: table.column or alias.column
                 real_table = table_aliases.get(table_ref.lower(), table_ref.lower())
@@ -175,14 +304,25 @@ class ColumnRegistry:
                         f"Available columns: {', '.join(shown)}{suffix}"
                     )
                     hallucinated.append(f"{real_table}.{col_name}")
+                elif real_table in cte_projected:
+                    known_cte_cols = cte_projected[real_table]
+                    if known_cte_cols and col_name.lower() not in known_cte_cols:
+                        errors.append(
+                            f"Column '{col_name}' does not exist on CTE '{real_table}'. "
+                            f"Available CTE columns: {', '.join(sorted(known_cte_cols))}"
+                        )
+                        hallucinated.append(f"{real_table}.{col_name}")
             else:
                 if col_name.lower() in select_aliases:
                     continue
-                # Unqualified: check against all tables in the query's FROM/JOIN.
+                # Unqualified: check against all tables in the outer query's FROM/JOIN and CTEs.
                 from_tables = set(table_aliases.values())
                 if from_tables:
                     found_in_any = any(
                         col_name.lower() in (self._tables.get(t) or set())
+                        for t in from_tables
+                    ) or any(
+                        col_name.lower() in (cte_projected.get(t) or set())
                         for t in from_tables
                     )
                     if not found_in_any:
@@ -237,6 +377,80 @@ class ColumnRegistry:
             if col_node is not parent.this:
                 return _is_known_col(parent.this)
         return False
+
+    @classmethod
+    def _get_glossary_concepts(cls) -> set[str]:
+        """Load and cache allowed glossary concepts, synonyms, and business terms."""
+        global _CACHED_GLOSSARY
+        if _CACHED_GLOSSARY is not None:
+            return _CACHED_GLOSSARY
+
+        concepts: set[str] = set()
+        if GLOSSARY_PATH.exists():
+            try:
+                data = json.loads(GLOSSARY_PATH.read_text(encoding="utf-8"))
+                for key, syns in data.items():
+                    concepts.add(key.lower())
+                    for token in re.split(r"[^a-zA-Z0-9]+", key.lower()):
+                        if token:
+                            concepts.add(token)
+                    if isinstance(syns, list):
+                        for s in syns:
+                            s_clean = str(s).strip().lower()
+                            concepts.add(s_clean)
+                            for token in re.split(r"[^a-zA-Z0-9]+", s_clean):
+                                if token:
+                                    concepts.add(token)
+            except Exception as exc:
+                logger.debug("Failed to load sql_glossary.json: %s", exc)
+
+        if COLUMN_GLOSSARY_PATH.exists():
+            try:
+                col_data = json.loads(COLUMN_GLOSSARY_PATH.read_text(encoding="utf-8"))
+                for term in col_data.keys():
+                    concepts.add(term.lower())
+                    for token in re.split(r"[^a-zA-Z0-9]+", term.lower()):
+                        if token:
+                            concepts.add(token)
+            except Exception as exc:
+                logger.debug("Failed to load sql_column_glossary.json: %s", exc)
+
+        _CACHED_GLOSSARY = concepts
+        return _CACHED_GLOSSARY
+
+    def _is_allowed_cte_column_concept(self, col_name: str, all_schema_cols: set[str]) -> bool:
+        """Check whether a projected CTE column matches schema columns, glossary concepts, or allowed metric patterns."""
+        clean_col = col_name.lower().strip("`\"'[]")
+        if not clean_col or clean_col == "*":
+            return True
+
+        if clean_col in all_schema_cols:
+            return True
+
+        if clean_col in _METRIC_WORDS:
+            return True
+
+        glossary = self._get_glossary_concepts()
+        if clean_col in glossary:
+            return True
+
+        tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", clean_col) if t]
+        if not tokens:
+            return False
+
+        for token in tokens:
+            if token.isdigit():
+                continue
+            if (
+                token in _METRIC_WORDS
+                or token in glossary
+                or token in all_schema_cols
+                or any(token in c for c in all_schema_cols if len(token) > 2)
+            ):
+                continue
+            return False
+
+        return True
 
     def _resolve_table_aliases(self, ast: exp.Expression) -> dict[str, str]:
         """Build alias → real_table_name mapping from the query's FROM/JOIN and CTEs."""
@@ -348,18 +562,6 @@ class ColumnRegistry:
                 continue
 
             # Allow legitimate financial, volume, production, and entity metric aliases
-            _METRIC_WORDS = frozenset({
-                "revenue", "sales", "amount", "total", "spent", "cost", "value",
-                "turnover", "price", "count", "quantity", "qty", "sum", "avg",
-                "quoted", "billed", "invoiced", "order", "orders", "deal", "deals",
-                "lead", "leads", "inquiry", "inquiries", "successful", "converted",
-                "rejected", "active", "pending", "client", "clients", "customer",
-                "customers", "party", "parties", "batch", "batches", "carton", "cartons",
-                "apq", "production", "product", "produced", "finished", "completed",
-                "output", "target", "planned", "actual", "challan", "dispatch",
-                "dispatched", "delivered", "delivery", "stock", "inventory",
-                "available", "onhand", "balance", "moq",
-            })
             if (alias_words & _METRIC_WORDS) and (underlying_words & _METRIC_WORDS or underlying in ("id", "apq", "qty")):
                 continue
 

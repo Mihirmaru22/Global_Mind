@@ -26,7 +26,8 @@ from src.stages.s12_s13_s14_retrieval import (
     _source_mode,
 )
 from src.stages.s12b_sql_retrieval import SQLRetriever
-from src.utils.telemetry import get_or_create_query_id, log_telemetry, timed_stage
+from src.utils.query_budget import get_or_create_budget_controller
+from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_current_query_id, timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,11 @@ class QueryPipeline:
                      resolve follow-ups into standalone queries and to keep the
                      answer coherent with the conversation.
         """
-        query_id = get_or_create_query_id()
-        logger.info("=== Query [%s]: %s ===", query_id, question[:100])
+        import uuid
+        query_id = f"gm-q-{uuid.uuid4()}"
+        set_current_query_id(query_id)
+        budget_ctrl = get_or_create_budget_controller(query_id=query_id, force_new=True)
+        logger.info("=== Query [%s] [Budget Limit: %d]: %s ===", query_id, budget_ctrl.max_tokens, question[:100])
 
         with timed_stage("final_response", query_id=query_id) as final_stage:
             # Short-circuit: "what files/documents do you have?" — answer from registry
@@ -144,7 +148,7 @@ class QueryPipeline:
             # LLM guess made before either path has run.
             sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
 
-            logger.info("[Stage 12] Retrieving vector chunks")
+            logger.info("[Tokens: %d/%d] [Stage 12] Retrieving vector chunks", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
             vector_chunks = await self._retriever.retrieve(
                 search_query,
                 top_k=settings.retrieval_top_k,
@@ -187,7 +191,7 @@ class QueryPipeline:
             if exhaustive or not vector_chunks:
                 reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
             else:
-                logger.info("[Stage 13] Reranking")
+                logger.info("[Tokens: %d/%d] [Stage 13] Reranking", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
                 reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
                 reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
             reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
@@ -207,7 +211,7 @@ class QueryPipeline:
 
             # Stage 14 — Generation (the user's original question + conversation,
             # but only when the question actually depends on it)
-            logger.info("[Stage 14] Generating answer")
+            logger.info("[Tokens: %d/%d] [Stage 14] Generating answer", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
             # Exhaustive queries keep every reranked chunk (recall matters); normal
             # queries feed only the top few into the prompt to save input tokens.
             context_limit = None if exhaustive else settings.generation_context_k
@@ -224,7 +228,14 @@ class QueryPipeline:
             result.chunks_retrieved = len(vector_chunks + sql_chunks)
             result.chunks_after_rerank = len(reranked)
 
-            logger.info("=== Query complete ===")
+            total_used = budget_ctrl.get_current_usage()
+            status_str = "Truncated" if budget_ctrl.counter.is_exceeded else "Success"
+            logger.info(
+                "Pipeline Complete | Total Tokens: %d | Limit: %d | Status: %s",
+                total_used,
+                budget_ctrl.max_tokens,
+                status_str,
+            )
             return result
 
     async def query_stream(

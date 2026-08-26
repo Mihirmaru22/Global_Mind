@@ -172,3 +172,41 @@ def test_hallucinated_double_quoted_column_flagged(sqlite_schema: str) -> None:
     assert not res3.is_valid
     assert "fake_sort_col" in res3.errors[0]
     assert "fake_sort_col" in res3.hallucinated_columns
+
+
+def test_cte_shadowing_caught_in_column_registry(sqlite_schema: str) -> None:
+    """CTE shadowing physical table in ColumnRegistry is blocked."""
+    registry = ColumnRegistry(sqlite_schema, "sqlite")
+    sql = "WITH users AS (SELECT 1 AS dummy) SELECT * FROM users"
+    result = registry.validate_columns(sql)
+    assert not result.is_valid
+    assert any("CTE table shadowing" in e for e in result.errors)
+
+
+def test_cte_hallucinated_column_caught_in_column_registry(sqlite_schema: str) -> None:
+    """CTE defining completely unrecognized columns is caught and blocked."""
+    registry = ColumnRegistry(sqlite_schema, "sqlite")
+    sql = "WITH custom_cte AS (SELECT 1 AS shadow_token, 9999.99 AS fake_credit_limit) SELECT c.shadow_token FROM custom_cte c"
+    result = registry.validate_columns(sql)
+    assert not result.is_valid
+    assert any("shadow_token" in e for e in result.errors)
+    assert "custom_cte.shadow_token" in result.hallucinated_columns
+
+
+def test_cte_valid_metric_aliases_pass_in_column_registry(sqlite_schema: str) -> None:
+    """CTE projecting valid aggregates and business metrics passes."""
+    registry = ColumnRegistry(sqlite_schema, "sqlite")
+    sql = """
+    WITH order_summary AS (
+        SELECT user_id, SUM(total_amount) AS total_spent, COUNT(id) AS order_count
+        FROM orders
+        GROUP BY user_id
+    )
+    SELECT u.name, os.total_spent, os.order_count
+    FROM users u
+    JOIN order_summary os ON u.id = os.user_id
+    """
+    result = registry.validate_columns(sql)
+    assert result.is_valid
+    assert not result.errors
+

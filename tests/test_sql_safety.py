@@ -193,3 +193,49 @@ async def test_sql_safety_pipeline_delta_repair_routing(tmp_path, monkeypatch):
 
         # Assert router was called twice (1 gen + 1 delta repair)
         assert mock_router.chat.await_count == 2
+
+
+def test_cte_table_shadowing_blocked():
+    """Test 7: CTEs that shadow physical table names are blocked."""
+    schema = {
+        "party": ["id", "party_name", "created_at"],
+        "sales_order": ["id", "party_id", "total_amount"],
+    }
+    shadow_sql = "WITH party AS (SELECT 1 AS shadow_token) SELECT * FROM party"
+    is_valid, err = validate_tables_and_columns(shadow_sql, schema)
+    assert is_valid is False
+    assert "CTE table shadowing detected" in err
+    assert "party" in err
+
+
+def test_cte_hallucinated_projected_column_blocked():
+    """Test 8: CTEs that project hallucinated/unrecognized columns not in schema or glossary are blocked."""
+    schema = {
+        "orders": ["id", "customer_id", "amount"],
+    }
+    fake_col_cte = "WITH custom_cte AS (SELECT 1 AS shadow_token, 9999.99 AS fake_credit_limit) SELECT c.shadow_token FROM custom_cte c"
+    is_valid, err = validate_tables_and_columns(fake_col_cte, schema)
+    assert is_valid is False
+    assert "hallucinated/unrecognized column" in err or "shadow_token" in err
+
+
+def test_cte_valid_projections_pass():
+    """Test 9: CTEs with valid column projections and legitimate business metric aliases pass."""
+    schema = {
+        "customers": ["id", "name"],
+        "orders": ["id", "customer_id", "amount", "created_at"],
+    }
+    valid_cte = """
+    WITH customer_spending AS (
+        SELECT customer_id, SUM(amount) AS total_revenue, COUNT(id) AS order_count
+        FROM orders
+        GROUP BY customer_id
+    )
+    SELECT c.name, cs.total_revenue, cs.order_count
+    FROM customers c
+    JOIN customer_spending cs ON c.id = cs.customer_id
+    """
+    is_valid, err = validate_tables_and_columns(valid_cte, schema)
+    assert is_valid is True
+    assert err == ""
+

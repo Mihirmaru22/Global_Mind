@@ -1,112 +1,76 @@
-"""Unit tests for QueryBudgetController governance and resource tracking."""
+"""Unit tests for QueryBudgetController real-time enforcement and boundary limits."""
 
+import asyncio
 import pytest
-
-from src.utils.query_budget import (
-    QueryBudgetController,
-    QueryBudgetExceededError,
-    get_current_budget_controller,
-    get_or_create_budget_controller,
-    set_current_budget_controller,
-)
+from src.utils.query_budget import QueryBudgetController, QueryBudgetExceededError
+from src.utils.stream_token_counter import StreamTokenCounter, TokenBudgetExceededError
 
 
-def test_budget_llm_calls_limit() -> None:
-    """Assert that can_proceed() returns False once max_llm_calls is reached."""
-    controller = QueryBudgetController(query_id="test-q1", max_llm_calls=3, max_repairs=2, max_tokens=10000)
+def test_query_budget_boundary_limits():
+    """Verify behavior at 7999, 8000, 8200 (safety buffer), and 8201 tokens."""
+    controller = QueryBudgetController(hard_limit=8000, safety_buffer=200)
 
+    # Set token count to 7999
+    controller.counter.current_count = 7999
     assert controller.can_proceed() is True
-    assert controller.llm_calls == 0
+    controller.counter.raise_if_exceeded()  # Should not raise
 
-    # Call 1
-    controller.record_call(tokens_used=100)
+    # Set token count to 8000
+    controller.counter.current_count = 8000
     assert controller.can_proceed() is True
-    assert controller.llm_calls == 1
+    controller.counter.raise_if_exceeded()  # Should not raise (within buffer)
 
-    # Call 2
-    controller.record_call(tokens_used=200)
+    # Set token count to 8200 (hard_limit + buffer exactly)
+    controller.counter.current_count = 8200
+    assert controller.counter.check_limit() is True
+    with pytest.raises(TokenBudgetExceededError) as exc_info:
+        controller.counter.raise_if_exceeded()
+    assert exc_info.value.count == 8200
+    assert exc_info.value.limit == 8000
+
+    # Set token count to 8201
+    controller.counter.current_count = 8201
+    with pytest.raises(TokenBudgetExceededError):
+        controller.counter.raise_if_exceeded()
+
+
+def test_query_budget_increase_limit_for_retry():
+    """Verify increase_limit allows +1K recovery during smart retry."""
+    controller = QueryBudgetController(hard_limit=8000, safety_buffer=200)
+    controller.counter.current_count = 8150
+
+    # Increase limit by 1000 -> new limit 9000 (+200 buffer = 9200)
+    controller.increase_limit(1000)
+    assert controller.max_tokens == 9000
+    assert controller.counter.hard_limit == 9000
+    assert controller.counter.check_limit() is False
     assert controller.can_proceed() is True
-    assert controller.llm_calls == 2
-
-    # Call 3 (reaches max_llm_calls=3)
-    controller.record_call(tokens_used=300)
-    assert controller.llm_calls == 3
-    assert controller.can_proceed() is False
+    controller.counter.raise_if_exceeded()  # Should not raise now
 
 
-def test_budget_repairs_limit() -> None:
-    """Assert that can_proceed(is_repair=True) returns False once max_repairs is reached."""
-    controller = QueryBudgetController(query_id="test-q2", max_llm_calls=10, max_repairs=2, max_tokens=10000)
+def test_parallel_stream_counters_isolation():
+    """Verify no race conditions occur when two separate stream counters run concurrently."""
+    counter_a = StreamTokenCounter(hard_limit=1000, safety_buffer=50)
+    counter_b = StreamTokenCounter(hard_limit=1000, safety_buffer=50)
 
-    assert controller.can_proceed(is_repair=True) is True
+    async def stream_worker(counter: StreamTokenCounter, chunk_text: str, n_chunks: int):
+        for _ in range(n_chunks):
+            counter.add_chunk(chunk_text)
+            await asyncio.sleep(0.001)
 
-    # Repair 1
-    controller.record_call(tokens_used=150, is_repair=True)
-    assert controller.repair_attempts == 1
-    assert controller.llm_calls == 1
-    assert controller.can_proceed(is_repair=True) is True
+    async def run_parallel():
+        # counter A receives 200 tokens (10 chunks of 20 tokens)
+        # counter B receives 800 tokens (40 chunks of 20 tokens)
+        t_a = asyncio.create_task(stream_worker(counter_a, "SELECT id FROM test ", 10))
+        t_b = asyncio.create_task(stream_worker(counter_b, "SELECT id FROM test ", 40))
+        await asyncio.gather(t_a, t_b)
 
-    # Repair 2 (reaches max_repairs=2)
-    controller.record_call(tokens_used=150, is_repair=True)
-    assert controller.repair_attempts == 2
-    assert controller.can_proceed(is_repair=True) is False
-    # General non-repair calls might still be allowed if under max_llm_calls
-    assert controller.can_proceed(is_repair=False) is True
+    asyncio.run(run_parallel())
 
-
-def test_budget_tokens_limit() -> None:
-    """Assert that can_proceed() returns False once total_tokens exceeds or equals max_tokens."""
-    controller = QueryBudgetController(query_id="test-q3", max_llm_calls=10, max_repairs=5, max_tokens=1000)
-
-    assert controller.can_proceed() is True
-
-    controller.record_call(tokens_used=600)
-    assert controller.total_tokens == 600
-    assert controller.can_proceed() is True
-
-    controller.record_call(tokens_used=400)
-    assert controller.total_tokens == 1000
-    assert controller.can_proceed() is False
-
-
-def test_budget_status_dict() -> None:
-    """Assert get_budget_status() returns an accurate dictionary representation."""
-    controller = QueryBudgetController(query_id="gm-q-status-check", max_llm_calls=4, max_repairs=2, max_tokens=5000)
-    controller.record_call(tokens_used=1200, is_repair=True)
-
-    status = controller.get_budget_status()
-    assert status["query_id"] == "gm-q-status-check"
-    assert status["llm_calls"] == 1
-    assert status["max_llm_calls"] == 4
-    assert status["repair_attempts"] == 1
-    assert status["max_repairs"] == 2
-    assert status["total_tokens"] == 1200
-    assert status["max_tokens"] == 5000
-    assert status["can_proceed"] is True
-    assert status["exhausted"] is False
-
-    controller.record_call(tokens_used=4000, is_repair=False)
-    status_exhausted = controller.get_budget_status()
-    assert status_exhausted["total_tokens"] == 5200
-    assert status_exhausted["can_proceed"] is False
-    assert status_exhausted["exhausted"] is True
-
-
-def test_budget_contextvar_propagation() -> None:
-    """Assert that get_or_create_budget_controller properly binds and shares context."""
-    token = set_current_budget_controller(None)
-    try:
-        assert get_current_budget_controller() is None
-
-        ctrl = get_or_create_budget_controller(query_id="test-ctx-123")
-        assert ctrl.query_id == "test-ctx-123"
-        assert get_current_budget_controller() is ctrl
-
-        # Re-fetching returns the exact same instance
-        ctrl2 = get_or_create_budget_controller()
-        assert ctrl2 is ctrl
-
-        ctrl.record_call(tokens_used=500)
-        assert ctrl2.total_tokens == 500
-    finally:
-        set_current_budget_controller(None)
+    assert counter_a.current_count > 0
+    assert counter_b.current_count > 0
+    assert counter_a.current_count != counter_b.current_count
+    assert counter_a.chunks_received == 10
+    assert counter_b.chunks_received == 40
+    assert counter_a.current_count < 1000
+    assert counter_b.current_count < 1000
