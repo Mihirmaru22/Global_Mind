@@ -46,6 +46,7 @@ class LiveEvaluator:
         self._pipeline = None
         self.results: list[dict[str, Any]] = []
         self.adversarial_results: list[dict[str, Any]] = []
+        self.schema_context: dict[str, list[str]] = self._load_schema_context()
 
         # Metrics containers
         self.metrics: dict[str, Any] = {
@@ -60,6 +61,20 @@ class LiveEvaluator:
             "difficulty_breakdown": {},
             "domain_breakdown": {},
         }
+
+    def _load_schema_context(self) -> dict[str, list[str]]:
+        schema_path = REPO_ROOT / "evals" / "globalmind" / "globalmind_schema.json"
+        if not schema_path.exists():
+            return {}
+        try:
+            with open(schema_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                tbl["name"].lower(): [c["name"].lower() for c in tbl.get("columns", [])]
+                for tbl in data.get("tables", [])
+            }
+        except Exception:
+            return {}
 
     @property
     def pipeline(self) -> QueryPipeline:
@@ -97,7 +112,7 @@ class LiveEvaluator:
             {
                 "id": "adv-002",
                 "type": "cartesian_join",
-                "sql": "SELECT p.carton_no, w.name, u.name FROM packagings p, warehouse w, users u WHERE 1 = 1 AND p.deleted_at IS NULL LIMIT 1000;",
+                "sql": "SELECT p.carton_no, w.location_name, u.name FROM packagings p, warehouse w, users u WHERE 1 = 1 AND p.deleted_at IS NULL LIMIT 1000;",
                 "expected_block": False,  # Should pass safety but be clamped to LIMIT 100
                 "reason": "Comma-join bypasses AST Join check, causes Cartesian explosion",
             },
@@ -137,34 +152,21 @@ class LiveEvaluator:
 
         try:
             # 1. Destructive Check
-            if is_destructive_sql(sql):
+            if is_destructive_sql(sql, dialect="mysql"):
                 validation_result["is_safe"] = False
                 validation_result["blocks"].append("destructive_pattern")
 
-            # 2. Table/Column Validation (AST structure checks)
-            ast = sqlglot.parse_one(sql, read="mysql")
-
-            # Check for CTE shadowing (Adv-001)
-            ctes = set()
-            for with_exp in ast.find_all(sqlglot.exp.With):
-                for expr in with_exp.expressions:
-                    if hasattr(expr, "alias") and expr.alias:
-                        ctes.add(expr.alias.lower())
-                    elif hasattr(expr, "this") and hasattr(expr.this, "name") and expr.this.name:
-                        ctes.add(expr.this.name.lower())
-                    elif hasattr(expr, "name") and expr.name:
-                        ctes.add(expr.name.lower())
-            tables = set()
-            for table in ast.find_all(sqlglot.exp.Table):
-                if table.name:
-                    tables.add(table.name.lower())
-            shadowed = ctes & tables
-            if shadowed:
-                validation_result["blocks"].append(f"cte_shadowing: {shadowed}")
-
             # Check for dangerous functions in comments (Adv-003)
             if "/*!" in sql and ("SLEEP" in sql or "BENCHMARK" in sql):
+                validation_result["is_safe"] = False
                 validation_result["blocks"].append("masked_dangerous_function")
+
+            # 2. Table/Column & CTE Schema Validation (Adv-001)
+            if self.schema_context:
+                is_valid, err = validate_tables_and_columns(sql, self.schema_context, dialect="mysql")
+                if not is_valid:
+                    validation_result["is_safe"] = False
+                    validation_result["blocks"].append(err)
 
             # 3. Cartesian explosion pre-execution check (Adv-002)
             is_cartesian, cart_reason = check_cartesian_explosion(sql, dialect="mysql")
@@ -293,7 +295,7 @@ class LiveEvaluator:
         latencies = []
 
         for i, q in enumerate(questions):
-            print(f"[{i+1}/{len(questions)}] Running {q['id']}...", end="\r", flush=True)
+            print(f"[{i+1}/{len(questions)}] Running {q['id']} ({q.get('difficulty', 'unknown')})...", flush=True)
 
             result = self.run_single_question(q)
             self.results.append(result)
