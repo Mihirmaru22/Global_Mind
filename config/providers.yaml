@@ -78,35 +78,26 @@ tasks:
   general_qa:
     providers:
       - provider: groq
-        model: openai/gpt-oss-120b
+        model: qwen/qwen3.6-27b
         priority: 1
       - provider: groq
         model: openai/gpt-oss-20b
         priority: 2
-      - provider: nvidia_nim
-        model: meta/llama-3.3-70b-instruct
+      - provider: openrouter
+        model: meta-llama/llama-3.3-70b-instruct:free
         priority: 3
-      - provider: gemini
-        model: gemini-2.5-flash
-        priority: 4
 
   reasoning:
     providers:
       - provider: groq
-        model: openai/gpt-oss-120b
+        model: qwen/qwen3.6-27b
         priority: 1
       - provider: groq
         model: openai/gpt-oss-20b
         priority: 2
-      - provider: nvidia_nim
-        model: meta/llama-3.3-70b-instruct
-        priority: 3
-      - provider: gemini
-        model: gemini-2.5-flash
-        priority: 4
       - provider: openrouter
         model: meta-llama/llama-3.3-70b-instruct:free
-        priority: 5
+        priority: 3
 
   extraction:
     providers:
@@ -153,32 +144,26 @@ tasks:
   repair:
     providers:
       - provider: groq
-        model: openai/gpt-oss-120b
+        model: qwen/qwen3.6-27b
         priority: 1
-      - provider: nvidia_nim
-        model: meta/llama-3.3-70b-instruct
+      - provider: groq
+        model: openai/gpt-oss-20b
         priority: 2
-      - provider: gemini
-        model: gemini-2.5-flash
-        priority: 3
       - provider: openrouter
         model: meta-llama/llama-3.3-70b-instruct:free
-        priority: 4
+        priority: 3
 
   synthesis:
     providers:
       - provider: groq
-        model: openai/gpt-oss-120b
+        model: qwen/qwen3.6-27b
         priority: 1
-      - provider: gemini
-        model: gemini-2.5-flash
+      - provider: groq
+        model: openai/gpt-oss-20b
         priority: 2
-      - provider: nvidia_nim
-        model: meta/llama-3.3-70b-instruct
-        priority: 3
       - provider: openrouter
         model: meta-llama/llama-3.3-70b-instruct:free
-        priority: 4
+        priority: 3
 
   micro_synthesis:
     providers:

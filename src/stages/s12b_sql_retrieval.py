@@ -132,19 +132,40 @@ def _unwrap_sql(text: str) -> str:
 
 
 def extract_cot_and_sql(text: str) -> tuple[str, str]:
-    """Separates the structured Chain-of-Thought (CoT) plan (Phases 1 & 2) from the final SQL block (Phase 3)."""
+    """Separates structured metadata / CoT from the final SQL statement (supports JSON & Markdown)."""
     cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
     target = cleaned if cleaned else text.strip()
+
+    # 1. Try parsing direct or embedded JSON format
+    if (target.startswith("{") and target.endswith("}")) or ("\"sql\"" in target):
+        try:
+            data = json.loads(target)
+            if isinstance(data, dict) and "sql" in data and data["sql"]:
+                return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
+        except Exception:
+            json_match = re.search(r"\{.*\"sql\"\s*:\s*\"([^\"]+)\".*\}", target, re.DOTALL)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group(0))
+                    if isinstance(data, dict) and "sql" in data and data["sql"]:
+                        return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
+                except Exception:
+                    pass
+
+    # 2. Try markdown ```sql ... ``` block
     m = _FENCE_RE.search(target)
     if m and m.group(1).strip():
         sql = m.group(1).strip()
         cot = target[:m.start()].strip()
         return cot, sql
+
+    # 3. Try finding starting SQL keyword
     km = _SQL_START_RE.search(target)
-    if km and km.start() > 0:
+    if km and km.start() >= 0:
         cot = target[:km.start()].strip()
         sql = target[km.start():].strip()
         return cot, sql
+
     return "", target
 
 
@@ -1603,62 +1624,39 @@ class SQLRetriever:
         )
         
         schema_tables = _extract_schema_table_names(schema)
-        scoped_relationships = _format_scoped_relationships(schema_tables, query)
-        rel_text = scoped_relationships or (self._relationships if hasattr(self, "_relationships") and self._relationships else "")
         behavioral_atlas_text = _build_behavioral_atlas_for_query(schema_tables, query)
         column_glossary = _build_column_glossary_for_query(query)
 
-        system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent. Your goal is to translate informal layman business questions into precise, executable, read-only {self._dialect.name} queries by applying first-principles reasoning.
+        system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent for {self._dialect.name}.
+Your goal is to translate the business question into a valid, executable, read-only {self._dialect.name} SELECT query.
 
-You MUST follow this 4-Phase process:
+Respond with valid JSON:
+{{
+  "intent": "summary_of_intent",
+  "tables": ["table1"],
+  "joins": [],
+  "filters": ["status = 'Y'", "deleted_at IS NULL"],
+  "sql": "SELECT COUNT(id) AS total_customers FROM party WHERE status = 'Y' AND deleted_at IS NULL;"
+}}
 
-### PHASE 1: INTENT DECOMPOSITION & BEHAVIORAL RULE APPLICATION
-Analyze the user's question and decompose it:
-- **Metrics:** Quantitative value(s) requested.
-- **Dimensions:** Attributes to group/breakdown by.
-- **Filters:** Constraints to apply (time, status).
-- **Aggregation:** Mathematical functions needed (SUM, AVG, COUNT, MIN, MAX).
-- **Sorting/Limiting:** Top/bottom result requirements.
+Rules:
+- Read-Only: SELECT statements only. If the schema cannot answer, respond with exactly NO_SQL.
+- Soft Delete: Filter out soft-deleted records (WHERE alias.deleted_at IS NULL) on all tables with a deleted_at column.
+- Casting: Use CAST(col AS DECIMAL(10,2)) for numeric operations on VARCHAR columns (e.g. stock.qty).
+- Aliases: Use descriptive aliases (e.g. AS customer_name, AS total_revenue). Never return raw IDs without names.
+- Status Flags: Active='Y', Inactive='N'. Stock booked='B', dispatched='D'.
+- Customer vs Supplier: In party table, join to sales_order for Customers, or purchase for Suppliers.
+- Current Date: {current_date_str} (Use for relative date calculations like 'this year', 'last month').
 
-**Implicit Business Rule Application:**
-Review the Behavioral Schema Atlas below and apply all required rules:
-- **Soft Delete:** Confirm `alias.deleted_at IS NULL` for every table with soft deletes.
-- **Type Casting:** Identify any VARCHAR columns requiring `CAST(... AS DECIMAL(10,2))` before math/aggregation.
-- **Enum Translation:** Map layman terms to exact database enums (e.g., 'Pending', 'Y', 'B').
-- **Polymorphic Handling:** If querying `party`, specify if joined to `sales_order` (Customer) or `purchase` (Supplier).
-
-### PHASE 2: CHAIN-OF-THOUGHT (CoT) PLAN GENERATION
-Write a concise step-by-step plan:
-- **Proposed Join Graph:** Sequence of table joins and reasoning (e.g., why LEFT JOIN vs INNER JOIN for sparse `stock`).
-- **Final Filter Set:** Exact WHERE and HAVING conditions.
-- **Final Metric Calculation:** Exact formulas for metrics (e.g., SUM(CAST(sop.qty AS DECIMAL(10,2)) * p.rate)).
-
-### PHASE 3: SQL CODE GENERATION
-Output the final SQL in a ```sql ... ``` code block.
-- **Dialect:** {self._dialect.name}.
-- **Read-Only:** SELECT statements only. NO INSERT, UPDATE, DELETE, DROP.
-- **No Hallucinations:** ONLY use tables and columns present in the schema.
-- **Aliases:** Use descriptive aliases (e.g., AS total_revenue, AS customer_name).
-- If nothing in this schema can answer ANY part of the question, respond with exactly NO_SQL.
-
-### PHASE 4: CONTEXTUAL KNOWLEDGE BASE
-Current System Date: {current_date_str} (Use this for ALL relative date calculations like 'last month', 'this year')
 {intent_section}
 Schema:
 {schema}
 """
-        if rel_text:
-            system_prompt += (
-                "\n\nTable relationships (this database has NO foreign-key "
-                "constraints — use ONLY these join paths, and never join on or "
-                "select a column that a table's schema above does not list):\n"
-                f"{rel_text}\n"
-            )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
         if behavioral_atlas_text:
             system_prompt += (
-                "\n\n=== BEHAVIORAL SCHEMA ATLAS & COGNITIVE ONTOLOGY (STRICT RULES) ===\n"
+                "\n\n=== BEHAVIORAL SCHEMA ATLAS & COGNITIVE ONTOLOGY ===\n"
                 f"{behavioral_atlas_text}"
             )
 
@@ -1669,18 +1667,16 @@ Schema:
             )
         if self._dialect.date_functions:
             system_prompt += (
-                f"\n\nDate/time syntax for {self._dialect.name} "
-                "(use these exact forms for relative dates like 'last month', 'this year'):\n"
+                f"\n\nDate/time syntax for {self._dialect.name}:\n"
                 f"{self._dialect.date_functions}"
             )
         if hasattr(self, "_pattern_learner") and self._pattern_learner:
             learned_patterns = self._pattern_learner.get_patterns_for_query(query)
             if learned_patterns:
-                pattern_text = "\n".join(
-                    f"- Scenario: {p.business_scenario}\n  Reasoning: {p.cot_reasoning_snippet}\n  Template: `{p.sql_structure_template}`"
-                    for p in learned_patterns
-                )
-                system_prompt += f"\n\n=== RELEVANT LEARNED SQL PATTERNS ===\n{pattern_text}"
+                # SlimSQL Task 4: Cap to top 1 canonical pattern to minimize tokens
+                pattern = learned_patterns[0]
+                pattern_text = f"- Scenario: {pattern.business_scenario}\n  Reasoning: {pattern.cot_reasoning_snippet}\n  Template: `{pattern.sql_structure_template}`"
+                system_prompt += f"\n\n=== RELEVANT LEARNED SQL PATTERN ===\n{pattern_text}"
 
         if last_error:
             system_prompt += f"\n\nWARNING: Your previous attempt failed with this error: {last_error}\nPlease fix the SQL query and try again."
@@ -1707,11 +1703,31 @@ Schema:
             if _ABSTAIN_RE.match(raw):
                 return ""
 
-            # Extract both CoT trace and clean SQL
+            # Extract structured plan and clean SQL
             cot_plan, sql = extract_cot_and_sql(raw)
             self.last_cot_plan = cot_plan
             if not sql or _ABSTAIN_RE.match(sql):
                 return ""
+
+            # Safeguard 2: Join Complexity Heuristic Check (Quality Gate)
+            try:
+                ast_check = sqlglot.parse_one(sql, read=self._dialect.sqlglot_dialect)
+                tables_in_sql = list(ast_check.find_all(exp.Table))
+                if len(tables_in_sql) >= 3:
+                    for join_node in ast_check.find_all(exp.Join):
+                        if not join_node.args.get("on") and not join_node.args.get("using"):
+                            logger.warning("Multi-table query missing ON condition in JOIN — routing to Delta Repair.")
+                            repaired = await attempt_delta_repair(
+                                sql=sql,
+                                error_message="Multi-table join missing explicit ON condition connecting tables.",
+                                schema=schema,
+                                dialect=self._dialect.name,
+                                router=self._router,
+                            )
+                            if repaired:
+                                return repaired
+            except Exception as ast_e:
+                logger.debug("AST join check passed/skipped: %s", ast_e)
 
             return sql
         except (TokenBudgetExceededError, QueryBudgetExceededError) as budget_err:
