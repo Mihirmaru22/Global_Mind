@@ -173,15 +173,12 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
   useEffect(() => {
     if (!isEditing) return undefined
     const frame = window.requestAnimationFrame(() => {
-      const el = editRef.current
-      if (!el) return
-      el.focus()
-      const endPos = el.value.length
-      el.setSelectionRange?.(endPos, endPos)
+      editRef.current?.focus()
+      editRef.current?.setSelectionRange?.(draft.length, draft.length)
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [isEditing])
+  }, [draft.length, isEditing])
 
   useEffect(
     () => () => {

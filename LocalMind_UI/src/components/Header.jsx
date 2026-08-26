@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, FileText, Loader2, Menu, PanelLeftOpen, Sparkles } from 'lucide-react'
+import { Download, FileText, Loader2, Menu, Sparkles } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
@@ -10,8 +10,6 @@ import { exportChatTranscript, exportProfessionalDocument } from '../utils/pdfEx
 export default function Header() {
   const location = useLocation()
   const toggleSidebar = useAppStore((state) => state.toggleSidebar)
-  const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const activeChatId = useAppStore((state) => state.activeChatId)
   const chats = useAppStore((state) => state.chats)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
@@ -75,12 +73,19 @@ export default function Header() {
         >
           <Menu size={18} />
         </Button>
+
+        {isChatRoute ? (
+          <div className="header__chat-identity">
+            <span className="header__chat-title">{activeChat?.title || 'New chat'}</span>
+          </div>
+        ) : null}
       </div>
 
+      {/* Export button pinned to the RIGHT corner of the header */}
       {isChatRoute ? (
         <div className="header__actions" ref={menuRef}>
           <button
-            className="icon-button"
+            className="icon-button header__export-trigger"
             type="button"
             aria-label="Export as PDF"
             aria-haspopup="menu"
@@ -88,11 +93,11 @@ export default function Header() {
             onClick={() => setMenuOpen((v) => !v)}
             disabled={!canExport || busy}
           >
-            {busy ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
+            {busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />}
           </button>
 
           {menuOpen ? (
-            <div className="export-menu" role="menu">
+            <div className="export-menu export-menu--left" role="menu">
               <button type="button" className="export-menu__item" role="menuitem" onClick={handleTranscript}>
                 <FileText size={16} />
                 <span>
