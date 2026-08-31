@@ -291,6 +291,9 @@ class OpenAICompatibleProvider:
                 response = await client.chat.completions.create(**kwargs)
                 if usage is not None:
                     _apply_openai_usage(usage, getattr(response, "usage", None), provider=self._name, model=model)
+                # Proactive round-robin: advance to next key for the next call
+                if len(self._api_keys) > 1:
+                    self._current_key_idx = (self._current_key_idx + 1) % len(self._api_keys)
                 return response.choices[0].message.content or ""
             except Exception as e:
                 last_exc = e
@@ -319,6 +322,8 @@ class OpenAICompatibleProvider:
     ) -> AsyncGenerator[str, None]:
         await self._rate_limiter.acquire(self._name)
         client = self._get_client()
+        if len(self._api_keys) > 1:
+            self._current_key_idx = (self._current_key_idx + 1) % len(self._api_keys)
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,

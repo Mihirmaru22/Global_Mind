@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
 import InputBox from './InputBox.jsx'
@@ -21,6 +21,24 @@ export default function Chat() {
   const inputRef = useRef(null)
   const bottomRef = useRef(null)
   const isGenerating = Boolean(activeRequest)
+  const [cooldown, setCooldown] = useState(0)
+  const prevGeneratingRef = useRef(isGenerating)
+
+  useEffect(() => {
+    // When generation completes, trigger 3s rate-protection cooldown
+    if (prevGeneratingRef.current && !isGenerating) {
+      setCooldown(3)
+    }
+    prevGeneratingRef.current = isGenerating
+  }, [isGenerating])
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = setTimeout(() => {
+      setCooldown((prev) => Math.max(0, prev - 1))
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [cooldown])
 
   const messages = useMemo(
     () => messagesByChatId[activeChatId] || [],
@@ -119,6 +137,7 @@ export default function Chat() {
           }}
           loading={isGenerating}
           disabled={isGenerating}
+          cooldown={cooldown}
           footer={<ProviderStatus />}
         />
       </div>
