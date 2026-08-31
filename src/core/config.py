@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -17,8 +17,23 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 
 
+class FeaturesConfig(BaseModel):
+    """Feature flags governing experimental SQL pipeline optimizations."""
+
+    delta_repair_enabled: bool = False
+    token_budget_enabled: bool = False
+    schema_compaction_enabled: bool = False
+    sql_safety_enabled: bool = False
+    zero_row_handling_enabled: bool = False
+    fast_path_enabled: bool = False
+    provider_routing_v2_enabled: bool = False
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    # --- Feature flags ---
+    features: FeaturesConfig = Field(default_factory=lambda: load_features_config())
 
     # --- Provider API keys ---
     gemini_api_key: str = ""
@@ -151,6 +166,22 @@ class Settings(BaseSettings):
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.auto_ingest_dir.mkdir(parents=True, exist_ok=True)
+
+
+def load_features_config() -> FeaturesConfig:
+    """Load feature flags from config/features.yaml if present."""
+    features_path = CONFIG_DIR / "features.yaml"
+    if not features_path.exists():
+        return FeaturesConfig()
+    try:
+        with open(features_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+            raw_features = data.get("features", data)
+            if isinstance(raw_features, dict):
+                return FeaturesConfig(**raw_features)
+    except Exception as e:
+        logger.warning("Failed to parse features.yaml at %s: %s — using defaults", features_path, e)
+    return FeaturesConfig()
 
 
 def load_provider_config() -> dict[str, Any]:

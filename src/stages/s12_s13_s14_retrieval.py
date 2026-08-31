@@ -23,6 +23,19 @@ from src.core.rate_limiter import RateLimiter, get_shared_rate_limiter
 from src.models.schemas import Citation, Chunk, ChunkType, QueryResult, RetrievedChunk
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
+from src.utils.fast_path import (
+    build_aggregate_micro_prompt,
+    format_aggregate_fast_path,
+    format_list_fast_path,
+)
+from src.utils.feature_flags import is_feature_enabled
+from src.utils.query_classifier import (
+    AGGREGATE_QUERY,
+    EXPLANATION_QUERY,
+    LIST_QUERY,
+    classify_query_intent,
+)
+from src.utils.telemetry import log_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +263,66 @@ class Generator:
         context_chunks = _limit_context_chunks(chunks, context_limit)
         sql_table_md = _extract_sql_table(context_chunks)
         has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
-        if sql_table_md and not has_other_chunks:
+
+        # Fast Path Execution & Synthesis Bypass (Phase 12: gated behind fast_path_enabled)
+        if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
+            is_empty_or_error = (
+                "0 matching records" in sql_table_md
+                or "No matching records" in sql_table_md
+                or "An error occurred" in sql_table_md
+            )
+            if not is_empty_or_error:
+                intent = classify_query_intent(query)
+                if intent == LIST_QUERY:
+                    # 1. Bypass synthesis entirely (0 tokens)
+                    answer = format_list_fast_path(sql_table_md)
+                    log_telemetry(
+                        query_id="",
+                        stage="synthesis_bypassed",
+                        output_tokens=0,
+                        extra={"intent": LIST_QUERY, "bypassed": True},
+                    )
+                    return QueryResult(
+                        query=query,
+                        answer=answer,
+                        citations=[],
+                        model_used="fast_path/list",
+                        reasoning_task=task,
+                        chunks_retrieved=len(chunks),
+                        chunks_after_rerank=len(chunks),
+                        usage=self._router.usage.model_copy(),
+                    )
+                elif intent == AGGREGATE_QUERY:
+                    # 2. Micro-synthesis prompt (max 150 tokens)
+                    try:
+                        messages = build_aggregate_micro_prompt(query, sql_table_md)
+                        summary = await self._router.chat(task="micro_synthesis", messages=messages, max_tokens=150)
+                        answer = format_aggregate_fast_path(summary, sql_table_md)
+                        log_telemetry(
+                            query_id="",
+                            stage="micro_synthesis",
+                            extra={"intent": AGGREGATE_QUERY, "max_tokens": 150},
+                        )
+                        return QueryResult(
+                            query=query,
+                            answer=answer,
+                            citations=[],
+                            model_used="fast_path/aggregate",
+                            reasoning_task="micro_synthesis",
+                            chunks_retrieved=len(chunks),
+                            chunks_after_rerank=len(chunks),
+                            usage=self._router.usage.model_copy(),
+                        )
+                    except Exception as err:
+                        logger.warning("Micro-synthesis failed, falling back to full synthesis: %s", err)
+                elif intent == EXPLANATION_QUERY:
+                    log_telemetry(
+                        query_id="",
+                        stage="full_synthesis",
+                        extra={"intent": EXPLANATION_QUERY},
+                    )
+
+        if sql_table_md and not has_other_chunks and not is_feature_enabled("fast_path_enabled"):
             return QueryResult(
                 query=query,
                 answer=sql_table_md,
@@ -274,10 +346,12 @@ class Generator:
 
 Question: {query}"""
 
+        chat_task = "synthesis" if is_feature_enabled("provider_routing_v2_enabled") else (task or "synthesis")
+
         # Generate — recent conversation turns go between the system prompt and
         # the grounded question so follow-ups stay coherent.
         response = await self._router.chat(
-            task,
+            task=chat_task,
             messages=[
                 {"role": "system", "content": system_prompt},
                 *_history_messages(history),
@@ -298,7 +372,7 @@ Question: {query}"""
             # The actual provider/model that answered (after any fallback), not
             # the task label — so provider selection and the "answered using"
             # trace show real information.
-            model_used=self._router.last_used or task,
+            model_used=self._router.last_used or chat_task,
             reasoning_task=task,
             chunks_retrieved=len(chunks),
             chunks_after_rerank=len(chunks),
@@ -344,7 +418,51 @@ Question: {query}"""
         context_chunks = _limit_context_chunks(chunks, context_limit)
         sql_table_md = _extract_sql_table(context_chunks)
         has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
-        if sql_table_md and not has_other_chunks:
+
+        # Fast Path Streaming Routing
+        if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
+            is_empty_or_error = (
+                "0 matching records" in sql_table_md
+                or "No matching records" in sql_table_md
+                or "An error occurred" in sql_table_md
+            )
+            if not is_empty_or_error:
+                intent = classify_query_intent(query)
+                if intent == LIST_QUERY:
+                    answer = format_list_fast_path(sql_table_md)
+                    yield answer
+                    yield QueryResult(
+                        query=query,
+                        answer=answer,
+                        citations=[],
+                        model_used="fast_path/list",
+                        reasoning_task=task,
+                        chunks_retrieved=len(chunks),
+                        chunks_after_rerank=len(chunks),
+                        usage=self._router.usage.model_copy(),
+                    )
+                    return
+                elif intent == AGGREGATE_QUERY:
+                    try:
+                        messages = build_aggregate_micro_prompt(query, sql_table_md)
+                        summary = await self._router.chat(task="micro_synthesis", messages=messages, max_tokens=150)
+                        answer = format_aggregate_fast_path(summary, sql_table_md)
+                        yield answer
+                        yield QueryResult(
+                            query=query,
+                            answer=answer,
+                            citations=[],
+                            model_used="fast_path/aggregate",
+                            reasoning_task="micro_synthesis",
+                            chunks_retrieved=len(chunks),
+                            chunks_after_rerank=len(chunks),
+                            usage=self._router.usage.model_copy(),
+                        )
+                        return
+                    except Exception as err:
+                        logger.warning("Streaming micro-synthesis failed, falling back: %s", err)
+
+        if sql_table_md and not has_other_chunks and not is_feature_enabled("fast_path_enabled"):
             yield sql_table_md
             yield QueryResult(
                 query=query,
@@ -366,9 +484,11 @@ Question: {query}"""
 
 Question: {query}"""
 
+        chat_task = "synthesis" if is_feature_enabled("provider_routing_v2_enabled") else (task or "synthesis")
+
         full_answer_parts = []
         async for chunk_text in self._router.chat_stream(
-            task,
+            task=chat_task,
             messages=[
                 {"role": "system", "content": system_prompt},
                 *_history_messages(history),
@@ -803,6 +923,9 @@ def _extract_and_format_citations(answer: str, chunks: list[RetrievedChunk]) -> 
     so internal IDs never leak into the visible answer.
     """
     import re
+
+    # Normalize unicode/CJK citation brackets (e.g. from Qwen / DeepSeek) to ASCII brackets
+    answer = answer.replace("【", "[").replace("】", "]")
 
     chunk_by_id = {c.chunk.chunk_id: c for c in chunks}
 

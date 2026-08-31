@@ -26,12 +26,18 @@ It also checks **routing** (SQL vs document vs both vs abstain) and
 **adversarial** inputs (prompt injection, destructive requests, credential
 probes, subjective/contradictory questions).
 
-## Files
+## Directory Structure
 
-- `questions.jsonl` — the question bank (generated). One JSON object per line.
+- `questions.jsonl` — the canonical question bank (163 questions covering 46 tables). One JSON object per line.
 - `build_questions.py` — regenerates `questions.jsonl`. Edit here, not the JSONL.
 - `run_eval.py` — offline validator + live LLM-as-judge runner.
-- `globalmind_schema.json` — the schema the questions are grounded in.
+- `globalmind_schema.json` — the 70-table schema the questions are grounded in.
+- `reports/` — detailed coverage matrices, evaluation summaries, and benchmark reports:
+  - `reports/SQL_COVERAGE_STATUS.md` — current coverage status (88.5% domain tables, 65.7% total schema).
+  - `reports/SQL_EXPANSION_SUMMARY.md` — detailed per-question and per-table test mappings.
+  - `reports/eval_run_report.md` — full benchmark execution report.
+  - `reports/layman_questions_50.md` — reference layman test suite.
+  - `reports/test_questions_30.md` — reference edge-case test suite.
 
 Each question record:
 

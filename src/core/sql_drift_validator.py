@@ -23,7 +23,8 @@ RELATIONSHIPS_FILE = REPO_ROOT / "config" / "sql_relationships.json"
 
 def load_schema_tables_and_columns(schema_path: Path | None = None) -> dict[str, set[str]]:
     """Return {table_name: set_of_column_names} from the schema JSON."""
-    path = schema_path or SCHEMA_FILE
+    path = schema_path if schema_path and schema_path.exists() else SCHEMA_FILE
+
     if not path.exists():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))

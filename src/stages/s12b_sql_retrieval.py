@@ -29,7 +29,28 @@ from src.core.pattern_learner import PatternLearner
 from src.core.confidence_scorer import ConfidenceScorer, ConfidenceBreakdown
 from src.models.schemas import Chunk, ChunkType, RetrievedChunk, DocumentType
 from src.stages.s10_embeddings import EmbeddingService
-from src.stages.s11_vector_store import QdrantStore
+from src.utils.circuit_breaker import CircuitBreakerOpenError, get_shared_circuit_breaker
+from src.utils.empty_result_classifier import classify_empty_result
+from src.utils.error_classification import classify_error
+from src.utils.failure_capture import capture_sql_failure
+from src.utils.feature_flags import is_feature_enabled
+from src.utils.query_budget import QueryBudgetExceededError, get_or_create_budget_controller
+from src.utils.schema_budget import DEFAULT_SCHEMA_TOKEN_BUDGET, select_schema_within_budget
+from src.utils.stream_token_counter import TokenBudgetExceededError
+from src.utils.schema_compactor import compact_ddl, extract_join_hints
+from src.utils.schema_token_estimator import estimate_schema_tokens
+from src.utils.sql_safety import (
+    check_dangerous_patterns,
+    is_destructive_sql,
+    validate_sql_safety,
+    validate_tables_and_columns,
+)
+from src.utils.telemetry import get_or_create_query_id, log_telemetry, timed_stage
+from src.stages.sql_repair import (
+    MAX_DELTA_REPAIR_ATTEMPTS,
+    attempt_delta_repair,
+    extract_schema_context_from_ddl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,19 +132,39 @@ def _unwrap_sql(text: str) -> str:
 
 
 def extract_cot_and_sql(text: str) -> tuple[str, str]:
-    """Separates the structured Chain-of-Thought (CoT) plan (Phases 1 & 2) from the final SQL block (Phase 3)."""
+    """Separates structured metadata / CoT from the final SQL statement (supports JSON & Markdown)."""
     cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
     target = cleaned if cleaned else text.strip()
+
+    # 1. Try parsing direct JSON
+    try:
+        data = json.loads(target)
+        if isinstance(data, dict) and "sql" in data and data["sql"]:
+            return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
+    except Exception:
+        pass
+
+    # 2. Try regex extraction of JSON "sql" field
+    json_sql_match = re.search(r"\"sql\"\s*:\s*\"(.*?)(?<!\\)\"", target, re.DOTALL)
+    if json_sql_match:
+        sql_cand = json_sql_match.group(1).strip().replace('\\"', '"').replace('\\n', '\n')
+        if sql_cand and any(sql_cand.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+            return target[:json_sql_match.start()].strip(), sql_cand
+
+    # 3. Try markdown ```sql ... ``` block
     m = _FENCE_RE.search(target)
     if m and m.group(1).strip():
         sql = m.group(1).strip()
         cot = target[:m.start()].strip()
         return cot, sql
+
+    # 4. Try finding starting SQL keyword
     km = _SQL_START_RE.search(target)
-    if km and km.start() > 0:
+    if km and km.start() >= 0:
         cot = target[:km.start()].strip()
         sql = target[km.start():].strip()
         return cot, sql
+
     return "", target
 
 
@@ -599,7 +640,65 @@ def _build_scoped_schema_fallback(full_schema: str, query: str) -> str:
             if n in full_ddls and n not in valid_tables and len(valid_tables) < 8:
                 valid_tables.append(n)
             
-    return "\n\n".join(full_ddls[t] for t in valid_tables if t in full_ddls)
+    candidate_items = [
+        {"table_name": t, "ddl": full_ddls[t], "source": "fallback"}
+        for t in valid_tables if t in full_ddls
+    ]
+    selected, dropped = select_schema_within_budget(
+        candidate_items,
+        token_budget=DEFAULT_SCHEMA_TOKEN_BUDGET,
+        id_key="table_name",
+    )
+
+    budgeted_schema = "\n\n".join(c["ddl"] for c in selected)
+    original_schema = "\n\n".join(full_ddls[t] for t in valid_tables if t in full_ddls)
+    estimated_tokens = estimate_schema_tokens(budgeted_schema)
+    flag_enabled = is_feature_enabled("token_budget_enabled")
+    stage_name = "schema_budget_applied" if flag_enabled else "schema_budget_shadow"
+
+    log_telemetry(
+        query_id="",
+        stage=stage_name,
+        input_tokens=estimated_tokens,
+        extra={
+            "original_table_count": len(candidate_items),
+            "budgeted_table_count": len(selected),
+            "estimated_tokens": estimated_tokens,
+            "dropped_tables": [c["table_name"] for c in dropped],
+            "token_budget_enabled": flag_enabled,
+            "fallback": True,
+        },
+    )
+
+    if is_feature_enabled("schema_compaction_enabled"):
+        compact_ddls = [compact_ddl(c["ddl"]) for c in selected]
+        raw_ddls = [c["ddl"] for c in selected]
+        join_hints = extract_join_hints(raw_ddls)
+
+        compacted_schema = "\n".join(compact_ddls)
+        if join_hints:
+            compacted_schema += "\n\n" + join_hints
+
+        before_tokens = estimate_schema_tokens(budgeted_schema)
+        after_tokens = estimate_schema_tokens(compacted_schema)
+
+        log_telemetry(
+            query_id="",
+            stage="schema_compaction_applied",
+            input_tokens=after_tokens,
+            extra={
+                "before_tokens": before_tokens,
+                "after_tokens": after_tokens,
+                "token_savings": max(0, before_tokens - after_tokens),
+                "table_count": len(selected),
+                "fallback": True,
+            },
+        )
+        return compacted_schema
+
+    if flag_enabled:
+        return budgeted_schema
+    return original_schema
 
 
 _MAX_RESULT_CACHE_ENTRIES = 256
@@ -671,17 +770,43 @@ class SQLRetriever:
         return result
 
     async def _retrieve_uncached(self, query: str) -> list[RetrievedChunk]:
-        schema = await self._get_schema(query)
+        qid = get_or_create_query_id()
+        budget_ctrl = get_or_create_budget_controller(qid)
+
+        if not budget_ctrl.can_proceed():
+            logger.warning("Query budget exhausted before SQL retrieval for query %s", qid)
+            log_telemetry(
+                query_id=qid,
+                stage="sql_generation",
+                latency_ms=0.0,
+                success=False,
+                failure_type="budget_exceeded",
+                extra={"budget_status": budget_ctrl.get_budget_status()},
+            )
+            self.last_query_status = "failed"
+            return []
+
+        with timed_stage("schema_retrieval") as schema_stage:
+            schema = await self._get_schema(query)
+            schema_stage["extra"] = {"schema_chars": len(schema)}
+
         if not schema:
             self.last_query_status = "not_applicable"
             return []
+
+        # Feature Flag Gate: Surgical Delta Repair vs Original Full-Context Retry
+        if is_feature_enabled("delta_repair_enabled"):
+            return await self._retrieve_with_delta_repair(query, schema)
 
         last_error = None
         first_failed_sql: str | None = None
         first_error: str | None = None
 
         for attempt in range(3):
-            sql = await self._generate_sql(query, schema, last_error)
+            with timed_stage("sql_generation") as gen_stage:
+                sql = await self._generate_sql(query, schema, last_error)
+                gen_stage["extra"] = {"attempt": attempt, "has_sql": bool(sql)}
+
             if not sql:
                 self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
                 return []
@@ -689,71 +814,121 @@ class SQLRetriever:
             try:
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
 
-                # --- 1. Column validation (catches hallucinated columns before DB) ---
-                if SQLRetriever._column_registry:
-                    validation = SQLRetriever._column_registry.validate_columns(sql)
-                    if not validation.is_valid:
-                        logger.warning("Column validation failed: %s", validation.errors)
-                        _log_pipeline_event(
-                            "column_hallucination_caught",
-                            {"sql": sql, "hallucinated": validation.hallucinated_columns,
-                             "errors": validation.errors},
-                            query=query,
-                        )
-                        if first_failed_sql is None:
-                            first_failed_sql = sql
-                            first_error = "\n".join(validation.errors)
-                        last_error = "Column validation failed:\n" + "\n".join(validation.errors)
-                        continue  # retry with feedback
-
-                    # Alias validation (first attempt only — don't loop forever)
-                    if attempt == 0:
-                        alias_warnings = self._column_registry.validate_aliases(sql, query)
-                        if alias_warnings:
-                            logger.warning("Alias validation: %s", alias_warnings)
+                with timed_stage("sql_validation") as val_stage:
+                    # --- 1. Column validation (catches hallucinated columns before DB) ---
+                    if SQLRetriever._column_registry:
+                        validation = SQLRetriever._column_registry.validate_columns(sql)
+                        if not validation.is_valid:
+                            logger.warning("Column validation failed: %s", validation.errors)
+                            err_msg = "\n".join(validation.errors)
+                            capture_sql_failure(
+                                query_id="",
+                                stage="sql_validation",
+                                failed_sql=sql,
+                                raw_error=err_msg,
+                                error_type="sql_validation_error",
+                                schema_tables=tables,
+                            )
                             _log_pipeline_event(
-                                "alias_hallucination_caught",
-                                {"sql": sql, "warnings": alias_warnings},
+                                "column_hallucination_caught",
+                                {"sql": sql, "hallucinated": validation.hallucinated_columns,
+                                 "errors": validation.errors},
                                 query=query,
                             )
                             if first_failed_sql is None:
                                 first_failed_sql = sql
-                                first_error = "\n".join(alias_warnings)
-                            last_error = "Alias quality issue:\n" + "\n".join(alias_warnings)
-                            continue
+                                first_error = err_msg
+                            last_error = "Column validation failed:\n" + err_msg
+                            val_stage["success"] = False
+                            val_stage["failure_type"] = "sql_validation_error"
+                            continue  # retry with feedback
 
-                # --- 2. Semantic Correctness Validation ---
-                val_results = self._result_validator.validate_query(
-                    sql=sql,
-                    tables_involved=tables,
-                    has_date_filter=("WHERE" in sql.upper() and any(k in sql.upper() for k in ["DATE", "YEAR", "CREATED_AT", "UPDATED_AT", "MONTH"])),
-                    has_aggregation=any(f in sql.upper() for f in ["SUM(", "AVG(", "COUNT(", "MAX(", "MIN("]),
-                )
-                crit_errors = [r.message for r in val_results if r.severity == ValidationSeverity.CRITICAL and not r.passed]
-                if crit_errors:
-                    logger.warning("Semantic validation critical errors: %s", crit_errors)
-                    _log_pipeline_event("semantic_validation_failed", {"sql": sql, "errors": crit_errors}, query=query)
-                    if first_failed_sql is None:
-                        first_failed_sql = sql
-                        first_error = "\n".join(crit_errors)
-                    last_error = "Semantic validation failed:\n" + "\n".join(crit_errors)
-                    continue
+                        # Alias validation (first attempt only — don't loop forever)
+                        if attempt == 0:
+                            alias_warnings = self._column_registry.validate_aliases(sql, query)
+                            if alias_warnings:
+                                logger.warning("Alias validation: %s", alias_warnings)
+                                alias_err_msg = "\n".join(alias_warnings)
+                                capture_sql_failure(
+                                    query_id="",
+                                    stage="sql_validation",
+                                    failed_sql=sql,
+                                    raw_error=alias_err_msg,
+                                    error_type="sql_validation_error",
+                                    schema_tables=tables,
+                                )
+                                _log_pipeline_event(
+                                    "alias_hallucination_caught",
+                                    {"sql": sql, "warnings": alias_warnings},
+                                    query=query,
+                                )
+                                if first_failed_sql is None:
+                                    first_failed_sql = sql
+                                    first_error = alias_err_msg
+                                last_error = "Alias quality issue:\n" + alias_err_msg
+                                val_stage["success"] = False
+                                val_stage["failure_type"] = "sql_validation_error"
+                                continue
 
-                # --- 3. Safety validation (AST parsing) ---
-                if not self._is_safe_read_query(sql):
-                    _log_pipeline_event(
-                        "unsafe_sql_blocked",
-                        {"sql": sql},
-                        query=query,
+                    # --- 2. Semantic Correctness Validation ---
+                    val_results = self._result_validator.validate_query(
+                        sql=sql,
+                        tables_involved=tables,
+                        has_date_filter=("WHERE" in sql.upper() and any(k in sql.upper() for k in ["DATE", "YEAR", "CREATED_AT", "UPDATED_AT", "MONTH"])),
+                        has_aggregation=any(f in sql.upper() for f in ["SUM(", "AVG(", "COUNT(", "MAX(", "MIN("]),
                     )
-                    raise UnsafeQueryError(f"Unsafe or unparseable SQL generated: {sql}")
+                    crit_errors = [r.message for r in val_results if r.severity == ValidationSeverity.CRITICAL and not r.passed]
+                    if crit_errors:
+                        logger.warning("Semantic validation critical errors: %s", crit_errors)
+                        crit_err_msg = "\n".join(crit_errors)
+                        capture_sql_failure(
+                            query_id="",
+                            stage="sql_validation",
+                            failed_sql=sql,
+                            raw_error=crit_err_msg,
+                            error_type="sql_validation_error",
+                            schema_tables=tables,
+                        )
+                        _log_pipeline_event("semantic_validation_failed", {"sql": sql, "errors": crit_errors}, query=query)
+                        if first_failed_sql is None:
+                            first_failed_sql = sql
+                            first_error = crit_err_msg
+                        last_error = "Semantic validation failed:\n" + crit_err_msg
+                        val_stage["success"] = False
+                        val_stage["failure_type"] = "sql_validation_error"
+                        continue
+
+                    # --- 3. Safety validation (AST parsing) ---
+                    if not self._is_safe_read_query(sql):
+                        capture_sql_failure(
+                            query_id="",
+                            stage="sql_validation",
+                            failed_sql=sql,
+                            raw_error=f"Unsafe or unparseable SQL generated: {sql}",
+                            error_type="sql_validation_error",
+                            schema_tables=tables,
+                        )
+                        _log_pipeline_event(
+                            "unsafe_sql_blocked",
+                            {"sql": sql},
+                            query=query,
+                        )
+                        val_stage["success"] = False
+                        val_stage["failure_type"] = "sql_validation_error"
+                        raise UnsafeQueryError(f"Unsafe or unparseable SQL generated: {sql}")
 
                 # --- 4. Execute Read-Only Query ---
-                rows = await run_readonly_query(sql)
-
-                is_zero_rows = len(rows) == 0
-                is_agg_zero = _is_aggregate_over_zero_rows(sql, rows, self._dialect.sqlglot_dialect)
-                is_empty_result = is_zero_rows or is_agg_zero
+                with timed_stage("sql_execution") as exec_stage:
+                    rows = await run_readonly_query(sql)
+                    is_zero_rows = len(rows) == 0
+                    is_agg_zero = _is_aggregate_over_zero_rows(sql, rows, self._dialect.sqlglot_dialect)
+                    is_empty_result = is_zero_rows or is_agg_zero
+                    exec_stage["extra"] = {
+                        "rows_returned": len(rows),
+                        "empty_result": is_empty_result,
+                    }
+                    if is_empty_result:
+                        exec_stage["failure_type"] = "empty_result"
 
                 # If the query returned 0 rows or an all-NULL aggregate on early attempts,
                 # give the LLM one retry opportunity to check JOIN/WHERE conditions
@@ -824,10 +999,26 @@ class SQLRetriever:
             except UnsafeQueryError as e:
                 # Security violations die instantly. No feedback loop.
                 logger.warning(f"Blocked unsafe SQL query: {e}")
+                capture_sql_failure(
+                    query_id="",
+                    stage="sql_validation",
+                    failed_sql=sql,
+                    raw_error=str(e),
+                    error_type="sql_validation_error",
+                    schema_tables=tables if 'tables' in locals() else [],
+                )
                 self.last_query_status = "failed"
                 return []
             except Exception as e:
                 logger.error(f"SQL Execution failed on attempt {attempt + 1}: {e}")
+                capture_sql_failure(
+                    query_id="",
+                    stage="sql_execution",
+                    failed_sql=sql,
+                    raw_error=str(e),
+                    error_type=classify_error(e),
+                    schema_tables=tables if 'tables' in locals() else [],
+                )
                 _log_pipeline_event(
                     "execution_error_caught",
                     {"sql": sql, "error": str(e), "attempt": attempt + 1},
@@ -842,6 +1033,346 @@ class SQLRetriever:
         logger.warning("SQL generation failed after retry loop. Returning empty results.")
         self.last_query_status = "failed"
         _log_pipeline_event("retry_exhausted", {"last_error": last_error}, query=query)
+        return []
+
+    async def _retrieve_with_delta_repair(self, query: str, schema: str) -> list[RetrievedChunk]:
+        """Execute text-to-sql retrieval with targeted Delta Repair on validation/execution failure."""
+        with timed_stage("sql_generation") as gen_stage:
+            sql = await self._generate_sql(query, schema, None)
+            gen_stage["extra"] = {"attempt": 0, "has_sql": bool(sql), "delta_repair_enabled": True}
+
+        if not sql:
+            self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
+            return []
+
+        current_sql = sql
+        first_failed_sql: str | None = None
+        first_error: str | None = None
+
+        for repair_attempt in range(MAX_DELTA_REPAIR_ATTEMPTS + 1):
+            tables = _extract_table_names(current_sql, self._dialect.sqlglot_dialect)
+            schema_context = extract_schema_context_from_ddl(schema, tables)
+
+            val_error: str | None = None
+            val_error_type: str | None = None
+
+            with timed_stage("sql_validation") as val_stage:
+                # 0. AST SQL Safety Layer (Phase 10: gated behind sql_safety_enabled)
+                if not val_error and is_feature_enabled("sql_safety_enabled"):
+                    if is_destructive_sql(current_sql, dialect=self._dialect.sqlglot_dialect):
+                        logger.warning("Destructive SQL blocked: %s", current_sql)
+                        val_error = "Destructive or write SQL operation detected. Only read-only SELECT queries are allowed."
+                        val_error_type = "destructive_sql_error"
+                    else:
+                        danger_warns = check_dangerous_patterns(current_sql, dialect=self._dialect.sqlglot_dialect)
+                        if danger_warns:
+                            logger.warning("Dangerous SQL pattern blocked: %s", danger_warns)
+                            val_error = "\n".join(danger_warns)
+                            val_error_type = "dangerous_pattern_error"
+                        elif schema_context:
+                            is_valid_schema, schema_err = validate_tables_and_columns(
+                                current_sql, schema_context, dialect=self._dialect.sqlglot_dialect
+                            )
+                            if not is_valid_schema:
+                                logger.warning("Schema table/column validation failed: %s", schema_err)
+                                val_error = schema_err
+                                val_error_type = "column_not_found" if "Column" in schema_err else "table_not_found"
+
+                    if val_error:
+                        val_stage["success"] = False
+                        val_stage["failure_type"] = "sql_validation_error"
+                        capture_sql_failure(
+                            query_id="",
+                            stage="sql_validation" if repair_attempt == 0 else "sql_repair",
+                            failed_sql=current_sql,
+                            raw_error=val_error,
+                            error_type="sql_validation_error",
+                            schema_tables=tables,
+                        )
+                        _log_pipeline_event(
+                            "sql_safety_validation_failed",
+                            {"sql": current_sql, "error": val_error, "error_type": val_error_type, "repair_attempt": repair_attempt},
+                            query=query,
+                        )
+
+                # 1. Column validation
+                if not val_error and SQLRetriever._column_registry:
+                    validation = SQLRetriever._column_registry.validate_columns(current_sql)
+                    if not validation.is_valid:
+                        logger.warning("Column validation failed (repair attempt %d): %s", repair_attempt, validation.errors)
+                        val_error = "\n".join(validation.errors)
+                        val_error_type = "column_hallucination"
+                        val_stage["success"] = False
+                        val_stage["failure_type"] = "sql_validation_error"
+                        capture_sql_failure(
+                            query_id="",
+                            stage="sql_validation" if repair_attempt == 0 else "sql_repair",
+                            failed_sql=current_sql,
+                            raw_error=val_error,
+                            error_type="sql_validation_error",
+                            schema_tables=tables,
+                        )
+                        _log_pipeline_event(
+                            "column_hallucination_caught",
+                            {"sql": current_sql, "hallucinated": validation.hallucinated_columns,
+                             "errors": validation.errors, "repair_attempt": repair_attempt},
+                            query=query,
+                        )
+
+                # 2. Alias validation (on attempt 0)
+                if not val_error and repair_attempt == 0 and SQLRetriever._column_registry:
+                    alias_warnings = self._column_registry.validate_aliases(current_sql, query)
+                    if alias_warnings:
+                        logger.warning("Alias validation: %s", alias_warnings)
+                        val_error = "\n".join(alias_warnings)
+                        val_error_type = "alias_hallucination"
+                        val_stage["success"] = False
+                        val_stage["failure_type"] = "sql_validation_error"
+                        capture_sql_failure(
+                            query_id="",
+                            stage="sql_validation",
+                            failed_sql=current_sql,
+                            raw_error=val_error,
+                            error_type="sql_validation_error",
+                            schema_tables=tables,
+                        )
+                        _log_pipeline_event(
+                            "alias_hallucination_caught",
+                            {"sql": current_sql, "warnings": alias_warnings},
+                            query=query,
+                        )
+
+                # 3. Semantic validation
+                if not val_error:
+                    val_results = self._result_validator.validate_query(
+                        sql=current_sql,
+                        tables_involved=tables,
+                        has_date_filter=("WHERE" in current_sql.upper() and any(k in current_sql.upper() for k in ["DATE", "YEAR", "CREATED_AT", "UPDATED_AT", "MONTH"])),
+                        has_aggregation=any(f in current_sql.upper() for f in ["SUM(", "AVG(", "COUNT(", "MAX(", "MIN("]),
+                    )
+                    crit_errors = [r.message for r in val_results if r.severity == ValidationSeverity.CRITICAL and not r.passed]
+                    if crit_errors:
+                        logger.warning("Semantic validation critical errors (repair attempt %d): %s", repair_attempt, crit_errors)
+                        val_error = "\n".join(crit_errors)
+                        val_error_type = "semantic_validation_error"
+                        val_stage["success"] = False
+                        val_stage["failure_type"] = "sql_validation_error"
+                        capture_sql_failure(
+                            query_id="",
+                            stage="sql_validation" if repair_attempt == 0 else "sql_repair",
+                            failed_sql=current_sql,
+                            raw_error=val_error,
+                            error_type="sql_validation_error",
+                            schema_tables=tables,
+                        )
+                        _log_pipeline_event(
+                            "semantic_validation_failed",
+                            {"sql": current_sql, "errors": crit_errors, "repair_attempt": repair_attempt},
+                            query=query,
+                        )
+
+                # 4. AST safety validation
+                if not val_error and not self._is_safe_read_query(current_sql):
+                    logger.warning("Unsafe SQL generated: %s", current_sql)
+                    val_stage["success"] = False
+                    val_stage["failure_type"] = "sql_validation_error"
+                    capture_sql_failure(
+                        query_id="",
+                        stage="sql_validation" if repair_attempt == 0 else "sql_repair",
+                        failed_sql=current_sql,
+                        raw_error=f"Unsafe or unparseable SQL generated: {current_sql}",
+                        error_type="sql_validation_error",
+                        schema_tables=tables,
+                    )
+                    _log_pipeline_event(
+                        "unsafe_sql_blocked",
+                        {"sql": current_sql, "repair_attempt": repair_attempt},
+                        query=query,
+                    )
+                    raise UnsafeQueryError(f"Unsafe or unparseable SQL generated: {current_sql}")
+
+            # If validation failed, invoke Delta Repair if under attempt budget
+            if val_error:
+                if first_failed_sql is None:
+                    first_failed_sql = current_sql
+                    first_error = val_error
+
+                if repair_attempt >= MAX_DELTA_REPAIR_ATTEMPTS:
+                    logger.warning("Delta repair ceiling (%d attempts) reached on validation failure.", MAX_DELTA_REPAIR_ATTEMPTS)
+                    break
+
+                next_attempt = repair_attempt + 1
+                repaired_sql = await attempt_delta_repair(
+                    router=self._router,
+                    failed_sql=current_sql,
+                    error_message=val_error,
+                    error_type=val_error_type or "sql_validation_error",
+                    schema_context=schema_context,
+                    user_intent=query,
+                    attempt_number=next_attempt,
+                )
+                if not repaired_sql:
+                    logger.warning("Delta repair attempt %d returned no SQL. Halting.", next_attempt)
+                    break
+
+                current_sql = repaired_sql
+                continue
+
+            # Validation succeeded -> Execute read-only query
+            try:
+                with timed_stage("sql_execution") as exec_stage:
+                    rows = await run_readonly_query(current_sql)
+                    is_zero_rows = len(rows) == 0
+                    is_agg_zero = _is_aggregate_over_zero_rows(current_sql, rows, self._dialect.sqlglot_dialect)
+                    is_empty_result = is_zero_rows or is_agg_zero
+                    exec_stage["extra"] = {
+                        "rows_returned": len(rows),
+                        "empty_result": is_empty_result,
+                        "repair_attempt": repair_attempt,
+                    }
+                    if is_empty_result:
+                        exec_stage["failure_type"] = "empty_result"
+
+                # Intelligent 0-row handling (Phase 11: gated behind zero_row_handling_enabled)
+                if is_empty_result and is_feature_enabled("zero_row_handling_enabled"):
+                    classification = classify_empty_result(current_sql, dialect=self._dialect.sqlglot_dialect)
+                    with timed_stage("empty_result_handling") as erh_stage:
+                        erh_stage["extra"] = {
+                            "classification": classification,
+                            "sql": current_sql,
+                            "rows_returned": len(rows),
+                            "repair_attempt": repair_attempt,
+                        }
+                        if classification == "valid_empty":
+                            erh_stage["success"] = True
+                            _log_pipeline_event(
+                                "valid_empty_result",
+                                {"sql": current_sql, "classification": "valid_empty", "rows_returned": len(rows)},
+                                query=query,
+                            )
+                            # Valid empty: bypass retry/repair loop immediately, do NOT capture failure
+                        elif classification == "suspicious_empty":
+                            erh_stage["success"] = False
+                            erh_stage["failure_type"] = "suspicious_zero_rows"
+                            if repair_attempt < MAX_DELTA_REPAIR_ATTEMPTS:
+                                logger.warning("Suspicious 0-row result on attempt %d: triggering Delta Repair.", repair_attempt)
+                                _log_pipeline_event(
+                                    "suspicious_empty_result_repair",
+                                    {"sql": current_sql, "classification": "suspicious_empty", "repair_attempt": repair_attempt},
+                                    query=query,
+                                )
+                                if first_failed_sql is None:
+                                    first_failed_sql = current_sql
+                                    first_error = "Query executed successfully but returned 0 rows (suspicious_empty)."
+
+                                next_attempt = repair_attempt + 1
+                                repaired_sql = await attempt_delta_repair(
+                                    router=self._router,
+                                    failed_sql=current_sql,
+                                    error_message="Query executed successfully but returned 0 rows. Classification: suspicious_empty. Check JOIN conditions and filter logic.",
+                                    error_type="suspicious_zero_rows",
+                                    schema_context=schema_context,
+                                    user_intent=query,
+                                    attempt_number=next_attempt,
+                                )
+                                if repaired_sql and repaired_sql != current_sql:
+                                    current_sql = repaired_sql
+                                    continue
+
+                # Result Sanity & Confidence Scoring
+                self._result_validator.validate_results(rows)
+                learned_matches = self._pattern_learner.get_patterns_for_query(query)
+                conf = self._confidence_scorer.calculate(
+                    pattern_matches=len(learned_matches),
+                    validation_results=val_results,
+                    reflexion_attempts=repair_attempt,
+                    query_complexity={"join_count": max(0, len(tables) - 1), "subquery_depth": current_sql.upper().count("SELECT") - 1},
+                )
+                self.last_confidence_score = conf.final_score
+                self.last_confidence_breakdown = conf
+
+                if repair_attempt > 0 and first_failed_sql:
+                    try:
+                        self._pattern_learner.capture_success(
+                            user_question=query,
+                            original_cot="",
+                            failed_sql=first_failed_sql,
+                            error_message=first_error or "Previous attempt error",
+                            fixed_sql=current_sql,
+                            revised_cot=self.last_cot_plan or "",
+                        )
+                    except Exception as learn_err:
+                        logger.debug("Failed to record learned pattern: %s", learn_err)
+
+                self.last_query_status = "empty_result" if is_empty_result else "success"
+                label = f"live_database ({', '.join(tables)})" if tables else "live_database"
+                formatted_table = _format_rows_as_markdown(rows, current_sql, is_agg_zero=is_agg_zero)
+
+                chunk = Chunk(
+                    chunk_id="live_sql_001",
+                    document_id="live_db",
+                    chunk_type=ChunkType.SQL_RESULT,
+                    content=formatted_table,
+                    document_type=DocumentType.GENERAL,
+                    source_file=label,
+                )
+
+                _log_pipeline_event(
+                    "sql_success",
+                    {"sql": current_sql, "row_count": len(rows), "tables": tables,
+                     "repair_attempts": repair_attempt, "is_empty_result": is_empty_result,
+                     "confidence_score": self.last_confidence_score},
+                    query=query,
+                )
+                return [RetrievedChunk(chunk=chunk, score=1.0, retrieval_method="text-to-sql")]
+
+            except UnsafeQueryError as e:
+                logger.warning(f"Blocked unsafe SQL query: {e}")
+                self.last_query_status = "failed"
+                return []
+            except Exception as e:
+                logger.error("SQL Execution failed on attempt %d: %s", repair_attempt + 1, e)
+                capture_sql_failure(
+                    query_id="",
+                    stage="sql_execution" if repair_attempt == 0 else "sql_repair",
+                    failed_sql=current_sql,
+                    raw_error=str(e),
+                    error_type=classify_error(e),
+                    schema_tables=tables,
+                )
+                _log_pipeline_event(
+                    "execution_error_caught",
+                    {"sql": current_sql, "error": str(e), "repair_attempt": repair_attempt + 1},
+                    query=query,
+                )
+                if first_failed_sql is None:
+                    first_failed_sql = current_sql
+                    first_error = str(e)
+
+                if repair_attempt >= MAX_DELTA_REPAIR_ATTEMPTS:
+                    logger.warning("Delta repair ceiling (%d attempts) reached on execution error.", MAX_DELTA_REPAIR_ATTEMPTS)
+                    break
+
+                next_attempt = repair_attempt + 1
+                repaired_sql = await attempt_delta_repair(
+                    router=self._router,
+                    failed_sql=current_sql,
+                    error_message=str(e),
+                    error_type=classify_error(e),
+                    schema_context=schema_context,
+                    user_intent=query,
+                    attempt_number=next_attempt,
+                )
+                if not repaired_sql:
+                    logger.warning("Delta repair attempt %d returned no SQL after exec error. Halting.", next_attempt)
+                    break
+
+                current_sql = repaired_sql
+                continue
+
+        logger.warning("SQL generation failed after Delta Repair attempts. Returning empty results.")
+        self.last_query_status = "failed"
+        _log_pipeline_event("retry_exhausted", {"last_error": first_error}, query=query)
         return []
 
     @classmethod
@@ -937,11 +1468,33 @@ class SQLRetriever:
                 glossary_tables.update(["party", "financial_year", "party_opening_balance", "sales_order", "receipt"])
 
             full_ddls = _extract_table_ddl_map(full_schema) if full_schema else {}
+            candidate_list: list[dict[str, Any]] = []
+            seen_tables: set[str] = set()
+
+            for chunk in chunks:
+                tbls = _extract_schema_table_names(chunk.chunk.content)
+                for tbl in tbls:
+                    if tbl not in seen_tables:
+                        seen_tables.add(tbl)
+                        candidate_list.append({
+                            "table_name": tbl,
+                            "ddl": chunk.chunk.content,
+                            "source": "vector_rag",
+                        })
+
             anchor_extra = []
             for g_table in sorted(glossary_tables):
                 if g_table not in retrieved_tables and g_table in full_ddls:
                     anchor_extra.append(full_ddls[g_table])
                     retrieved_tables.add(g_table)
+                if g_table not in seen_tables and g_table in full_ddls:
+                    seen_tables.add(g_table)
+                    candidate_list.append({
+                        "table_name": g_table,
+                        "ddl": full_ddls[g_table],
+                        "source": "domain_anchor",
+                    })
+
             if anchor_extra:
                 retrieved_schema += "\n\n-- Domain Anchor & Glossary Tables:\n" + "\n\n".join(anchor_extra)
 
@@ -968,9 +1521,76 @@ class SQLRetriever:
                     if n_table in full_ddls and added < 4:
                         extra_ddls.append(full_ddls[n_table])
                         added += 1
+                    if n_table in full_ddls and n_table not in seen_tables:
+                        seen_tables.add(n_table)
+                        candidate_list.append({
+                            "table_name": n_table,
+                            "ddl": full_ddls[n_table],
+                            "source": "graph_expansion",
+                        })
                 if extra_ddls:
                     retrieved_schema += "\n\n-- Directly connected related tables:\n" + "\n\n".join(extra_ddls)
 
+            # --- Phase 8: Dynamic Schema Token Budget Selection & Shadow Mode ---
+            selected, dropped = select_schema_within_budget(
+                candidate_list,
+                token_budget=DEFAULT_SCHEMA_TOKEN_BUDGET,
+                id_key="table_name",
+            )
+
+            original_table_count = len(candidate_list)
+            budgeted_table_count = len(selected)
+            dropped_tables = [c["table_name"] if isinstance(c, dict) else str(c) for c in dropped]
+            budgeted_schema = "\n\n".join(c["ddl"] if isinstance(c, dict) else str(c) for c in selected)
+            estimated_tokens = estimate_schema_tokens(budgeted_schema)
+            flag_enabled = is_feature_enabled("token_budget_enabled")
+            stage_name = "schema_budget_applied" if flag_enabled else "schema_budget_shadow"
+
+            log_telemetry(
+                query_id="",
+                stage=stage_name,
+                input_tokens=estimated_tokens,
+                extra={
+                    "original_table_count": original_table_count,
+                    "budgeted_table_count": budgeted_table_count,
+                    "estimated_tokens": estimated_tokens,
+                    "dropped_tables": dropped_tables,
+                    "token_budget_enabled": flag_enabled,
+                },
+            )
+
+            if is_feature_enabled("schema_compaction_enabled"):
+                dialect_key = self._dialect.key if hasattr(self, "_dialect") and self._dialect else None
+                compact_ddls = [
+                    compact_ddl(c["ddl"] if isinstance(c, dict) else str(c), dialect=dialect_key)
+                    for c in selected
+                ]
+                raw_ddls = [c["ddl"] if isinstance(c, dict) else str(c) for c in selected]
+                join_hints = extract_join_hints(raw_ddls, dialect=dialect_key)
+
+                compacted_schema = "\n".join(compact_ddls)
+                if join_hints:
+                    compacted_schema += "\n\n" + join_hints
+
+                before_tokens = estimate_schema_tokens(budgeted_schema)
+                after_tokens = estimate_schema_tokens(compacted_schema)
+
+                log_telemetry(
+                    query_id="",
+                    stage="schema_compaction_applied",
+                    input_tokens=after_tokens,
+                    extra={
+                        "before_tokens": before_tokens,
+                        "after_tokens": after_tokens,
+                        "token_savings": max(0, before_tokens - after_tokens),
+                        "table_count": len(selected),
+                        "has_join_hints": bool(join_hints),
+                    },
+                )
+                return compacted_schema
+
+            if flag_enabled:
+                return budgeted_schema
             return retrieved_schema
             
         except Exception as e:
@@ -1003,63 +1623,45 @@ class SQLRetriever:
         )
         
         schema_tables = _extract_schema_table_names(schema)
-        scoped_relationships = _format_scoped_relationships(schema_tables, query)
-        rel_text = scoped_relationships or (self._relationships if hasattr(self, "_relationships") and self._relationships else "")
         behavioral_atlas_text = _build_behavioral_atlas_for_query(schema_tables, query)
         column_glossary = _build_column_glossary_for_query(query)
 
-        system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent. Your goal is to translate informal layman business questions into precise, executable, read-only {self._dialect.name} queries by applying first-principles reasoning.
+        system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent for {self._dialect.name}.
+Your goal is to translate the business question into a valid, executable, read-only {self._dialect.name} SELECT query.
 
-You MUST follow this 4-Phase process:
+Respond with valid JSON:
+{{
+  "intent": "summary_of_intent",
+  "tables": ["table1"],
+  "joins": [],
+  "filters": ["status = 'Y'", "deleted_at IS NULL"],
+  "sql": "SELECT COUNT(id) AS total_customers FROM party WHERE status = 'Y' AND deleted_at IS NULL;"
+}}
 
-### PHASE 1: INTENT DECOMPOSITION & BEHAVIORAL RULE APPLICATION
-Analyze the user's question and decompose it:
-- **Metrics:** Quantitative value(s) requested.
-- **Dimensions:** Attributes to group/breakdown by.
-- **Filters:** Constraints to apply (time, status).
-- **Aggregation:** Mathematical functions needed (SUM, AVG, COUNT, MIN, MAX).
-- **Sorting/Limiting:** Top/bottom result requirements.
+Rules:
+- Read-Only: SELECT statements only. If the schema cannot answer, respond with exactly NO_SQL.
+- Soft Delete: Filter out soft-deleted records (WHERE alias.deleted_at IS NULL) on all tables with a deleted_at column.
+- Casting: Use CAST(col AS DECIMAL(10,2)) for numeric operations on VARCHAR columns (e.g. stock.qty).
+- Aliases: Use descriptive aliases (e.g. AS customer_name, AS total_revenue). Never return raw IDs without names.
+- Status Flags: Active='Y', Inactive='N'. Stock booked='B', dispatched='D'.
+- Customer vs Supplier: In party table, join to sales_order for Customers, or purchase for Suppliers.
+- Current Date: {current_date_str} (Use for relative date calculations like 'this year', 'last month').
 
-**Implicit Business Rule Application:**
-Review the Behavioral Schema Atlas below and apply all required rules:
-- **Soft Delete:** Confirm `alias.deleted_at IS NULL` for every table with soft deletes.
-- **Type Casting:** Identify any VARCHAR columns requiring `CAST(... AS DECIMAL(10,2))` before math/aggregation.
-- **Enum Translation:** Map layman terms to exact database enums (e.g., 'Pending', 'Y', 'B').
-- **Polymorphic Handling:** If querying `party`, specify if joined to `sales_order` (Customer) or `purchase` (Supplier).
-
-### PHASE 2: CHAIN-OF-THOUGHT (CoT) PLAN GENERATION
-Write a concise step-by-step plan:
-- **Proposed Join Graph:** Sequence of table joins and reasoning (e.g., why LEFT JOIN vs INNER JOIN for sparse `stock`).
-- **Final Filter Set:** Exact WHERE and HAVING conditions.
-- **Final Metric Calculation:** Exact formulas for metrics (e.g., SUM(CAST(sop.qty AS DECIMAL(10,2)) * p.rate)).
-
-### PHASE 3: SQL CODE GENERATION
-Output the final SQL in a ```sql ... ``` code block.
-- **Dialect:** {self._dialect.name}.
-- **Read-Only:** SELECT statements only. NO INSERT, UPDATE, DELETE, DROP.
-- **No Hallucinations:** ONLY use tables and columns present in the schema.
-- **Aliases:** Use descriptive aliases (e.g., AS total_revenue, AS customer_name).
-- If nothing in this schema can answer ANY part of the question, respond with exactly NO_SQL.
-
-### PHASE 4: CONTEXTUAL KNOWLEDGE BASE
-Current System Date: {current_date_str} (Use this for ALL relative date calculations like 'last month', 'this year')
 {intent_section}
 Schema:
 {schema}
 """
-        if rel_text:
-            system_prompt += (
-                "\n\nTable relationships (this database has NO foreign-key "
-                "constraints — use ONLY these join paths, and never join on or "
-                "select a column that a table's schema above does not list):\n"
-                f"{rel_text}\n"
-            )
         system_prompt += self._OUTPUT_READABILITY_RULES
 
         if behavioral_atlas_text:
             system_prompt += (
-                "\n\n=== BEHAVIORAL SCHEMA ATLAS & COGNITIVE ONTOLOGY (STRICT RULES) ===\n"
+                "\n\n=== BEHAVIORAL SCHEMA ATLAS & COGNITIVE ONTOLOGY ===\n"
                 f"{behavioral_atlas_text}"
+            )
+
+        if self._relationships:
+            system_prompt += (
+                f"\n\nTable relationships:\n{self._relationships}"
             )
 
         if column_glossary:
@@ -1069,22 +1671,22 @@ Schema:
             )
         if self._dialect.date_functions:
             system_prompt += (
-                f"\n\nDate/time syntax for {self._dialect.name} "
-                "(use these exact forms for relative dates like 'last month', 'this year'):\n"
+                f"\n\nDate/time syntax for {self._dialect.name}:\n"
                 f"{self._dialect.date_functions}"
             )
         if hasattr(self, "_pattern_learner") and self._pattern_learner:
             learned_patterns = self._pattern_learner.get_patterns_for_query(query)
             if learned_patterns:
-                pattern_text = "\n".join(
-                    f"- Scenario: {p.business_scenario}\n  Reasoning: {p.cot_reasoning_snippet}\n  Template: `{p.sql_structure_template}`"
-                    for p in learned_patterns
-                )
-                system_prompt += f"\n\n=== RELEVANT LEARNED SQL PATTERNS ===\n{pattern_text}"
+                # SlimSQL Task 4: Cap to top 1 canonical pattern to minimize tokens
+                pattern = learned_patterns[0]
+                pattern_text = f"- Scenario: {pattern.business_scenario}\n  Reasoning: {pattern.cot_reasoning_snippet}\n  Template: `{pattern.sql_structure_template}`"
+                system_prompt += f"\n\n=== RELEVANT LEARNED SQL PATTERN ===\n{pattern_text}"
 
         if last_error:
             system_prompt += f"\n\nWARNING: Your previous attempt failed with this error: {last_error}\nPlease fix the SQL query and try again."
         
+        budget_ctrl = get_or_create_budget_controller()
+        initial_calls = budget_ctrl.llm_calls if budget_ctrl else 0
         try:
             response = await self._router.chat(
                 task="reasoning",
@@ -1094,6 +1696,8 @@ Schema:
                 ],
                 max_tokens=2048
             )
+            if budget_ctrl and budget_ctrl.llm_calls == initial_calls:
+                budget_ctrl.record_call(tokens_used=250, is_repair=False)
             
             raw = (response or "").strip()
 
@@ -1103,13 +1707,69 @@ Schema:
             if _ABSTAIN_RE.match(raw):
                 return ""
 
-            # Extract both CoT trace and clean SQL
+            # Extract structured plan and clean SQL
             cot_plan, sql = extract_cot_and_sql(raw)
             self.last_cot_plan = cot_plan
             if not sql or _ABSTAIN_RE.match(sql):
                 return ""
 
+            # Safeguard 2: Join Complexity Heuristic Check (Quality Gate)
+            try:
+                ast_check = sqlglot.parse_one(sql, read=self._dialect.sqlglot_dialect)
+                tables_in_sql = list(ast_check.find_all(exp.Table))
+                if len(tables_in_sql) >= 3:
+                    for join_node in ast_check.find_all(exp.Join):
+                        if not join_node.args.get("on") and not join_node.args.get("using"):
+                            logger.warning("Multi-table query missing ON condition in JOIN — routing to Delta Repair.")
+                            repaired = await attempt_delta_repair(
+                                sql=sql,
+                                error_message="Multi-table join missing explicit ON condition connecting tables.",
+                                schema=schema,
+                                dialect=self._dialect.name,
+                                router=self._router,
+                            )
+                            if repaired:
+                                return repaired
+            except Exception as ast_e:
+                logger.debug("AST join check passed/skipped: %s", ast_e)
+
             return sql
+        except (TokenBudgetExceededError, QueryBudgetExceededError) as budget_err:
+            err_count = getattr(budget_err, "count", budget_ctrl.get_current_usage() if budget_ctrl else 8000)
+            err_limit = getattr(budget_err, "limit", budget_ctrl.max_tokens if budget_ctrl else 8000)
+            logger.warning(
+                "Budget hit at %d tokens (limit: %d). Increasing limit by +1K and attempting compressed retry...",
+                err_count,
+                err_limit,
+            )
+            if budget_ctrl:
+                budget_ctrl.increase_limit(1000)
+
+            try:
+                compressed_prompt = (
+                    f"You are an expert SQL generator for {self._dialect.name}. "
+                    "Output ONLY the final SQL query in a ```sql ... ``` code block. "
+                    "Strictly NO explanations, NO markdown prose, NO chain-of-thought.\n\n"
+                    f"Schema:\n{schema}"
+                )
+                response = await self._router.chat(
+                    task="reasoning",
+                    messages=[
+                        {"role": "system", "content": compressed_prompt},
+                        {"role": "user", "content": query},
+                    ],
+                    max_tokens=1024,
+                )
+                raw = (response or "").strip()
+                if raw and not _ABSTAIN_RE.match(raw):
+                    _, sql = extract_cot_and_sql(raw)
+                    if sql and not _ABSTAIN_RE.match(sql):
+                        logger.info("Compressed SQL retry succeeded after token budget cutoff.")
+                        return sql
+            except Exception as retry_err:
+                logger.error("Compressed SQL retry failed after budget cutoff: %s", retry_err)
+            self.last_infra_error = "token_budget_exceeded"
+            return ""
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
             # Distinguish an infrastructure outage (every provider for the
@@ -1181,7 +1841,10 @@ Output readability & database-specific schema rules:
         try:
             # parse() (not parse_one) surfaces stacked statements so they can be
             # rejected rather than silently reduced to the first one.
-            statements = [s for s in sqlglot.parse(sql, read=self._dialect.sqlglot_dialect) if s is not None]
+            statements = [
+                s for s in sqlglot.parse(sql, read=self._dialect.sqlglot_dialect)
+                if s is not None and not isinstance(s, exp.Semicolon) and s.sql().strip()
+            ]
         except Exception as e:
             logger.error(f"sqlglot rejected query '{sql}': {e}")
             return False
