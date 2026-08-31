@@ -26,6 +26,8 @@ from src.stages.s12_s13_s14_retrieval import (
     _source_mode,
 )
 from src.stages.s12b_sql_retrieval import SQLRetriever
+from src.utils.query_classifier import QueryType, classify_query
+from src.utils.semantic_cache import get_semantic_cache
 from src.utils.query_budget import get_or_create_budget_controller
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_current_query_id, timed_stage
 
@@ -113,6 +115,21 @@ class QueryPipeline:
         budget_ctrl = get_or_create_budget_controller(query_id=query_id, force_new=True)
         logger.info("=== Query [%s] [Budget Limit: %d]: %s ===", query_id, budget_ctrl.max_tokens, question[:100])
 
+        scope_key = (filters.get("scope_key") or filters.get("erp_instance_id") if filters else None) or "default"
+        query_type = classify_query(question)
+
+        # Check Layer 1: Semantic Cache (Instant Path)
+        query_emb: list[float] | None = None
+        try:
+            dense_emb, _ = await self._embeddings.embed_query(question)
+            query_emb = dense_emb
+            cached = get_semantic_cache().lookup(question, query_emb, scope_key)
+            if cached is not None:
+                cached.query = question
+                return cached
+        except Exception as e:
+            logger.debug("SemanticCache lookup skipped/failed: %s", e)
+
         with timed_stage("final_response", query_id=query_id) as final_stage:
             # Short-circuit: "what files/documents do you have?" — answer from registry
             if _is_document_listing_query(question):
@@ -142,22 +159,19 @@ class QueryPipeline:
             if exhaustive:
                 logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
 
-            # Both retrieval paths always run — never gated on a pre-guessed intent.
-            # SQL retrieval can abstain on its own (see SQLRetriever._generate_sql,
-            # NO_SQL) using the real schema, which is more reliable than a keyword/
-            # LLM guess made before either path has run.
-            sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
-
-            logger.info("[Tokens: %d/%d] [Stage 12] Retrieving vector chunks", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-            vector_chunks = await self._retriever.retrieve(
+            # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
+            logger.info("[Tokens: %d/%d] [Stage 12] Parallel SQL & Vector Retrieval", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+            sql_coro = self._sql_retriever.retrieve(search_query)
+            doc_coro = self._retriever.retrieve(
                 search_query,
                 top_k=settings.retrieval_top_k,
                 filters=filters,
                 exhaustive=exhaustive,
             )
-            logger.info("Retrieved %d vector chunks", len(vector_chunks))
 
-            sql_chunks = await sql_task
+            # Coordinator merges isolated outputs after gather completes
+            sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
+            logger.info("Retrieved %d vector chunks and %d SQL chunks", len(vector_chunks), len(sql_chunks))
             sql_infra_error = self._sql_retriever.last_infra_error
             if sql_chunks:
                 logger.info("SQL query succeeded and returned rows.")
@@ -236,6 +250,21 @@ class QueryPipeline:
                 budget_ctrl.max_tokens,
                 status_str,
             )
+            # Non-blocking background cache update after pipeline completes
+            if query_emb is not None and result is not None and not getattr(result, "error", None):
+                ast_passed = getattr(self._sql_retriever, "last_query_status", "success") != "failed"
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        get_semantic_cache().store,
+                        question,
+                        query_emb,
+                        result,
+                        scope_key,
+                        query_type,
+                        ast_passed,
+                    )
+                )
+
             return result
 
     async def query_stream(
