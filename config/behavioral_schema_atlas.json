@@ -3602,7 +3602,8 @@
       "domain": "Master Data",
       "table_meaning": "Master product SKU catalog.",
       "table_behavioral_rules": [
-        "Product Name: Stored in `product_name`.",
+        "Product Name & SKU: Stored in `product.product_name`. Alphanumeric item codes (e.g. 'CHP14065105-OUTER', '34150250-OUTER') are product names in `product.product_name` (NOT batch numbers).",
+        "Product Color & Stock: When queried for a product's stock and color, query `product p JOIN product_color pc ON pc.product_id = p.id LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id AND s.deleted_at IS NULL WHERE p.product_name LIKE '%<sku>%' GROUP BY p.product_name, pc.color`.",
         "Unit Price: Stored in `rate`.",
         "Minimum Stock Threshold: Stored in `minimum_stock`.",
         "Finished Goods Enum: `product_type_id = 2` designates Finished Goods.",
@@ -5881,9 +5882,9 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Physical on-hand inventory balances by product, color, and warehouse location.",
       "table_behavioral_rules": [
-        "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity (status = 'B'). Absence of a row means zero stock.",
-        "To find zero-stock or low-stock items, you MUST start from the `product` table and use a LEFT JOIN to `stock`.",
-        "MUST filter status = 'B' for on-hand available stock ('D' represents dispatched/historical rows).",
+        "Batch No vs Product Name: `stock.batch_no` contains numeric lot numbers (e.g. '739', '820'). Product SKU codes (e.g. 'CHP14065105-OUTER') are in `product.product_name`.",
+        "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity. Absence of a row means zero stock.",
+        "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p JOIN product_color pc ON pc.product_id = p.id LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id`.",
         "MUST always append `alias.deleted_at IS NULL` to exclude soft-deleted inventory."
       ],
       "join_warnings": [
