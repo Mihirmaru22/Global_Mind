@@ -1303,7 +1303,8 @@
         "Lead Name Search: A lead can be referenced by person contact name (`lead.contact_name`) or company (`lead.company_name`). When filtering by a lead or client name in WHERE clause, check `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.",
         "Sales Rep Allocation: Assigned sales representative is stored in `lead_assign_to`, which foreign-keys to `users.id` (`users.name`).",
         "Follow-up Medium Typo: Column is named `followup_medimum` (with an extra 'm'). Allowed values: 'Email', 'Call', 'PersonalMeeting', 'WhatsappMessage'.",
-        "Follow-up Date Filtering: For open leads or companies with follow-ups in a given year (e.g. 2023), query `lead.company_name` and filter `YEAR(lead.next_followup_date) = YYYY AND lead.deleted_at IS NULL`.",
+        "Open Leads Follow-up Rule: For open leads waiting for follow-up, do NOT restrict to >= CURDATE() unless 'future' or 'upcoming' is explicitly requested; filter by `status IN ('Pending', 'In-Progress') AND next_followup_date IS NOT NULL`.",
+        "Follow-up Inquiries by Year: When asked for follow-ups in a specific year (e.g. 2023), filter on `YEAR(lead.next_followup_date) = YYYY`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
