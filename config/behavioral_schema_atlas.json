@@ -1300,9 +1300,10 @@
       "table_meaning": "CRM prospective client inquiries, sales leads, and deal pipeline tracking.",
       "table_behavioral_rules": [
         "Enum Translation: `status` allowed values are 'Pending', 'In-Progress', 'Success', 'Reject'.",
+        "Lead Name Search: A lead can be referenced by person contact name (`lead.contact_name`) or company (`lead.company_name`). When filtering by a lead or client name in WHERE clause, check `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.",
         "Sales Rep Allocation: Assigned sales representative is stored in `lead_assign_to`, which foreign-keys to `users.id` (`users.name`).",
         "Follow-up Medium Typo: Column is named `followup_medimum` (with an extra 'm'). Allowed values: 'Email', 'Call', 'PersonalMeeting', 'WhatsappMessage'.",
-        "Follow-up Date Filtering: For open leads waiting for follow-up, do NOT restrict to >= CURDATE() unless 'future' or 'upcoming' is explicitly requested; filter by `status IN ('Pending', 'In-Progress') AND next_followup_date IS NOT NULL` to capture all open leads waiting for follow-up.",
+        "Follow-up Date Filtering: For open leads or companies with follow-ups in a given year (e.g. 2023), query `lead.company_name` and filter `YEAR(lead.next_followup_date) = YYYY AND lead.deleted_at IS NULL`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
@@ -3241,6 +3242,7 @@
       "domain": "Party & CRM",
       "table_meaning": "Party Followup History operational records in Party & CRM.",
       "table_behavioral_rules": [
+        "Tracks post-sales relationship follow-ups for registered customer parties. For sales leads and company inquiries with follow-ups, use the `lead` table (`lead.next_followup_date`).",
         "MUST always append `party_followup_history.deleted_at IS NULL` in the WHERE clause."
       ],
       "join_warnings": [],

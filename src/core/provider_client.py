@@ -252,6 +252,7 @@ class OpenAICompatibleProvider:
                 base_url=self._base_url,
                 api_key=key_str,
                 timeout=60.0,
+                max_retries=0,
             )
             _shared_openai_clients[cache_key] = client
         return client

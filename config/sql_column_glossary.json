@@ -1272,10 +1272,18 @@
   },
   "lead_next_followup_date": {
     "maps_to": "lead.next_followup_date",
-    "note": "",
+    "note": "Use for sales leads and inquiries pending follow-up.",
     "synonyms": [
       "next followup date",
-      "lead next followup date"
+      "lead next followup date",
+      "followup",
+      "follow up",
+      "followups",
+      "follow-up",
+      "follow-ups",
+      "sales followup",
+      "inquiry followup",
+      "lead followup"
     ]
   },
   "lead_followup_medimum": {

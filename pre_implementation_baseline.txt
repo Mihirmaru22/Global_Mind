@@ -1,0 +1,67 @@
+........................s............................................... [ 20%]
+........................................................................ [ 40%]
+..............................F......................................... [ 60%]
+...........................................................sss.......... [ 80%]
+.......................................................................  [100%]
+=================================== FAILURES ===================================
+________________________ test_full_pipeline_e2e_indepth ________________________
+tests/test_pipeline_e2e_integration.py:172: in test_full_pipeline_e2e_indepth
+    result_csv = await query_pipeline.query(query_csv)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/pipeline/query.py:225: in query
+    result = await self._generator.generate(
+src/stages/s12_s13_s14_retrieval.py:353: in generate
+    response = await self._router.chat(
+src/core/provider_client.py:1008: in chat
+    raise QueryBudgetExceededError(f"Query budget exhausted for query {budget_ctrl.query_id}: {status}")
+E   src.utils.stream_token_counter.QueryBudgetExceededError: Query budget exhausted for query gm-q-2e5a9f76-47c4-42a3-a12c-cd34b913252f: {'query_id': 'gm-q-2e5a9f76-47c4-42a3-a12c-cd34b913252f', 'llm_calls': 2, 'max_llm_calls': 4, 'repair_attempts': 0, 'max_repairs': 2, 'total_tokens': 12117, 'max_tokens': 8000, 'safety_buffer': 200, 'is_exceeded': False, 'can_proceed': False, 'exhausted': True}
+------------------------------ Captured log call -------------------------------
+WARNING  src.stages.s02_classification:s02_classification.py:215 Semantic classification failed: '"document_type"' — defaulting to GENERAL
+WARNING  src.stages.s02_classification:s02_classification.py:215 Semantic classification failed: '"document_type"' — defaulting to GENERAL
+WARNING  src.stages.s12b_sql_retrieval:s12b_sql_retrieval.py:1441 Schema RAG returned 0 chunks. Falling back to scoped schema.
+WARNING  src.core.provider_client:provider_client.py:298 Key index 0 for provider 'groq' rate-limited (Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_01kwgr18pfenqr0e35tb4jj0hg` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199219, Requested 2856. Please try again in 14m56.4s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}); rotating to key index 1
+WARNING  src.stages.s12b_sql_retrieval:s12b_sql_retrieval.py:1441 Schema RAG returned 0 chunks. Falling back to scoped schema.
+WARNING  src.core.provider_client:provider_client.py:298 Key index 1 for provider 'groq' rate-limited (Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_01m1b7227fej0831q712r2z17d` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 196946, Requested 6356. Please try again in 23m46.464s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}); rotating to key index 2
+WARNING  src.stages.s12b_sql_retrieval:s12b_sql_retrieval.py:822 Column validation failed: ["Column 'apq' not found in any of the query's tables (actual_production). Check spelling or qualify with table name.", "Column 'apq' not found in any of the query's tables (actual_production). Check spelling or qualify with table name.", "Column 'deleted_at' not found in any of the query's tables (actual_production). Check spelling or qualify with table name.", "Column 'production_date' not found in any of the query's tables (actual_production). Check spelling or qualify with table name.", "Column 'production_date' not found in any of the query's tables (actual_production). Check spelling or qualify with table name.", "Column 'production_date' not found in any of the query's tables (actual_production). Check spelling or qualify with table name.", "Column 'production_date' not found in any of the query's tables (actual_production). Check spelling or qualify with table name."]
+WARNING  src.core.provider_client:provider_client.py:298 Key index 2 for provider 'groq' rate-limited (Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_01m0ynats9es4810x2x3a8f31s` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 200000, Requested 6570. Please try again in 47m18.24s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}); rotating to key index 0
+WARNING  src.core.provider_client:provider_client.py:298 Key index 0 for provider 'groq' rate-limited (Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_01kwgr18pfenqr0e35tb4jj0hg` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199212, Requested 6570. Please try again in 41m37.824s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}); rotating to key index 1
+WARNING  src.core.provider_client:provider_client.py:298 Key index 1 for provider 'groq' rate-limited (Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_01m1b7227fej0831q712r2z17d` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 196942, Requested 6570. Please try again in 25m17.184s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}); rotating to key index 2
+WARNING  src.core.rate_limiter:rate_limiter.py:129 Rate limiter: provider 'groq' returned 429, backing off 60.0s
+WARNING  src.core.provider_client:provider_client.py:1093 Provider failed for task 'reasoning': groq/qwen/qwen3.8-27b: Error code: 429 - {'error': {'message': 'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_01m1b7227fej0831q712r2z17d` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 196942, Requested 6570. Please try again in 25m17.184s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}
+WARNING  src.core.provider_client:provider_client.py:1093 Provider failed for task 'reasoning': groq/openai/gpt-oss-20b: Provider 'groq' is currently rate-limited (backoff).
+ERROR    src.stages.s12b_sql_retrieval:s12b_sql_retrieval.py:1849 sqlglot rejected query 'SELECT SUM(ap.apq) FROM actual_production ap JOIN production p ON ap.production_id = p.id WHERE MONTH(p.created_at) BETWEEN 7 AND 9 AND YEAR(p.created_at) = 2026`.
+
+    *   Wait, I have a better idea. The "Financial Year" rule is very specific.
+    *   "If a specific year is mentioned (e.g. '2024-2025' or '24-25'), join financial_year and filter on financial_year.fyear LIKE '%2024%'."
+    *   The user asked for "Q3 2026". This is a calendar quarter.
+    *   Let's assume the date column is `created_at` since `production_date` failed.
+    *   Let's assume `deleted_at` is not on `actual_production` since it failed.
+
+    *   Let's double check the `actual_production` table again.
+    *   If `apq` failed, maybe the column is actually `actual_qty`? No, the rule says `apq`.
+    *   Wait, I see the problem. The warning says `Column 'apq' not found in any of the query's tables (actual_production)`.
+    *   Is it possible the table is called something else? No, `actual_production` is in the relationships.
+    *   Is it possible the column is in `production`? "In production table, qty is the planned/target quantity. In actual_production table, apq is the actual': Error tokenizing 'ity. In actual_production table, apq is the actua'
+WARNING  src.stages.s12b_sql_retrieval:s12b_sql_retrieval.py:1001 Blocked unsafe SQL query: Unsafe or unparseable SQL generated: SELECT SUM(ap.apq) FROM actual_production ap JOIN production p ON ap.production_id = p.id WHERE MONTH(p.created_at) BETWEEN 7 AND 9 AND YEAR(p.created_at) = 2026`.
+
+    *   Wait, I have a better idea. The "Financial Year" rule is very specific.
+    *   "If a specific year is mentioned (e.g. '2024-2025' or '24-25'), join financial_year and filter on financial_year.fyear LIKE '%2024%'."
+    *   The user asked for "Q3 2026". This is a calendar quarter.
+    *   Let's assume the date column is `created_at` since `production_date` failed.
+    *   Let's assume `deleted_at` is not on `actual_production` since it failed.
+
+    *   Let's double check the `actual_production` table again.
+    *   If `apq` failed, maybe the column is actually `actual_qty`? No, the rule says `apq`.
+    *   Wait, I see the problem. The warning says `Column 'apq' not found in any of the query's tables (actual_production)`.
+    *   Is it possible the table is called something else? No, `actual_production` is in the relationships.
+    *   Is it possible the column is in `production`? "In production table, qty is the planned/target quantity. In actual_production table, apq is the actual
+WARNING  src.core.provider_client:provider_client.py:999 Query budget exhausted before chat call for task 'general_qa': {'query_id': 'gm-q-2e5a9f76-47c4-42a3-a12c-cd34b913252f', 'llm_calls': 2, 'max_llm_calls': 4, 'repair_attempts': 0, 'max_repairs': 2, 'total_tokens': 12117, 'max_tokens': 8000, 'safety_buffer': 200, 'is_exceeded': False, 'can_proceed': False, 'exhausted': True}
+=============================== warnings summary ===============================
+tests/test_pipeline_e2e_integration.py::test_full_pipeline_e2e_indepth
+  /data/shared/project/Global_Mind/src/stages/s11_vector_store.py:191: UserWarning: Payload indexes have no effect in the local Qdrant. Please use server Qdrant if you need payload indexes.
+    await client.create_payload_index(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_pipeline_e2e_integration.py::test_full_pipeline_e2e_indepth
+1 failed, 354 passed, 4 skipped, 1 warning in 82.42s (0:01:22)

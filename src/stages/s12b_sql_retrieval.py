@@ -456,20 +456,20 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
     tables = atlas_data["tables"]
     lines: list[str] = []
     
-    # Cap to at most 8 active tables to strictly avoid LLM payload/TPM limits
-    active_tables = sorted(schema_tables)[:8]
+    # Cap to at most 4 active tables to strictly avoid LLM payload/TPM limits (under 8000 TPM)
+    active_tables = sorted(schema_tables)[:4]
     
     for t_name in active_tables:
         if t_name not in tables:
             continue
         t_data = tables[t_name]
         lines.append(f"### Table `{t_name}`: {t_data.get('table_meaning', '')}")
-        for r in t_data.get("table_behavioral_rules", []):
+        for r in t_data.get("table_behavioral_rules", [])[:2]:
             lines.append(f"  - Rule: {r}")
-        for w in t_data.get("join_warnings", []):
+        for w in t_data.get("join_warnings", [])[:1]:
             lines.append(f"  - ⚠️ Warning: {w}")
         
-        # List columns with rules or formulas (max 8 per table)
+        # List columns with rules or formulas (max 4 per table)
         col_count = 0
         for c_name, c_data in t_data.get("columns", {}).items():
             c_rules = c_data.get("behavioral_rules", [])
@@ -478,14 +478,14 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
             if c_rules or formula or c_warns:
                 parts = []
                 if c_rules:
-                    parts.append(" | ".join(c_rules))
+                    parts.append(" | ".join(c_rules[:2]))
                 if c_warns:
-                    parts.append("⚠️ " + " | ".join(c_warns))
+                    parts.append("⚠️ " + " | ".join(c_warns[:1]))
                 if formula:
                     parts.append(f"Formula: `{formula}`")
                 lines.append(f"  - `{t_name}.{c_name}` ({c_data.get('type', 'VARCHAR')}): {'; '.join(parts)}")
                 col_count += 1
-                if col_count >= 8:
+                if col_count >= 4:
                     break
         lines.append("")
         
@@ -1659,9 +1659,11 @@ Schema:
                 f"{behavioral_atlas_text}"
             )
 
-        if self._relationships:
+        scoped_rels = _format_scoped_relationships(schema_tables, query) if schema_tables else ""
+        rels_to_inject = scoped_rels or self._relationships
+        if rels_to_inject:
             system_prompt += (
-                f"\n\nTable relationships:\n{self._relationships}"
+                f"\n\nTable relationships:\n{rels_to_inject}"
             )
 
         if column_glossary:
