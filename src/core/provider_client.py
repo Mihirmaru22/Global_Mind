@@ -231,9 +231,9 @@ class OpenAICompatibleProvider:
 
     def __init__(self, name: str, base_url: str, api_key: str, rate_limiter: RateLimiter) -> None:
         self._name = name
-        self._api_key = api_key
+        self._api_keys = [k.strip() for k in (api_key or "").split(",") if k.strip()]
+        self._current_key_idx = 0
         self._rate_limiter = rate_limiter
-        self._client: AsyncOpenAI | None = None
         self._base_url = base_url
 
     @property
@@ -242,25 +242,24 @@ class OpenAICompatibleProvider:
 
     @property
     def is_available(self) -> bool:
-        return bool(self._api_key)
+        return bool(self._api_keys)
 
-    def _get_client(self) -> AsyncOpenAI:
-        # An injected/pre-set client (tests) always wins. Otherwise reuse a
-        # process-wide client keyed by endpoint+key so per-request routers don't
-        # each leak a fresh connection pool.
-        if self._client is not None:
-            return self._client
-        key = (self._base_url, self._api_key)
-        client = _shared_openai_clients.get(key)
+    def _get_client_for_key(self, key_str: str) -> AsyncOpenAI:
+        cache_key = (self._base_url, key_str)
+        client = _shared_openai_clients.get(cache_key)
         if client is None:
             client = AsyncOpenAI(
                 base_url=self._base_url,
-                api_key=self._api_key,
+                api_key=key_str,
                 timeout=60.0,
             )
-            _shared_openai_clients[key] = client
-        self._client = client
+            _shared_openai_clients[cache_key] = client
         return client
+
+    def _get_client(self) -> AsyncOpenAI:
+        if not self._api_keys:
+            return self._get_client_for_key("")
+        return self._get_client_for_key(self._api_keys[self._current_key_idx % len(self._api_keys)])
 
     async def chat(
         self,
@@ -273,7 +272,6 @@ class OpenAICompatibleProvider:
         usage: TokenUsage | None = None,
     ) -> str:
         await self._rate_limiter.acquire(self._name)
-        client = self._get_client()
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -282,10 +280,32 @@ class OpenAICompatibleProvider:
         }
         if response_format:
             kwargs["response_format"] = response_format
-        response = await client.chat.completions.create(**kwargs)
-        if usage is not None:
-            _apply_openai_usage(usage, getattr(response, "usage", None), provider=self._name, model=model)
-        return response.choices[0].message.content or ""
+
+        num_keys = max(len(self._api_keys), 1)
+        last_exc: Exception | None = None
+
+        for attempt in range(num_keys):
+            client = self._get_client()
+            try:
+                response = await client.chat.completions.create(**kwargs)
+                if usage is not None:
+                    _apply_openai_usage(usage, getattr(response, "usage", None), provider=self._name, model=model)
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                last_exc = e
+                # Check for rate-limit / token quota
+                if len(self._api_keys) > 1 and (_rate_limit_retry_after(e) is not None or "rate limit" in str(e).lower() or "tpd" in str(e).lower()):
+                    logger.warning(
+                        "Key index %d for provider '%s' rate-limited (%s); rotating to key index %d",
+                        self._current_key_idx, self._name, e, (self._current_key_idx + 1) % len(self._api_keys),
+                    )
+                    self._current_key_idx = (self._current_key_idx + 1) % len(self._api_keys)
+                    continue
+                raise
+
+        if last_exc is not None:
+            raise last_exc
+        return ""
 
     async def chat_stream(
         self,
@@ -421,17 +441,16 @@ class GeminiProvider:
         # spent entirely on the visible response.
         effective_max_tokens = max(max_tokens, 1024)
 
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": effective_max_tokens,
+        }
+        if "gemini-2.5" in model or "gemini-3" in model:
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
         body: dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": effective_max_tokens,
-                # Gemini 2.5 thinking models draw reasoning tokens from the
-                # maxOutputTokens budget, so leaving thinking enabled starves
-                # and truncates the visible answer mid-sentence. Disable it for
-                # text generation so the entire budget goes to the response.
-                "thinkingConfig": {"thinkingBudget": 0},
-            },
+            "generationConfig": generation_config,
         }
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -473,17 +492,16 @@ class GeminiProvider:
 
         effective_max_tokens = max(max_tokens, 1024)
 
+        generation_config_stream: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": effective_max_tokens,
+        }
+        if "gemini-2.5" in model or "gemini-3" in model:
+            generation_config_stream["thinkingConfig"] = {"thinkingBudget": 0}
+
         body: dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": effective_max_tokens,
-                # Gemini 2.5 thinking models draw reasoning tokens from the
-                # maxOutputTokens budget, so leaving thinking enabled starves
-                # and truncates the visible answer mid-sentence. Disable it for
-                # text generation so the entire budget goes to the response.
-                "thinkingConfig": {"thinkingBudget": 0},
-            },
+            "generationConfig": generation_config_stream,
         }
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -993,7 +1011,8 @@ class ProviderRouter:
 
         for _pass in range(_MAX_FALLBACK_PASSES):
             for option in options:
-                if option.provider_name in dead:
+                opt_key = f"{option.provider_name}/{option.model}"
+                if opt_key in dead or option.provider_name in dead:
                     continue
                 if cb.is_open(option.provider_name):
                     logger.debug(
@@ -1070,7 +1089,7 @@ class ProviderRouter:
                     self._note_rate_limit(option.provider_name, e)
                     errors[f"{option.provider_name}/{option.model}"] = str(e)
                     if not _is_transient_failure(e):
-                        dead.add(option.provider_name)  # permanent — never retry
+                        dead.add(f"{option.provider_name}/{option.model}")  # permanent model failure
                     logger.warning(
                         "Provider failed for task '%s': %s/%s: %s",
                         task, option.provider_name, option.model, e,
