@@ -12,10 +12,18 @@ from fastapi.staticfiles import StaticFiles
 import sys
 from pathlib import Path
 
-# Ensure project root is in sys.path regardless of where uvicorn is launched
+# Ensure project root is in sys.path and fix namespace shadowing if launched from subdirectories
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+if "src" in sys.modules:
+    src_mod = sys.modules["src"]
+    real_src_path = str(_PROJECT_ROOT / "src")
+    if hasattr(src_mod, "__path__") and real_src_path not in list(src_mod.__path__):
+        try:
+            src_mod.__path__.append(real_src_path)
+        except Exception:
+            pass
 
 from src.core.config import PROJECT_ROOT, settings
 from src.core.paths import contained_path
