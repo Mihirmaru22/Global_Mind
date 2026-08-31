@@ -101,9 +101,12 @@ tasks:
       - provider: gemini
         model: gemma-4-31b-it
         priority: 3
-      - provider: openrouter
-        model: google/gemma-4-31b-it:free
+      - provider: nvidia_nim
+        model: mistralai/mistral-large-2-instruct
         priority: 4
+      - provider: gemini
+        model: gemma-4-26b-a4b-it
+        priority: 5
 
   extraction:
     providers:

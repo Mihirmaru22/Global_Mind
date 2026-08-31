@@ -1824,6 +1824,7 @@ Output readability & database-specific schema rules:
 - Lead Sales Rep & Followup: lead.lead_assign_to links to users.id (sales rep name is users.name). Lead followup medium column is followup_medimum ('Email','Call','PersonalMeeting','WhatsappMessage').
 - State and City Names: State is linked via party.state_id = states.id (states.name). Cities are stored directly as text strings in party.city.
 - When filtering by entity or location names (e.g. customer name, state name, product name), match against the text column (e.g. party.party_name, states.name) rather than numeric IDs.
+- Product Codes & Stock: Alphanumeric product/item codes (e.g. 'CHP14065105-OUTER', '34150250-OUTER') are in product.product_name (NEVER in stock.batch_no). When querying a product's stock and colors, ALWAYS start from product and use LEFT JOIN stock: SELECT p.product_name, pc.color, COALESCE(SUM(CAST(s.qty AS DECIMAL(10,2))), 0) AS stock_on_hand FROM product p JOIN product_color pc ON pc.product_id = p.id LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id AND s.deleted_at IS NULL WHERE p.product_name LIKE '%<sku>%' AND p.deleted_at IS NULL AND pc.deleted_at IS NULL GROUP BY p.product_name, pc.color. (Never use FROM stock s with INNER JOIN because 0-stock products will return no rows).
 """
 
     def _is_safe_read_query(self, sql: str) -> bool:
