@@ -1659,6 +1659,11 @@ Schema:
                 f"{behavioral_atlas_text}"
             )
 
+        if self._relationships:
+            system_prompt += (
+                f"\n\nTable relationships:\n{self._relationships}"
+            )
+
         if column_glossary:
             system_prompt += (
                 "\n\nColumn mapping (use these exact paths — do NOT invent columns):\n"
