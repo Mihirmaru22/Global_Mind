@@ -1038,6 +1038,7 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   padding: 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: transparent var(--scrollbar-track);
@@ -1183,6 +1184,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   gap: 0;
   padding: 10px 0 18px;
   min-height: 0;
+  min-width: 0;
   width: 100%;
   overflow: visible;
 }
@@ -1199,6 +1201,7 @@ html[data-scrolling='true'] .main-scroll::-webkit-scrollbar-thumb {
   display: grid;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   max-width: none;
 }
 

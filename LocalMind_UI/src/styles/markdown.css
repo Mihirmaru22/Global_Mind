@@ -193,24 +193,62 @@
   font-family: var(--font-mono);
 }
 
-/* ── Tables — Hanken Grotesk, horizontal scroll ───────────────────── */
-.markdown table {
+/* ── Tables — Hanken Grotesk, local horizontal scroll ─────────────── */
+.markdown-table-wrapper {
+  display: grid;
+  gap: 10px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.markdown-table {
   display: block;
   width: max-content;
   max-width: 100%;
   border-collapse: collapse;
   border-radius: 12px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
   font-family: var(--font-ui);
   font-size: 13px;
 }
 
-.markdown thead {
+.markdown-table__sentinel-row td {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.markdown-table__sentinel {
+  height: 1px;
+}
+
+.markdown-table__more {
+  justify-self: start;
+  padding: 8px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.markdown-table__more:hover {
+  border-color: var(--panel-border-strong);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  transform: translateY(-1px);
+}
+
+.markdown thead,
+.markdown-table thead {
   background: color-mix(in srgb, var(--text-primary) 5%, transparent);
 }
 
-.markdown th {
+.markdown th,
+.markdown-table th {
   border: 1px solid var(--panel-border);
   padding: 8px 12px;
   text-align: left;
@@ -221,7 +259,8 @@
   white-space: nowrap;
 }
 
-.markdown td {
+.markdown td,
+.markdown-table td {
   border: 1px solid var(--panel-border);
   padding: 8px 12px;
   text-align: left;
@@ -233,17 +272,21 @@
 }
 
 /* Technical identifiers in table cells use mono */
-.markdown td code {
+.markdown td code,
+.markdown-table td code {
   font-family: var(--font-mono);
   font-size: 12px;
 }
 
 :root[data-theme-mode='light'] .markdown th,
-:root[data-theme-mode='light'] .markdown td {
+:root[data-theme-mode='light'] .markdown td,
+:root[data-theme-mode='light'] .markdown-table th,
+:root[data-theme-mode='light'] .markdown-table td {
   border-color: var(--panel-border);
 }
 
 /* Zebra stripes for readability */
-.markdown tbody tr:nth-child(even) {
+.markdown tbody tr:nth-child(even),
+.markdown-table tbody tr:nth-child(even) {
   background: color-mix(in srgb, var(--text-primary) 3%, transparent);
 }

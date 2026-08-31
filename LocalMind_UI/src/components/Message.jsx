@@ -17,6 +17,7 @@ import rehypeHighlight from 'rehype-highlight'
 import clsx from 'clsx'
 import TextareaAutosize from 'react-textarea-autosize'
 import { useAppStore } from '../store/store.js'
+import MarkdownTable from './MarkdownTable.jsx'
 import MermaidDiagram from './MermaidDiagram.jsx'
 import IngestionCard from './IngestionCard.jsx'
 import ThinkingTrace from './ThinkingTrace.jsx'
@@ -86,6 +87,9 @@ const markdownComponents = {
     const source = mermaidSource(children)
     if (source !== null) return <MermaidDiagram code={source} />
     return <pre {...rest}>{children}</pre>
+  },
+  table(props) {
+    return <MarkdownTable {...props} />
   },
 }
 
