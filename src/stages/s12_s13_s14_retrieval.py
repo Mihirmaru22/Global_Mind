@@ -279,12 +279,6 @@ class Generator:
                 direct_formatted = fast_path_format(qtype, sql_table_md, query)
                 if direct_formatted is not None:
                     # 1. Bypass synthesis entirely (0 tokens, deterministic template)
-                    log_telemetry(
-                        query_id="",
-                        stage="synthesis_bypassed",
-                        output_tokens=0,
-                        extra={"query_type": qtype.value, "bypassed": True},
-                    )
                     return QueryResult(
                         query=query,
                         answer=direct_formatted,
@@ -303,11 +297,6 @@ class Generator:
                         messages = build_aggregate_micro_prompt(query, sql_table_md)
                         summary = await self._router.chat(task="micro_synthesis", messages=messages, max_tokens=150)
                         answer = format_aggregate_fast_path(summary, sql_table_md)
-                        log_telemetry(
-                            query_id="",
-                            stage="micro_synthesis",
-                            extra={"intent": AGGREGATE_QUERY, "max_tokens": 150},
-                        )
                         return QueryResult(
                             query=query,
                             answer=answer,
@@ -320,12 +309,6 @@ class Generator:
                         )
                     except Exception as err:
                         logger.warning("Micro-synthesis failed, falling back to full synthesis: %s", err)
-                elif intent == EXPLANATION_QUERY:
-                    log_telemetry(
-                        query_id="",
-                        stage="full_synthesis",
-                        extra={"intent": EXPLANATION_QUERY},
-                    )
 
         if sql_table_md and not has_other_chunks and not is_feature_enabled("fast_path_enabled"):
             return QueryResult(

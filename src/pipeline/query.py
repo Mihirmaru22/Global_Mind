@@ -115,20 +115,25 @@ class QueryPipeline:
         budget_ctrl = get_or_create_budget_controller(query_id=query_id, force_new=True)
         logger.info("=== Query [%s] [Budget Limit: %d]: %s ===", query_id, budget_ctrl.max_tokens, question[:100])
 
-        scope_key = (filters.get("scope_key") or filters.get("erp_instance_id") if filters else None) or "default"
+        import os
+        scope_key = (filters.get("scope_key") or filters.get("erp_instance_id")) if filters else None
+        if not scope_key:
+            scope_key = os.environ.get("GLOBALMIND_ERP_INSTANCE_ID", "").strip() or None
+
         query_type = classify_query(question)
 
-        # Check Layer 1: Semantic Cache (Instant Path)
+        # Check Layer 1: Semantic Cache (Instant Path) — strictly requires isolated scope_key
         query_emb: list[float] | None = None
-        try:
-            dense_emb, _ = await self._embeddings.embed_query(question)
-            query_emb = dense_emb
-            cached = get_semantic_cache().lookup(question, query_emb, scope_key)
-            if cached is not None:
-                cached.query = question
-                return cached
-        except Exception as e:
-            logger.debug("SemanticCache lookup skipped/failed: %s", e)
+        if scope_key:
+            try:
+                dense_emb, _ = await self._embeddings.embed_query(question)
+                query_emb = dense_emb
+                cached = get_semantic_cache().lookup(question, query_emb, scope_key=scope_key)
+                if cached is not None:
+                    cached.query = question
+                    return cached
+            except Exception as e:
+                logger.debug("SemanticCache lookup skipped/failed: %s", e)
 
         with timed_stage("final_response", query_id=query_id) as final_stage:
             # Short-circuit: "what files/documents do you have?" — answer from registry
@@ -250,8 +255,8 @@ class QueryPipeline:
                 budget_ctrl.max_tokens,
                 status_str,
             )
-            # Non-blocking background cache update after pipeline completes
-            if query_emb is not None and result is not None and not getattr(result, "error", None):
+            # Non-blocking background cache update after pipeline completes (strictly requires scope_key)
+            if scope_key and query_emb is not None and result is not None and not getattr(result, "error", None):
                 ast_passed = getattr(self._sql_retriever, "last_query_status", "success") != "failed"
                 asyncio.create_task(
                     asyncio.to_thread(
