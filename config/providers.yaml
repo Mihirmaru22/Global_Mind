@@ -78,26 +78,32 @@ tasks:
   general_qa:
     providers:
       - provider: groq
-        model: qwen/qwen3.6-27b
+        model: qwen/qwen3.8-27b
         priority: 1
       - provider: groq
         model: openai/gpt-oss-20b
         priority: 2
-      - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+      - provider: gemini
+        model: gemma-4-31b-it
         priority: 3
+      - provider: openrouter
+        model: google/gemma-4-31b-it:free
+        priority: 4
 
   reasoning:
     providers:
       - provider: groq
-        model: qwen/qwen3.6-27b
+        model: qwen/qwen3.8-27b
         priority: 1
       - provider: groq
         model: openai/gpt-oss-20b
         priority: 2
-      - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+      - provider: gemini
+        model: gemma-4-31b-it
         priority: 3
+      - provider: openrouter
+        model: google/gemma-4-31b-it:free
+        priority: 4
 
   extraction:
     providers:
@@ -144,26 +150,32 @@ tasks:
   repair:
     providers:
       - provider: groq
-        model: qwen/qwen3.6-27b
+        model: qwen/qwen3.8-27b
         priority: 1
       - provider: groq
         model: openai/gpt-oss-20b
         priority: 2
-      - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+      - provider: gemini
+        model: gemma-4-31b-it
         priority: 3
+      - provider: openrouter
+        model: google/gemma-4-31b-it:free
+        priority: 4
 
   synthesis:
     providers:
       - provider: groq
-        model: qwen/qwen3.6-27b
+        model: qwen/qwen3.8-27b
         priority: 1
       - provider: groq
         model: openai/gpt-oss-20b
         priority: 2
-      - provider: openrouter
-        model: meta-llama/llama-3.3-70b-instruct:free
+      - provider: gemini
+        model: gemma-4-31b-it
         priority: 3
+      - provider: openrouter
+        model: google/gemma-4-31b-it:free
+        priority: 4
 
   micro_synthesis:
     providers:

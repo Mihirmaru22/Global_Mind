@@ -136,30 +136,29 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
     cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
     target = cleaned if cleaned else text.strip()
 
-    # 1. Try parsing direct or embedded JSON format
-    if (target.startswith("{") and target.endswith("}")) or ("\"sql\"" in target):
-        try:
-            data = json.loads(target)
-            if isinstance(data, dict) and "sql" in data and data["sql"]:
-                return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
-        except Exception:
-            json_match = re.search(r"\{.*\"sql\"\s*:\s*\"([^\"]+)\".*\}", target, re.DOTALL)
-            if json_match:
-                try:
-                    data = json.loads(json_match.group(0))
-                    if isinstance(data, dict) and "sql" in data and data["sql"]:
-                        return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
-                except Exception:
-                    pass
+    # 1. Try parsing direct JSON
+    try:
+        data = json.loads(target)
+        if isinstance(data, dict) and "sql" in data and data["sql"]:
+            return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
+    except Exception:
+        pass
 
-    # 2. Try markdown ```sql ... ``` block
+    # 2. Try regex extraction of JSON "sql" field
+    json_sql_match = re.search(r"\"sql\"\s*:\s*\"(.*?)(?<!\\)\"", target, re.DOTALL)
+    if json_sql_match:
+        sql_cand = json_sql_match.group(1).strip().replace('\\"', '"').replace('\\n', '\n')
+        if sql_cand and any(sql_cand.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+            return target[:json_sql_match.start()].strip(), sql_cand
+
+    # 3. Try markdown ```sql ... ``` block
     m = _FENCE_RE.search(target)
     if m and m.group(1).strip():
         sql = m.group(1).strip()
         cot = target[:m.start()].strip()
         return cot, sql
 
-    # 3. Try finding starting SQL keyword
+    # 4. Try finding starting SQL keyword
     km = _SQL_START_RE.search(target)
     if km and km.start() >= 0:
         cot = target[:km.start()].strip()

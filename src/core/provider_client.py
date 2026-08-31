@@ -439,7 +439,7 @@ class GeminiProvider:
         if response_format and response_format.get("type") == "json_object":
             body["generationConfig"]["responseMimeType"] = "application/json"
 
-        url = f"{self.BASE_URL}/models/{model}:generateContent"
+        url = f"{self.BASE_URL}/models/{model}:generateContent?key={self._api_key}"
         headers = {"x-goog-api-key": self._api_key}
         resp = await http.post(url, json=body, headers=headers)
         resp.raise_for_status()
@@ -488,7 +488,7 @@ class GeminiProvider:
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
-        url = f"{self.BASE_URL}/models/{model}:streamGenerateContent?alt=sse"
+        url = f"{self.BASE_URL}/models/{model}:streamGenerateContent?alt=sse&key={self._api_key}"
         headers = {"x-goog-api-key": self._api_key}
 
         async with http.stream("POST", url, json=body, headers=headers) as resp:
@@ -543,7 +543,7 @@ class GeminiProvider:
             },
         }
 
-        url = f"{self.BASE_URL}/models/{model}:generateContent"
+        url = f"{self.BASE_URL}/models/{model}:generateContent?key={self._api_key}"
         headers = {"x-goog-api-key": self._api_key}
         resp = await http.post(url, json=body, headers=headers)
         resp.raise_for_status()
