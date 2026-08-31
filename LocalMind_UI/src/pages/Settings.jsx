@@ -14,7 +14,7 @@ export default function Settings() {
   const updateSettings = useAppStore((state) => state.updateSettings)
   const runSchemaSync = useAppStore((state) => state.runSchemaSync)
 
-  const current = settings || { theme: 'dark' }
+  const current = settings || { theme: 'light' }
   const setSetting = (patch) => updateSettings(patch)
 
   return (

@@ -1,7 +1,7 @@
 import {
   Library,
   MessageSquare,
-  MoreVertical,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/store.js'
 
 function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
@@ -68,7 +68,7 @@ function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
           aria-label={`Chat actions for ${chat.title}`}
           onClick={(e) => onToggleMenu(chat, e)}
         >
-          <MoreVertical size={15} />
+          <MoreHorizontal size={15} />
         </button>
       </div>
     </div>
@@ -90,6 +90,9 @@ export default function Sidebar() {
   const closeSidebar = useAppStore((state) => state.closeSidebar)
 
   const navigate = useNavigate()
+  const location = useLocation()
+  const isChatRouteActive = location.pathname === '/chat'
+  const chatsLoading = useAppStore((state) => state.chatsLoading)
   const [openMenuId, setOpenMenuId] = useState(null)
   const [menuPosition, setMenuPosition] = useState(null)
   const [dialog, setDialog] = useState({ type: null, chat: null, value: '' })
@@ -185,7 +188,7 @@ export default function Sidebar() {
       <ChatItemRow
         key={chat.id}
         chat={chat}
-        isActive={activeChatId === chat.id}
+        isActive={isChatRouteActive && activeChatId === chat.id}
         isMenuOpen={openMenuId === chat.id}
         onSelect={async () => {
           await selectChat(chat.id)
@@ -289,21 +292,34 @@ export default function Sidebar() {
         </nav>
 
         <div className="sidebar__scroll scrollbar-auto">
-          {pinned.length > 0 ? (
-            <section className="sidebar__section">
-              <p className="section-title">Pinned</p>
-              <div className="chat-list">{renderChatList(pinned)}</div>
+          {chatsLoading ? (
+            <section className="sidebar__section sidebar__section--grow">
+              <p className="section-title">Recent chats</p>
+              <div className="chat-list" aria-busy="true" aria-label="Loading chats">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="chat-item-skeleton" style={{ animationDelay: `${i * 80}ms` }} />
+                ))}
+              </div>
             </section>
-          ) : null}
+          ) : (
+            <>
+              {pinned.length > 0 ? (
+                <section className="sidebar__section">
+                  <p className="section-title">Pinned</p>
+                  <div className="chat-list">{renderChatList(pinned)}</div>
+                </section>
+              ) : null}
 
-          <section className="sidebar__section sidebar__section--grow">
-            <p className="section-title">Recent chats</p>
-            <div className="chat-list">
-              {recent.length ? renderChatList(recent) : (
-                pinned.length === 0 ? <p className="chat-list__empty">No chats yet</p> : null
-              )}
-            </div>
-          </section>
+              <section className="sidebar__section sidebar__section--grow">
+                <p className="section-title">Recent chats</p>
+                <div className="chat-list">
+                  {recent.length ? renderChatList(recent) : (
+                    pinned.length === 0 ? <p className="chat-list__empty">No chats yet</p> : null
+                  )}
+                </div>
+              </section>
+            </>
+          )}
         </div>
 
         {/* Footer — Settings only */}

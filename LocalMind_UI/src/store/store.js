@@ -52,11 +52,6 @@ function normalizeList(value, fallback = []) {
   return fallback
 }
 
-const demoChats = [
-  { id: 'chat-1', title: 'Project summary', updatedAt: new Date().toISOString() },
-  { id: 'chat-2', title: 'Document Q&A', updatedAt: new Date().toISOString() },
-]
-
 let requestSequence = 0
 
 function readStoredBoolean(key, fallback = false) {
@@ -103,9 +98,7 @@ function writeStoredIdSet(key, set) {
 }
 
 function buildUntitledChatTitle(prompt) {
-  const trimmed = prompt.trim()
-  if (trimmed.length <= 48) return trimmed
-  return `${trimmed.slice(0, 45).trimEnd()}...`
+  return prompt.trim()
 }
 
 function touchChat(chats, chatId) {
@@ -323,8 +316,8 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
 }
 
 export const useAppStore = create((set, get) => ({
-  chats: demoChats,
-  activeChatId: demoChats[0].id,
+  chats: [],
+  activeChatId: null,
   messagesByChatId: {},
   draftsByChatId: {},
   documents: [],
@@ -333,6 +326,7 @@ export const useAppStore = create((set, get) => ({
   providers: [],
   providerUsage: [],
   loading: false,
+  chatsLoading: true,
   sidebarOpen: false,
   sidebarCollapsed: readStoredBoolean('localmind-sidebar-collapsed', false),
   pinnedChatIds: readStoredIdSet(PINNED_CHATS_KEY),
@@ -366,7 +360,7 @@ export const useAppStore = create((set, get) => ({
         model: 'Mistral 7B Instruct',
         streamResponses: true,
         autoSync: true,
-        theme: 'dark',
+        theme: 'light',
         provider: defaultProvider,
         ...settings,
       }
@@ -387,22 +381,22 @@ export const useAppStore = create((set, get) => ({
         mergedSettings.provider = defaultProvider
       }
 
-      const normalizedChats = normalizeList(chats, demoChats)
+      const normalizedChats = normalizeList(chats, [])
       const normalizedDocuments = normalizeList(documents, [])
-      const activeChatId = normalizedChats?.[0]?.id || get().activeChatId
+      const activeChatId = normalizedChats?.[0]?.id || null
       const messages = activeChatId ? await getMessages(activeChatId) : []
 
       set({
         overview,
-        chats: normalizedChats.length ? normalizedChats : demoChats,
+        chats: normalizedChats,
         activeChatId,
-        messagesByChatId: { [activeChatId]: (messages || []).filter(Boolean) },
+        messagesByChatId: activeChatId ? { [activeChatId]: (messages || []).filter(Boolean) } : {},
         settings: mergedSettings,
         providers: providerOptions,
         documents: normalizedDocuments,
       })
     } finally {
-      set({ loading: false })
+      set({ loading: false, chatsLoading: false })
     }
 
     // Fire-and-forget: on first app load, scan the server's inbox folder and
@@ -626,7 +620,7 @@ export const useAppStore = create((set, get) => ({
         delete nextDrafts['__pending__']
         if (pendingDraft) nextDrafts[chat.id] = pendingDraft
         return {
-          chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, demoChats)],
+          chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, [])],
           activeChatId: chat.id,
           pendingChat: false,
           messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
