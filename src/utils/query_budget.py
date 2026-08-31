@@ -176,11 +176,9 @@ def get_or_create_budget_controller(
     """Get the active budget controller or lazily initialize and bind a new one."""
     current = get_current_budget_controller()
     if not force_new and current is not None:
-        if not query_id or current.query_id == query_id:
-            return current
         if not current.query_id and query_id:
             current.query_id = query_id
-            return current
+        return current
 
     controller = QueryBudgetController(
         query_id=query_id or "",

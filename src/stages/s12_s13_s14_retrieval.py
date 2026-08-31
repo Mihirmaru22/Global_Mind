@@ -25,6 +25,7 @@ from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
 from src.utils.fast_path import (
     build_aggregate_micro_prompt,
+    fast_path_format,
     format_aggregate_fast_path,
     format_list_fast_path,
 )
@@ -33,6 +34,8 @@ from src.utils.query_classifier import (
     AGGREGATE_QUERY,
     EXPLANATION_QUERY,
     LIST_QUERY,
+    QueryType,
+    classify_query,
     classify_query_intent,
 )
 from src.utils.telemetry import log_telemetry
@@ -272,37 +275,28 @@ class Generator:
                 or "An error occurred" in sql_table_md
             )
             if not is_empty_or_error:
-                intent = classify_query_intent(query)
-                if intent == LIST_QUERY:
-                    # 1. Bypass synthesis entirely (0 tokens)
-                    answer = format_list_fast_path(sql_table_md)
-                    log_telemetry(
-                        query_id="",
-                        stage="synthesis_bypassed",
-                        output_tokens=0,
-                        extra={"intent": LIST_QUERY, "bypassed": True},
-                    )
+                qtype = classify_query(query)
+                direct_formatted = fast_path_format(qtype, sql_table_md, query)
+                if direct_formatted is not None:
+                    # 1. Bypass synthesis entirely (0 tokens, deterministic template)
                     return QueryResult(
                         query=query,
-                        answer=answer,
+                        answer=direct_formatted,
                         citations=[],
-                        model_used="fast_path/list",
+                        model_used=f"fast_path/{qtype.value}",
                         reasoning_task=task,
                         chunks_retrieved=len(chunks),
                         chunks_after_rerank=len(chunks),
                         usage=self._router.usage.model_copy(),
                     )
-                elif intent == AGGREGATE_QUERY:
-                    # 2. Micro-synthesis prompt (max 150 tokens)
+
+                # 2. Fallback to micro-synthesis if query was aggregate and direct template returned None
+                intent = classify_query_intent(query)
+                if intent == AGGREGATE_QUERY:
                     try:
                         messages = build_aggregate_micro_prompt(query, sql_table_md)
                         summary = await self._router.chat(task="micro_synthesis", messages=messages, max_tokens=150)
                         answer = format_aggregate_fast_path(summary, sql_table_md)
-                        log_telemetry(
-                            query_id="",
-                            stage="micro_synthesis",
-                            extra={"intent": AGGREGATE_QUERY, "max_tokens": 150},
-                        )
                         return QueryResult(
                             query=query,
                             answer=answer,
@@ -315,12 +309,6 @@ class Generator:
                         )
                     except Exception as err:
                         logger.warning("Micro-synthesis failed, falling back to full synthesis: %s", err)
-                elif intent == EXPLANATION_QUERY:
-                    log_telemetry(
-                        query_id="",
-                        stage="full_synthesis",
-                        extra={"intent": EXPLANATION_QUERY},
-                    )
 
         if sql_table_md and not has_other_chunks and not is_feature_enabled("fast_path_enabled"):
             return QueryResult(

@@ -196,6 +196,10 @@ class LiveEvaluator:
             "score": 0.0,
             "validator_blocked": False,
         }
+        start_time = time.time()
+        prev_tokens = 0
+        if self._pipeline is not None and hasattr(self._pipeline, "_router"):
+            prev_tokens = self._pipeline._router.usage.total_tokens
 
         try:
             q_text = question.get("question", "")
@@ -212,12 +216,16 @@ class LiveEvaluator:
             else:
                 response = None
 
+            curr_tokens = prev_tokens
+            if self._pipeline is not None and hasattr(self._pipeline, "_router"):
+                curr_tokens = self._pipeline._router.usage.total_tokens
+
             result["latency"] = time.time() - start_time
             result["success"] = True
+            result["tokens_used"] = max(0, curr_tokens - prev_tokens)
 
             if isinstance(response, dict):
                 result["observed_route"] = response.get("route", "SQL")
-                result["tokens_used"] = response.get("usage", {}).get("total_tokens", 0)
                 result["answer"] = response.get("answer", "")
                 if result["observed_route"] == result["expected_route"]:
                     result["score"] = 1.0
@@ -225,8 +233,6 @@ class LiveEvaluator:
                     result["score"] = 0.5
             elif response is not None:
                 # QueryResult object
-                usage = getattr(response, "usage", None)
-                result["tokens_used"] = getattr(usage, "total_tokens", 0) if usage else 0
                 result["answer"] = getattr(response, "answer", "")
                 result["observed_route"] = "SQL" if "SQL Query Executed" in result["answer"] else "DOC"
                 if result["observed_route"] == result["expected_route"]:
@@ -458,6 +464,7 @@ def main() -> None:
     )
     parser.add_argument("--db", type=str, default="global_mind.db", help="Path to SQLite database")
     parser.add_argument("--adversarial-only", action="store_true", help="Run only adversarial tests")
+    parser.add_argument("--start", type=int, default=1, help="1-indexed start question index (default: 1)")
     parser.add_argument("--limit", type=int, help="Limit number of questions to run")
     parser.add_argument("--delay", type=float, default=0.0, help="Delay in seconds between questions to prevent rate limits")
     parser.add_argument("--max-workers", type=int, default=1, help="Max parallel workers (default: 1)")
@@ -479,9 +486,13 @@ def main() -> None:
         print("❌ No questions loaded. Exiting.")
         return
 
+    start_idx = max(0, args.start - 1)
     if args.limit:
-        questions = questions[: args.limit]
-        print(f"⚠️  Limited to {args.limit} questions")
+        questions = questions[start_idx : start_idx + args.limit]
+        print(f"⚠️  Running {len(questions)} questions (from index {args.start} to {args.start + len(questions) - 1})")
+    elif start_idx > 0:
+        questions = questions[start_idx:]
+        print(f"⚠️  Running from index {args.start} ({len(questions)} questions)")
 
     evaluator.run_full_evaluation(questions, max_workers=args.max_workers, delay=args.delay)
     evaluator.generate_report()

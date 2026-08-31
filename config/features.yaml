@@ -1,11 +1,11 @@
 # Feature flags for SQL Retrieval Pipeline Optimization
-# All flags default to false (safe baseline, legacy behavior 100% active).
+# Production configuration enabled for high-accuracy and bounded token economics.
 
 features:
-  delta_repair_enabled: false
-  token_budget_enabled: false
-  schema_compaction_enabled: false
-  sql_safety_enabled: false
-  zero_row_handling_enabled: false
-  fast_path_enabled: false
-  provider_routing_v2_enabled: false
+  delta_repair_enabled: true
+  token_budget_enabled: true
+  schema_compaction_enabled: true
+  sql_safety_enabled: true
+  zero_row_handling_enabled: true
+  fast_path_enabled: true
+  provider_routing_v2_enabled: true

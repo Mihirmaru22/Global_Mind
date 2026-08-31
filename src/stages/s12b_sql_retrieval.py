@@ -136,30 +136,29 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
     cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
     target = cleaned if cleaned else text.strip()
 
-    # 1. Try parsing direct or embedded JSON format
-    if (target.startswith("{") and target.endswith("}")) or ("\"sql\"" in target):
-        try:
-            data = json.loads(target)
-            if isinstance(data, dict) and "sql" in data and data["sql"]:
-                return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
-        except Exception:
-            json_match = re.search(r"\{.*\"sql\"\s*:\s*\"([^\"]+)\".*\}", target, re.DOTALL)
-            if json_match:
-                try:
-                    data = json.loads(json_match.group(0))
-                    if isinstance(data, dict) and "sql" in data and data["sql"]:
-                        return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
-                except Exception:
-                    pass
+    # 1. Try parsing direct JSON
+    try:
+        data = json.loads(target)
+        if isinstance(data, dict) and "sql" in data and data["sql"]:
+            return json.dumps({k: v for k, v in data.items() if k != "sql"}), str(data["sql"]).strip()
+    except Exception:
+        pass
 
-    # 2. Try markdown ```sql ... ``` block
+    # 2. Try regex extraction of JSON "sql" field
+    json_sql_match = re.search(r"\"sql\"\s*:\s*\"(.*?)(?<!\\)\"", target, re.DOTALL)
+    if json_sql_match:
+        sql_cand = json_sql_match.group(1).strip().replace('\\"', '"').replace('\\n', '\n')
+        if sql_cand and any(sql_cand.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+            return target[:json_sql_match.start()].strip(), sql_cand
+
+    # 3. Try markdown ```sql ... ``` block
     m = _FENCE_RE.search(target)
     if m and m.group(1).strip():
         sql = m.group(1).strip()
         cot = target[:m.start()].strip()
         return cot, sql
 
-    # 3. Try finding starting SQL keyword
+    # 4. Try finding starting SQL keyword
     km = _SQL_START_RE.search(target)
     if km and km.start() >= 0:
         cot = target[:km.start()].strip()
@@ -457,20 +456,20 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
     tables = atlas_data["tables"]
     lines: list[str] = []
     
-    # Cap to at most 8 active tables to strictly avoid LLM payload/TPM limits
-    active_tables = sorted(schema_tables)[:8]
+    # Cap to at most 4 active tables to strictly avoid LLM payload/TPM limits (under 8000 TPM)
+    active_tables = sorted(schema_tables)[:4]
     
     for t_name in active_tables:
         if t_name not in tables:
             continue
         t_data = tables[t_name]
         lines.append(f"### Table `{t_name}`: {t_data.get('table_meaning', '')}")
-        for r in t_data.get("table_behavioral_rules", []):
+        for r in t_data.get("table_behavioral_rules", [])[:2]:
             lines.append(f"  - Rule: {r}")
-        for w in t_data.get("join_warnings", []):
+        for w in t_data.get("join_warnings", [])[:1]:
             lines.append(f"  - ⚠️ Warning: {w}")
         
-        # List columns with rules or formulas (max 8 per table)
+        # List columns with rules or formulas (max 4 per table)
         col_count = 0
         for c_name, c_data in t_data.get("columns", {}).items():
             c_rules = c_data.get("behavioral_rules", [])
@@ -479,14 +478,14 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
             if c_rules or formula or c_warns:
                 parts = []
                 if c_rules:
-                    parts.append(" | ".join(c_rules))
+                    parts.append(" | ".join(c_rules[:2]))
                 if c_warns:
-                    parts.append("⚠️ " + " | ".join(c_warns))
+                    parts.append("⚠️ " + " | ".join(c_warns[:1]))
                 if formula:
                     parts.append(f"Formula: `{formula}`")
                 lines.append(f"  - `{t_name}.{c_name}` ({c_data.get('type', 'VARCHAR')}): {'; '.join(parts)}")
                 col_count += 1
-                if col_count >= 8:
+                if col_count >= 4:
                     break
         lines.append("")
         
@@ -1658,6 +1657,13 @@ Schema:
             system_prompt += (
                 "\n\n=== BEHAVIORAL SCHEMA ATLAS & COGNITIVE ONTOLOGY ===\n"
                 f"{behavioral_atlas_text}"
+            )
+
+        scoped_rels = _format_scoped_relationships(schema_tables, query) if schema_tables else ""
+        rels_to_inject = scoped_rels or self._relationships
+        if rels_to_inject:
+            system_prompt += (
+                f"\n\nTable relationships:\n{rels_to_inject}"
             )
 
         if column_glossary:
