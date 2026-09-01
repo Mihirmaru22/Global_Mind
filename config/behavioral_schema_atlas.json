@@ -3724,10 +3724,12 @@
       "domain": "Production",
       "table_meaning": "Factory production planning orders specifying target quantities for machines and products.",
       "table_behavioral_rules": [
-        "Target vs Actual: `production.qty` represents the PLANNED TARGET quantity. Achieved output is stored in `actual_production.apq`.",
+        "Color Foreign Key: In production table, `production.product_color_id` links directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON production.product_color_id = c.id` (NEVER join `product_color`).",
+        "Target vs Actual: `production.qty` represents the PLANNED TARGET quantity (PPQ). Achieved output (APQ) is stored in `actual_production.apq`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
+        "In production table, `product_color_id` joins to `color.id` (table `color`), NOT `product_color.id`.",
         "To find production shortfalls or actual outputs, LEFT JOIN `actual_production` on `production.id = actual_production.production_id`."
       ],
       "columns": {
