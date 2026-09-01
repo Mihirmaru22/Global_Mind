@@ -1473,7 +1473,11 @@ class SQLRetriever:
             if any(k in query_lower for k in ["stock", "inventory", "warehouse", "carton", "on hand"]):
                 glossary_tables.update(["stock", "product", "color", "category", "product_type", "sales_order", "party"])
             if any(k in query_lower for k in ["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq", "ppq"]):
-                glossary_tables.update(["production", "actual_production", "machine", "product", "color", "category"])
+                glossary_tables.update(["production", "actual_production", "product", "color", "category", "product_type", "financial_year"])
+            if any(k in query_lower for k in ["financial year", "fiscal year", "current financial", "fyear", "financial_year"]):
+                glossary_tables.update(["financial_year"])
+            if any(k in query_lower for k in ["finished good", "product type", "raw material"]):
+                glossary_tables.update(["product_type", "product", "category"])
             if any(k in query_lower for k in ["lead", "inquiry", "inquiries", "prospect", "followup", "deal", "pipeline"]):
                 glossary_tables.update(["lead", "lead_history", "users", "party"])
             if any(k in query_lower for k in ["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver"]):
@@ -1820,8 +1824,9 @@ Core SQL Generation & Schema Rules:
 - Blocked Cartons: In `stock`, `party_id` is NULL. Join party through `sales_order`: `stock s JOIN sales_order so ON s.so_id = so.id JOIN party p ON so.party_id = p.id WHERE s.status = 'B'`.
 - Delivery Challan & Pending Sales Orders: To find Sales Orders with pending/undelivered quantity for delivery challan creation, query:
 SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_date, p.party_name AS customer_name, pr.product_name AS product_name, sop.qty AS ordered_quantity, COALESCE(SUM(dcp.qty), 0) AS delivered_quantity, (sop.qty - COALESCE(SUM(dcp.qty), 0)) AS pending_quantity FROM sales_order so JOIN sales_order_products sop ON so.id = sop.sales_order_id JOIN party p ON so.party_id = p.id JOIN product pr ON sop.product_id = pr.id LEFT JOIN delivery_challan dc ON so.id = dc.sales_order_id AND dc.deleted_at IS NULL LEFT JOIN delivery_challan_products dcp ON dc.id = dcp.dc_id AND dcp.product_id = sop.product_id AND dcp.deleted_at IS NULL WHERE so.deleted_at IS NULL AND sop.deleted_at IS NULL AND p.deleted_at IS NULL AND pr.deleted_at IS NULL AND p.status = 'Y' GROUP BY so.sales_order_no, so.sales_order_date, p.party_name, pr.product_name, sop.qty HAVING pending_quantity > 0 ORDER BY so.sales_order_no, pr.product_name;
-- Stock Quantity: CAST(stock.qty AS DECIMAL(10,2)).
+- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
 - Production Output: Planned = `production.qty`, Actual = `actual_production.apq` (join `actual_production ap ON pr.id = ap.production_id AND ap.deleted_at IS NULL`).
+- Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries (WITH prod_m AS (...), stock_m AS (...), so_m AS (...)) aggregated per `(product_id, product_color_id)` before joining to `product p` to prevent Cartesian join multiplication.
 """
 
     def _is_safe_read_query(self, sql: str) -> bool:
