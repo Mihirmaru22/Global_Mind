@@ -170,15 +170,16 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
         if sql_cand:
             return target[:json_sql_unclosed.start()].strip(), sql_cand
 
-    # 5. Try finding standalone SQL keyword if target is pure SQL
-    if any(target.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+    # 5. Try finding standalone SQL keyword if target is pure SQL (must not contain markdown formatting)
+    if not any(c in target for c in ("**", "##", "\n* ", "\n- ", ":\n")) and any(target.upper().strip().startswith(kw) for kw in ("SELECT\b", "SHOW\b", "DESCRIBE\b", "EXPLAIN\b", "WITH\s+[a-zA-Z0-9_]+\s+AS")):
         return "", target
 
     km = _SQL_START_RE.search(target)
     if km and km.start() >= 0:
-        cot = target[:km.start()].strip()
-        sql = target[km.start():].strip()
-        return cot, sql
+        candidate_sql = target[km.start():].strip()
+        if not any(c in candidate_sql for c in ("**", "##", "\n* ", "\n- ", ":\n")):
+            cot = target[:km.start()].strip()
+            return cot, candidate_sql
 
     return "", target
 
@@ -1647,7 +1648,7 @@ class SQLRetriever:
         system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent for {self._dialect.name}.
 Your goal is to translate the business question into a valid, executable, read-only {self._dialect.name} SELECT query.
 
-Output the final SQL query in a ```sql ... ``` code block.
+IMPORTANT: Output ONLY the final SQL query in a ```sql ... ``` code block. Strictly NO introductory explanations, NO conversational prose, NO step-by-step bullet points.
 
 Rules:
 - Read-Only: SELECT statements only. If the schema cannot answer, respond with exactly NO_SQL.
@@ -1707,7 +1708,7 @@ Schema:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query},
                 ],
-                max_tokens=2048
+                max_tokens=768
             )
             if budget_ctrl and budget_ctrl.llm_calls == initial_calls:
                 budget_ctrl.record_call(tokens_used=250, is_repair=False)
