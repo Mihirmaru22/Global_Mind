@@ -5882,12 +5882,14 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Physical on-hand inventory balances by product, color, and warehouse location.",
       "table_behavioral_rules": [
+        "Color Foreign Key: In stock table, `stock.product_color_id` foreign-keys directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON s.product_color_id = c.id` (do NOT join `product_color`).",
         "Batch No vs Product Name: `stock.batch_no` contains numeric lot numbers (e.g. '739', '820'). Product SKU codes (e.g. 'CHP14065105-OUTER') are in `product.product_name`.",
         "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity. Absence of a row means zero stock.",
-        "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p JOIN product_color pc ON pc.product_id = p.id LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id`.",
+        "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p LEFT JOIN stock s ON s.product_id = p.id LEFT JOIN color c ON s.product_color_id = c.id`.",
         "MUST always append `alias.deleted_at IS NULL` to exclude soft-deleted inventory."
       ],
       "join_warnings": [
+        "In stock table, `product_color_id` joins to `color.id` (table `color`), NOT `product_color.id`.",
         "Never use an INNER JOIN on `stock` when querying for low stock or out-of-stock items; an INNER JOIN eliminates 0-stock products."
       ],
       "columns": {
