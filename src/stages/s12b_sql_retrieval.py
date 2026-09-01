@@ -136,6 +136,11 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
     cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
     target = cleaned if cleaned else text.strip()
 
+    # Strip markdown json/sql wrapper if whole text is wrapped
+    if target.startswith("```json") or target.startswith("```sql"):
+        target = re.sub(r"^```(?:json|sql)?\s*", "", target)
+        target = re.sub(r"\s*```$", "", target).strip()
+
     # 1. Try parsing direct JSON
     try:
         data = json.loads(target)
@@ -144,21 +149,31 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
     except Exception:
         pass
 
-    # 2. Try regex extraction of JSON "sql" field
+    # 2. Try markdown ```sql ... ``` block anywhere in text
+    m = _FENCE_RE.search(text)
+    if m and m.group(1).strip():
+        sql = m.group(1).strip()
+        cot = text[:m.start()].strip()
+        return cot, sql
+
+    # 3. Try regex extraction of JSON "sql" field (closed quote)
     json_sql_match = re.search(r"\"sql\"\s*:\s*\"(.*?)(?<!\\)\"", target, re.DOTALL)
     if json_sql_match:
         sql_cand = json_sql_match.group(1).strip().replace('\\"', '"').replace('\\n', '\n')
         if sql_cand and any(sql_cand.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
             return target[:json_sql_match.start()].strip(), sql_cand
 
-    # 3. Try markdown ```sql ... ``` block
-    m = _FENCE_RE.search(target)
-    if m and m.group(1).strip():
-        sql = m.group(1).strip()
-        cot = target[:m.start()].strip()
-        return cot, sql
+    # 4. Try regex extraction of unclosed JSON "sql" field (truncated output)
+    json_sql_unclosed = re.search(r"\"sql\"\s*:\s*\"(SELECT\b.*?)$", target, re.DOTALL | re.IGNORECASE)
+    if json_sql_unclosed:
+        sql_cand = json_sql_unclosed.group(1).strip().replace('\\"', '"').replace('\\n', '\n').rstrip('"').rstrip('}').strip()
+        if sql_cand:
+            return target[:json_sql_unclosed.start()].strip(), sql_cand
 
-    # 4. Try finding starting SQL keyword
+    # 5. Try finding standalone SQL keyword if target is pure SQL
+    if any(target.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+        return "", target
+
     km = _SQL_START_RE.search(target)
     if km and km.start() >= 0:
         cot = target[:km.start()].strip()
@@ -1632,14 +1647,7 @@ class SQLRetriever:
         system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent for {self._dialect.name}.
 Your goal is to translate the business question into a valid, executable, read-only {self._dialect.name} SELECT query.
 
-Respond with valid JSON:
-{{
-  "intent": "summary_of_intent",
-  "tables": ["table1"],
-  "joins": [],
-  "filters": ["status = 'Y'", "deleted_at IS NULL"],
-  "sql": "SELECT COUNT(id) AS total_customers FROM party WHERE status = 'Y' AND deleted_at IS NULL;"
-}}
+Output the final SQL query in a ```sql ... ``` code block.
 
 Rules:
 - Read-Only: SELECT statements only. If the schema cannot answer, respond with exactly NO_SQL.
@@ -1833,6 +1841,8 @@ If 'lead' or 'inquiry' is explicitly mentioned, query lead. If 'customer' or 've
 - Stock Summary Queries: To get a stock summary grouped by Category, Product, Color, Carton Count, and Quantity, write: SELECT c.category_name AS category, p.product_name AS product, col.color AS color, COUNT(DISTINCT s.carton_no) AS available_carton_count, SUM(CAST(s.qty AS DECIMAL(10,2))) AS available_quantity FROM stock s JOIN product p ON s.product_id = p.id JOIN color col ON s.product_color_id = col.id JOIN category c ON p.category_id = c.id JOIN product_type pt ON p.product_type_id = pt.id WHERE s.status = 'B' AND s.deleted_at IS NULL AND p.deleted_at IS NULL AND col.deleted_at IS NULL AND c.deleted_at IS NULL AND pt.deleted_at IS NULL AND (pt.product_type LIKE '%Finish%' OR p.product_type_id = 2) GROUP BY c.category_name, p.product_name, col.color ORDER BY c.category_name, p.product_name, col.color.
 - Cartons Blocked against Sales Orders: In the stock table, `party_id` is NULL. To get customer/party details for blocked stock/cartons against sales orders, ALWAYS join party through `sales_order`: `stock s JOIN sales_order so ON s.so_id = so.id JOIN party p ON so.party_id = p.id` (NEVER `s.party_id = p.id`). Filter `WHERE s.status = 'B' AND s.deleted_at IS NULL AND so.deleted_at IS NULL`.
 - Production Table Color Join: In the `production` table, `production.product_color_id` links directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON production.product_color_id = c.id` (NEVER join `product_color`). To get planned (PPQ) vs actual (APQ) production, join `production pr JOIN product p ON pr.product_id = p.id JOIN color col ON pr.product_color_id = col.id JOIN category c ON pr.category_id = c.id LEFT JOIN actual_production ap ON pr.id = ap.production_id AND ap.deleted_at IS NULL. Match category names using `LIKE '%<name>%'` (e.g. `LIKE '%CHANG%PACK%'`).
+- Delivery Challan & Pending Sales Orders: To find Sales Orders with pending/undelivered quantity for delivery challan creation, write:
+SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_date, p.party_name AS customer_name, pr.product_name AS product_name, sop.qty AS ordered_quantity, COALESCE(SUM(dcp.qty), 0) AS delivered_quantity, (sop.qty - COALESCE(SUM(dcp.qty), 0)) AS pending_quantity FROM sales_order so JOIN sales_order_products sop ON so.id = sop.sales_order_id JOIN party p ON so.party_id = p.id JOIN product pr ON sop.product_id = pr.id LEFT JOIN delivery_challan dc ON so.id = dc.sales_order_id AND dc.deleted_at IS NULL LEFT JOIN delivery_challan_products dcp ON dc.id = dcp.dc_id AND dcp.product_id = sop.product_id AND dcp.deleted_at IS NULL WHERE so.deleted_at IS NULL AND sop.deleted_at IS NULL AND p.deleted_at IS NULL AND pr.deleted_at IS NULL AND p.status = 'Y' GROUP BY so.sales_order_no, so.sales_order_date, p.party_name, pr.product_name, sop.qty HAVING pending_quantity > 0 ORDER BY so.sales_order_no, pr.product_name;
 - Product Codes & Stock: Alphanumeric product/item codes (e.g. 'CHP14065105-OUTER', '34150250-OUTER') are in `product.product_name` (NEVER in `stock.batch_no`). To find stock and colors for a specific product, query `product p JOIN color col ON ... LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = col.id` or `product p LEFT JOIN stock s ON s.product_id = p.id LEFT JOIN color col ON s.product_color_id = col.id WHERE p.product_name LIKE '%<sku>%'`.
 """
 
