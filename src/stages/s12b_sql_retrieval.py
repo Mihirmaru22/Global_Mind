@@ -1433,7 +1433,7 @@ class SQLRetriever:
                 query_vector=dense_vec,
                 sparse_vector=sparse_vec,
                 query_text=query,
-                top_k=8,
+                top_k=4,
                 filters={"chunk_type": ChunkType.SQL_SCHEMA.value},
             )
             
@@ -1471,29 +1471,32 @@ class SQLRetriever:
             candidate_list: list[dict[str, Any]] = []
             seen_tables: set[str] = set()
 
+            # Priority 1: Domain anchor & glossary tables first
+            anchor_extra = []
+            for g_table in sorted(glossary_tables):
+                if g_table in full_ddls:
+                    if g_table not in retrieved_tables:
+                        anchor_extra.append(full_ddls[g_table])
+                        retrieved_tables.add(g_table)
+                    if g_table not in seen_tables:
+                        seen_tables.add(g_table)
+                        candidate_list.append({
+                            "table_name": g_table,
+                            "ddl": full_ddls[g_table],
+                            "source": "domain_anchor",
+                        })
+
+            # Priority 2: Vector RAG chunks
             for chunk in chunks:
                 tbls = _extract_schema_table_names(chunk.chunk.content)
                 for tbl in tbls:
-                    if tbl not in seen_tables:
+                    if tbl not in seen_tables and tbl in full_ddls:
                         seen_tables.add(tbl)
                         candidate_list.append({
                             "table_name": tbl,
                             "ddl": chunk.chunk.content,
                             "source": "vector_rag",
                         })
-
-            anchor_extra = []
-            for g_table in sorted(glossary_tables):
-                if g_table not in retrieved_tables and g_table in full_ddls:
-                    anchor_extra.append(full_ddls[g_table])
-                    retrieved_tables.add(g_table)
-                if g_table not in seen_tables and g_table in full_ddls:
-                    seen_tables.add(g_table)
-                    candidate_list.append({
-                        "table_name": g_table,
-                        "ddl": full_ddls[g_table],
-                        "source": "domain_anchor",
-                    })
 
             if anchor_extra:
                 retrieved_schema += "\n\n-- Domain Anchor & Glossary Tables:\n" + "\n\n".join(anchor_extra)
