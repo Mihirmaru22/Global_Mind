@@ -12,10 +12,12 @@
       "domain": "Production",
       "table_meaning": "Actual completed factory floor manufacturing yields and batch outputs.",
       "table_behavioral_rules": [
+        "Color Foreign Key: In actual_production table, `actual_production.product_color_id` foreign-keys directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON actual_production.product_color_id = c.id` (NEVER join `product_color`).",
         "Actual Output Metric: `apq` represents Actual Production Quantity. Always use `SUM(apq)` to compute total manufactured yield.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
+        "In actual_production table, `product_color_id` joins to `color.id` (table `color`), NOT `product_color.id`.",
         "Join `production` on `actual_production.production_id = production.id` to access planned targets and machine assignments."
       ],
       "columns": {
