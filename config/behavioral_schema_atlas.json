@@ -88,9 +88,12 @@
           "type": "double",
           "business_meaning": "Actual Production Quantity achieved on factory floor.",
           "behavioral_rules": [
-            "Actual output metric; use SUM(apq) for completed manufacturing yield."
+            "Actual floor output metric (APQ); only use when the question explicitly asks for 'actual production quantity' or 'APQ'.",
+            "Do NOT use `actual_production.apq` as the default production quantity for a batch or product; use `production.qty` instead because many batches do not have recorded actual_production rows."
           ],
-          "join_warnings": [],
+          "join_warnings": [
+            "For general production quantity or batch quantity queries, use `production.qty` from the `production` table. Do NOT rely solely on `actual_production.apq`."
+          ],
           "aggregation_formula": "SUM(actual_production.apq)"
         },
         "created_id": {
@@ -3738,7 +3741,8 @@
       "table_meaning": "Factory production planning orders specifying target quantities for machines and products.",
       "table_behavioral_rules": [
         "Color Foreign Key: In production table, `production.product_color_id` links directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON production.product_color_id = c.id` (NEVER join `product_color`).",
-        "Target vs Actual: `production.qty` represents the PLANNED TARGET quantity (PPQ). Achieved output (APQ) is stored in `actual_production.apq`.",
+        "Production Quantity: `production.qty` is the primary production and batch quantity. For general queries asking for production quantity, batch quantity, or quantity produced for a batch or product, use `production.qty`. Do NOT use `actual_production.apq` unless the user explicitly asks for APQ / actual floor output vs target.",
+        "Target vs Actual: If explicitly comparing planned vs actual, `production.qty` represents the batch target quantity, and `actual_production.apq` represents recorded APQ output. Never use `actual_production.apq` alone for general production quantity questions as many batches only have quantity in `production.qty`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
@@ -3825,9 +3829,10 @@
         },
         "qty": {
           "type": "double",
-          "business_meaning": "Planned production target quantity.",
+          "business_meaning": "Primary production quantity of the batch (also serves as production target).",
           "behavioral_rules": [
-            "Represents planned target; compare against actual_production.apq to compute shortfalls."
+            "Primary quantity field for production batches. For questions asking for production quantity or batch quantity, select `production.qty AS production_quantity` (or `SUM(production.qty)`).",
+            "Do NOT use actual_production.apq for general production quantity queries, as actual_production is unpopulated or 0 for many batches."
           ],
           "join_warnings": [],
           "aggregation_formula": "SUM(production.qty)"
