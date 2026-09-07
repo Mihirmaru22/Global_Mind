@@ -2610,15 +2610,21 @@
         },
         "location_code": {
           "type": "text",
-          "business_meaning": "Location Code attribute of packagings.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Bin/rack storage location code for packaged goods (e.g. 762FZNSH, KJGHV4RY, R2P1ZKQ3).",
+          "behavioral_rules": [
+            "To find where a product (e.g. CHP18080120-INNER) is stored in the warehouse, query `packagings pk JOIN warehouse w ON pk.warehouse_id = w.id JOIN product p ON pk.product_id = p.id WHERE p.product_name LIKE '%<product>%' OR pk.location_code LIKE '%<location_code>%'`."
+          ],
+          "join_warnings": [
+            "Do NOT search the warehouse master table directly for product storage location codes; location codes are stored in packagings.location_code."
+          ],
           "aggregation_formula": null
         },
         "warehouse_id": {
           "type": "int(11)",
-          "business_meaning": "Warehouse Id attribute of packagings.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key linking packaging records to warehouse.id.",
+          "behavioral_rules": [
+            "Join `warehouse w ON packagings.warehouse_id = w.id` to get `w.location_name` and `w.warehouse_code`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
