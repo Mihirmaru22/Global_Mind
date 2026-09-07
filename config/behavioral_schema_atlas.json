@@ -5496,9 +5496,13 @@
         },
         "party_po_no": {
           "type": "varchar(191)",
-          "business_meaning": "Party Po No attribute of sales_order.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Customer's / Party's Purchase Order number placed on us.",
+          "behavioral_rules": [
+            "When user asks for 'party PO number', 'customer PO', or 'PO number' for an order, query `sales_order.party_po_no` (join `party p ON sales_order.party_id = p.id`)."
+          ],
+          "join_warnings": [
+            "Do NOT use purchase.ref_po_no for customer PO requests; purchase.ref_po_no is for inward supplier purchases."
+          ],
           "aggregation_formula": null
         },
         "party_po_date": {
