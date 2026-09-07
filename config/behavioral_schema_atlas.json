@@ -6914,9 +6914,13 @@
       "domain": "Master Data",
       "table_meaning": "Unit operational records in Master Data.",
       "table_behavioral_rules": [
-        "MUST always append `unit.deleted_at IS NULL` in the WHERE clause."
+        "MUST always append `unit.deleted_at IS NULL` in the WHERE clause.",
+        "The unit table contains master units of measurement ('Pcs', 'Kg', 'Nos', 'Set', etc.), NOT product names.",
+        "To find the unit for a product, query `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%'`."
       ],
-      "join_warnings": [],
+      "join_warnings": [
+        "Never filter unit.unit_name by product names (e.g. CAP03); always join through product.unit_id."
+      ],
       "columns": {
         "id": {
           "type": "bigint(20) UNSIGNED",
