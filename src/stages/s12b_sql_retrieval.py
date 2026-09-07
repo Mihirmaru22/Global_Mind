@@ -1823,7 +1823,12 @@ Schema:
     })
 
     _OUTPUT_READABILITY_RULES = """
-Core SQL Generation & Schema Rules:
+Core SQL Generation & Schema Mapping Protocol:
+- 4-Step Schema Resolution: Before writing any SQL, strictly resolve:
+  1. Business Intent: What is the user asking for? (Identify exact business entities and metrics).
+  2. Table Selection: Which table physically stores that data? (e.g. product definitions in `product`, machine definitions in `machine`, actual invoices in `stock` where `stock_type = 'PI'`, bin/carton storage locations in `packagings`, measurement units in `unit`, customer orders in `sales_order`).
+  3. Column Resolution: Which specific column stores the value? (e.g. product names/codes in `product.product_name`, not in `batch_no` or `unit_name`; storage codes in `packagings.location_code`, not `warehouse`; customer PO in `sales_order.party_po_no`, not `purchase.ref_po_no`).
+  4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly. Do not invent tables or take roundabout hops when a direct join exists).
 - SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).
 - Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.
 - Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.
