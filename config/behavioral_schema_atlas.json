@@ -594,6 +594,7 @@
       "table_behavioral_rules": [
         "Delivery Challan (DC) vs Invoice: A Delivery Challan is a separate shipping/dispatch document, distinct from invoices. The DC number is stored in `dc_no` and the DC date is in `dc_date`.",
         "Financial Year Reset: `dc_no` is NOT globally unique; it repeats across different financial years (e.g. DC 527 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific DC number without a financial year specified, ALWAYS order by `dc_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON delivery_challan.financial_id = fy.id` to include `fy.fyear`.",
+        "Due Date Linkage: Delivery challan has NO due_date column. The due date of the underlying order is stored in `sales_order.so_due_date`. When queried for the due date of a delivery challan (DC), ALWAYS join `sales_order so ON delivery_challan.sales_order_id = so.id` and select `so.so_due_date AS due_date`.",
         "Direct Party Link: `delivery_challan.party_id` connects DIRECTLY to `party.id`. For queries asking for delivery challans or DC numbers for a customer/party, join `party p ON delivery_challan.party_id = p.id`.",
         "Logistics Details: Carrier is `transport_name`, driver is `driver_name`, vehicle is `vehicle_no`.",
         "Sales Order Linkage: Links to `sales_order` via `sales_order_id`.",
@@ -653,9 +654,13 @@
         },
         "sales_order_id": {
           "type": "int(11)",
-          "business_meaning": "Sales Order Id attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Foreign key linking delivery challan to sales_order.id.",
+          "behavioral_rules": [
+            "Join `sales_order so ON delivery_challan.sales_order_id = so.id` to access `so.so_due_date` (due date) and `so.sales_order_no`."
+          ],
+          "join_warnings": [
+            "Delivery challan has no due date column; due dates must be fetched from `sales_order.so_due_date` via this join."
+          ],
           "aggregation_formula": null
         },
         "remarks": {
@@ -667,16 +672,24 @@
         },
         "transport_name": {
           "type": "varchar(255)",
-          "business_meaning": "Transport Name attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Carrier, transporter, or logistics agency name for the shipment.",
+          "behavioral_rules": [
+            "Use `delivery_challan.transport_name` for transporter / carrier name queries."
+          ],
+          "join_warnings": [
+            "Do NOT use transporter_name; the column is `transport_name`."
+          ],
           "aggregation_formula": null
         },
         "lr_number": {
           "type": "varchar(100)",
-          "business_meaning": "Lr Number attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Lorry Receipt (LR) number or consignment note number.",
+          "behavioral_rules": [
+            "Use `delivery_challan.lr_number` (NOT lr_no) for LR number queries."
+          ],
+          "join_warnings": [
+            "Do NOT use `lr_no`; the column is named `lr_number`."
+          ],
           "aggregation_formula": null
         },
         "lr_date": {
@@ -5517,8 +5530,11 @@
         },
         "so_due_date": {
           "type": "date",
-          "business_meaning": "So Due Date attribute of sales_order.",
-          "behavioral_rules": [],
+          "business_meaning": "Sales order delivery due date / commitment date.",
+          "behavioral_rules": [
+            "Authoritative column for order and delivery due dates.",
+            "For Delivery Challan due dates, join `sales_order so ON delivery_challan.sales_order_id = so.id` and select `so.so_due_date AS due_date`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },

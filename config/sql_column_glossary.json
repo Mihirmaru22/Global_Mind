@@ -587,10 +587,14 @@
   },
   "delivery_challan_lr_number": {
     "maps_to": "delivery_challan.lr_number",
-    "note": "",
+    "note": "Use lr_number (NOT lr_no) in delivery_challan.",
     "synonyms": [
       "delivery challan lr number",
-      "lr number"
+      "lr number",
+      "lr no",
+      "lr",
+      "lorry receipt",
+      "consignment note"
     ]
   },
   "delivery_challan_lr_date": {
@@ -3971,8 +3975,15 @@
   },
   "sales_order_so_due_date": {
     "maps_to": "sales_order.so_due_date",
-    "note": "",
-    "synonyms": []
+    "note": "Authoritative due date for sales orders and delivery challans (via delivery_challan.sales_order_id = sales_order.id)",
+    "synonyms": [
+      "due date",
+      "so due date",
+      "order due date",
+      "delivery due date",
+      "dc due date",
+      "challan due date"
+    ]
   },
   "sales_order_party_id": {
     "maps_to": "sales_order.party_id",
