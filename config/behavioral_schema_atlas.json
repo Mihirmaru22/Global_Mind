@@ -593,6 +593,7 @@
       "table_meaning": "Outbound shipment dispatch notes and logistics manifests.",
       "table_behavioral_rules": [
         "Delivery Challan (DC) vs Invoice: A Delivery Challan is a separate shipping/dispatch document, distinct from invoices. The DC number is stored in `dc_no` and the DC date is in `dc_date`.",
+        "Financial Year Reset: `dc_no` is NOT globally unique; it repeats across different financial years (e.g. DC 527 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific DC number without a financial year specified, ALWAYS order by `dc_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON delivery_challan.financial_id = fy.id` to include `fy.fyear`.",
         "Direct Party Link: `delivery_challan.party_id` connects DIRECTLY to `party.id`. For queries asking for delivery challans or DC numbers for a customer/party, join `party p ON delivery_challan.party_id = p.id`.",
         "Logistics Details: Carrier is `transport_name`, driver is `driver_name`, vehicle is `vehicle_no`.",
         "Sales Order Linkage: Links to `sales_order` via `sales_order_id`.",
@@ -618,13 +619,15 @@
         },
         "dc_no": {
           "type": "int(11)",
-          "business_meaning": "Delivery Challan (DC) number. Authoritative column for DC numbers.",
+          "business_meaning": "Delivery Challan (DC) number. Repeats across different financial years.",
           "behavioral_rules": [
             "Use `delivery_challan.dc_no` for all Delivery Challan (DC) number queries.",
+            "Document numbers repeat in different financial years! When querying a specific `dc_no` without a year specified, order by `dc_date DESC LIMIT 1` to return the latest record, and join `financial_year fy ON delivery_challan.financial_id = fy.id` to include `fy.fyear`.",
             "Never search for DC numbers in `stock.invoice_no`."
           ],
           "join_warnings": [
-            "Join `party p ON delivery_challan.party_id = p.id` to get customer/party details."
+            "Join `party p ON delivery_challan.party_id = p.id` to get customer/party details.",
+            "Always join `financial_year fy ON delivery_challan.financial_id = fy.id` when disambiguating multi-year delivery challans."
           ],
           "aggregation_formula": null
         },
@@ -5464,6 +5467,7 @@
       "table_meaning": "Customer sales order headers recording order dates, customer references, and financial year links.",
       "table_behavioral_rules": [
         "NON-EXISTENT COLUMN: `sales_order` has NO total amount column. You MUST calculate order totals by joining `sales_order_products` and `product` via SUM(sop.qty * p.rate).",
+        "Financial Year Reset: `sales_order_no` is NOT globally unique; it repeats across different financial years (e.g. Sales Order 405 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific order number without a year specified, ALWAYS order by `sales_order_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON sales_order.financial_id = fy.id` to include `fy.fyear`.",
         "Customer Linkage: `party_id` links to `party.id`. Always join `party` to get `party.party_name`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause.",
         "For current financial year filtering, join `financial_year` and filter `financial_year.current_year = 'Y'`."
@@ -5495,9 +5499,13 @@
         },
         "sales_order_no": {
           "type": "int(11)",
-          "business_meaning": "Sales Order No attribute of sales_order.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Sales Order Number. Repeats across different financial years.",
+          "behavioral_rules": [
+            "Document numbers repeat in different financial years! When querying a specific `sales_order_no` without a year specified, order by `sales_order_date DESC LIMIT 1` to return the latest record, and join `financial_year fy ON sales_order.financial_id = fy.id` to include `fy.fyear`."
+          ],
+          "join_warnings": [
+            "Always join `financial_year fy ON sales_order.financial_id = fy.id` when disambiguating multi-year orders."
+          ],
           "aggregation_formula": null
         },
         "sales_order_date": {
