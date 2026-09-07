@@ -5941,9 +5941,14 @@
         },
         "invoice_no": {
           "type": "varchar(191)",
-          "business_meaning": "Invoice No attribute of stock.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Actual Invoice Number for purchase inward / invoice stock movements.",
+          "behavioral_rules": [
+            "For invoice queries (e.g. invoice list, invoice count), query `stock` where `stock_type = 'PI'`.",
+            "Calculate invoice count as `COUNT(DISTINCT stock.invoice_no)`."
+          ],
+          "join_warnings": [
+            "Do NOT use the proforma table for invoice queries unless the user specifically asks for proforma."
+          ],
           "aggregation_formula": null
         },
         "invoice_date": {
@@ -5956,8 +5961,12 @@
         "party_id": {
           "type": "bigint(20)",
           "business_meaning": "Party Id attribute of stock.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "behavioral_rules": [
+            "When `stock_type = 'PI'`, `stock.party_id` connects DIRECTLY to `party.id`. Join `party p ON stock.party_id = p.id`."
+          ],
+          "join_warnings": [
+            "For `stock_type = 'PI'`, join party directly via `stock.party_id = party.id`. Do NOT route through sales_order."
+          ],
           "aggregation_formula": null
         },
         "product_type_id": {
