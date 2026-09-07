@@ -3823,9 +3823,15 @@
         },
         "machine_id": {
           "type": "int(11)",
-          "business_meaning": "Machine Id attribute of production.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Foreign key linking production to machine.id.",
+          "behavioral_rules": [
+            "Foreign key linking to `machine.id`.",
+            "Join `machine m ON production.machine_id = m.id` to access `m.machine_name`.",
+            "To find which machine made a product (e.g. CAP03), join `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product>%'`."
+          ],
+          "join_warnings": [
+            "Do NOT search for product names inside production.batch_no; always join product table."
+          ],
           "aggregation_formula": null
         },
         "created_id": {

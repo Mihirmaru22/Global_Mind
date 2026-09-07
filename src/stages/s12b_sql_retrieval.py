@@ -1473,7 +1473,11 @@ class SQLRetriever:
             if any(k in query_lower for k in ["stock", "inventory", "warehouse", "carton", "on hand"]):
                 glossary_tables.update(["stock", "product", "color", "category", "product_type", "sales_order", "party"])
             if any(k in query_lower for k in ["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq", "ppq"]):
-                glossary_tables.update(["production", "actual_production", "product", "color", "category", "product_type", "financial_year"])
+                glossary_tables.update(["production", "actual_production", "product", "color", "category", "product_type", "financial_year", "machine"])
+            if any(k in query_lower for k in ["machine", "equipment"]):
+                glossary_tables.update(["machine", "production", "product"])
+            if any(k in query_lower for k in ["packaging", "packing", "carton verify"]):
+                glossary_tables.update(["packagings", "production", "product", "color", "warehouse"])
             if any(k in query_lower for k in ["financial year", "fiscal year", "current financial", "fyear", "financial_year"]):
                 glossary_tables.update(["financial_year"])
             if any(k in query_lower for k in ["finished good", "product type", "raw material"]):
@@ -1826,6 +1830,7 @@ Core SQL Generation & Schema Rules:
 SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_date, p.party_name AS customer_name, pr.product_name AS product_name, sop.qty AS ordered_quantity, COALESCE(SUM(dcp.qty), 0) AS delivered_quantity, (sop.qty - COALESCE(SUM(dcp.qty), 0)) AS pending_quantity FROM sales_order so JOIN sales_order_products sop ON so.id = sop.sales_order_id JOIN party p ON so.party_id = p.id JOIN product pr ON sop.product_id = pr.id LEFT JOIN delivery_challan dc ON so.id = dc.sales_order_id AND dc.deleted_at IS NULL LEFT JOIN delivery_challan_products dcp ON dc.id = dcp.dc_id AND dcp.product_id = sop.product_id AND dcp.deleted_at IS NULL WHERE so.deleted_at IS NULL AND sop.deleted_at IS NULL AND p.deleted_at IS NULL AND pr.deleted_at IS NULL AND p.status = 'Y' GROUP BY so.sales_order_no, so.sales_order_date, p.party_name, pr.product_name, sop.qty HAVING pending_quantity > 0 ORDER BY so.sales_order_no, pr.product_name;
 - Fuzzy LIKE Filtering: Always filter descriptive text columns (categories, products, colors, names) using `LIKE '%<term>%'` rather than strict `=`. For categories with spelling variations like 'CHANGABLE PACK', match `c.category_name LIKE '%CHANG%PACK%'` (the database category is 'CHANGEABLE PACK').
 - Production Output & Batches: To get batch-wise Planned (PPQ) and Actual (APQ) production, ALWAYS use `LEFT JOIN actual_production ap ON prd.id = ap.production_id AND ap.deleted_at IS NULL` (NEVER INNER JOIN) and `COALESCE(ap.apq, 0) AS apq`.
+- Machine & Product Production: Product names/codes (e.g. 'CAP03', 'CHP06070110-INNER') are stored in `product.product_name` (NEVER in `production.batch_no` or `stock.batch_no`). To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `m.machine_name`.
 - Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
 - Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries (WITH prod_m AS (...), stock_m AS (...), so_m AS (...)) aggregated per `(product_id, product_color_id)` before joining to `product p` to prevent Cartesian join multiplication.
 """
