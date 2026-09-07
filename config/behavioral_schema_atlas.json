@@ -278,9 +278,14 @@
         },
         "product_type": {
           "type": "enum('RM')",
-          "business_meaning": "Product Type attribute of category.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product type indicator in category ('RM' = Raw Material).",
+          "behavioral_rules": [
+            "Stores 'RM' for Raw Material.",
+            "When filtering by category (e.g. Carton) and Raw Material, write: `category.category_name LIKE '%Carton%' AND (category.product_type = 'RM' OR p.product_type_id = 1)`."
+          ],
+          "join_warnings": [
+            "Do not write `category.product_type = 'Raw Material'`; the enum value is 'RM'. For text 'Raw Material', join table `product_type pt ON p.product_type_id = pt.id`."
+          ],
           "aggregation_formula": null
         },
         "status": {
