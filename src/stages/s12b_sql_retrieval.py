@@ -1471,17 +1471,19 @@ class SQLRetriever:
             if any(k in query_lower for k in ["purchase", "supplier", "vendor", "procure", "inward", "raw material"]):
                 glossary_tables.update(["purchase", "purchase_products", "party", "product", "financial_year"])
             if any(k in query_lower for k in ["stock", "inventory", "warehouse", "carton", "on hand"]):
-                glossary_tables.update(["stock", "product", "color", "category", "product_type", "sales_order", "party", "packagings", "warehouse"])
+                glossary_tables.update(["stock", "product", "product_color", "category", "product_type", "sales_order", "party", "packagings", "warehouse"])
             if any(k in query_lower for k in ["location", "location_code", "stored", "storage", "where is", "bin", "rack"]):
                 glossary_tables.update(["packagings", "warehouse", "product"])
             if any(k in query_lower for k in ["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq", "ppq"]):
-                glossary_tables.update(["production", "actual_production", "product", "color", "category", "product_type", "financial_year", "machine"])
+                glossary_tables.update(["production", "actual_production", "product", "product_color", "category", "product_type", "financial_year", "machine"])
+            if any(k in query_lower for k in ["color", "colour"]):
+                glossary_tables.update(["product_color", "product", "production", "stock"])
             if any(k in query_lower for k in ["unit", "uom", "measurement", "unit of measure"]):
                 glossary_tables.update(["unit", "product"])
             if any(k in query_lower for k in ["machine", "equipment"]):
                 glossary_tables.update(["machine", "production", "product"])
             if any(k in query_lower for k in ["packaging", "packing", "carton verify"]):
-                glossary_tables.update(["packagings", "production", "product", "color", "warehouse"])
+                glossary_tables.update(["packagings", "production", "product", "product_color", "warehouse"])
             if any(k in query_lower for k in ["financial year", "fiscal year", "current financial", "fyear", "financial_year"]):
                 glossary_tables.update(["financial_year"])
             if any(k in query_lower for k in ["finished good", "product type", "raw material"]):
@@ -1826,16 +1828,16 @@ Schema:
 Core SQL Generation & Schema Mapping Protocol:
 - 4-Step Schema Resolution: Before writing any SQL, strictly resolve:
   1. Business Intent: What is the user asking for? (Identify exact business entities and metrics).
-  2. Table Selection: Which table physically stores that data? (e.g. product definitions in `product`, machine definitions in `machine`, batch production quantities in `production`, actual invoices in `stock` where `stock_type = 'PI'`, bin/carton storage locations in `packagings`, measurement units in `unit`, customer orders in `sales_order`).
-  3. Column Resolution: Which specific column stores the value? (e.g. production quantity in `production.qty`, NOT in `actual_production.apq`; product names/codes in `product.product_name`, not in `batch_no` or `unit_name`; storage codes in `packagings.location_code`, not `warehouse`; customer PO in `sales_order.party_po_no`, not `purchase.ref_po_no`).
-  4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly. Do not invent tables or take roundabout hops when a direct join exists).
+  2. Table Selection: Which table physically stores that data? (e.g. product definitions in `product`, machine definitions in `machine`, batch production quantities in `production`, actual invoices in `stock` where `stock_type = 'PI'`, product colors in `product_color`, bin/carton storage locations in `packagings`, measurement units in `unit`, customer orders in `sales_order`).
+  3. Column Resolution: Which specific column stores the value? (e.g. product color in `product_color.color`, NOT in table `color`; production quantity in `production.qty`, NOT in `actual_production.apq`; product names/codes in `product.product_name`, not in `batch_no` or `unit_name`; storage codes in `packagings.location_code`, not `warehouse`; customer PO in `sales_order.party_po_no`, not `purchase.ref_po_no`).
+  4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly: `production.product_color_id = product_color.id`; `production.product_id = product.id`; `production.machine_id = machine.id`; `stock.party_id = party.id` for invoices).
 - SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).
 - Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.
 - Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.
 - In party table, customer/supplier name is `party.party_name` (NEVER party.name). Contact persons are `party.contact_person1`.
 - In lead table, search `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.
 - Unified Contact Search: For generic contact info without 'lead'/'customer', UNION ALL across party and lead.
-- Stock & Production Color: In `stock`, `production`, and `actual_production`, `product_color_id` links to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON s.product_color_id = c.id` (NEVER join product_color).
+- Product Color Linkage: In `production`, `actual_production`, `stock`, and `sales_order_products`, the `product_color_id` column links directly to `product_color.id` (table `product_color`, column `product_color.color`) — NOT to the `color` table! ALWAYS join `product_color pc ON prd.product_color_id = pc.id` and select `pc.color AS color`. NEVER join with the `color` table; `color` is a separate master list whose IDs do not match `product_color_id`, which causes completely wrong colors to be returned.
 - Blocked Cartons: In `stock`, `party_id` is NULL. Join party through `sales_order`: `stock s JOIN sales_order so ON s.so_id = so.id JOIN party p ON so.party_id = p.id WHERE s.status = 'B'`.
 - Delivery Challan & Pending Sales Orders: To find Sales Orders with pending/undelivered quantity for delivery challan creation, query:
 SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_date, p.party_name AS customer_name, pr.product_name AS product_name, sop.qty AS ordered_quantity, COALESCE(SUM(dcp.qty), 0) AS delivered_quantity, (sop.qty - COALESCE(SUM(dcp.qty), 0)) AS pending_quantity FROM sales_order so JOIN sales_order_products sop ON so.id = sop.sales_order_id JOIN party p ON so.party_id = p.id JOIN product pr ON sop.product_id = pr.id LEFT JOIN delivery_challan dc ON so.id = dc.sales_order_id AND dc.deleted_at IS NULL LEFT JOIN delivery_challan_products dcp ON dc.id = dcp.dc_id AND dcp.product_id = sop.product_id AND dcp.deleted_at IS NULL WHERE so.deleted_at IS NULL AND sop.deleted_at IS NULL AND p.deleted_at IS NULL AND pr.deleted_at IS NULL AND p.status = 'Y' GROUP BY so.sales_order_no, so.sales_order_date, p.party_name, pr.product_name, sop.qty HAVING pending_quantity > 0 ORDER BY so.sales_order_no, pr.product_name;

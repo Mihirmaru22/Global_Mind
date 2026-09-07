@@ -12,12 +12,12 @@
       "domain": "Production",
       "table_meaning": "Actual completed factory floor manufacturing yields and batch outputs.",
       "table_behavioral_rules": [
-        "Color Foreign Key: In actual_production table, `actual_production.product_color_id` foreign-keys directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON actual_production.product_color_id = c.id` (NEVER join `product_color`).",
+        "Color Foreign Key: In actual_production table, `actual_production.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON actual_production.product_color_id = pc.id` (NEVER join `color` table).",
         "Actual Output Metric: `apq` represents Actual Production Quantity. Always use `SUM(apq)` to compute total manufactured yield.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
-        "In actual_production table, `product_color_id` joins to `color.id` (table `color`), NOT `product_color.id`.",
+        "In actual_production table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
         "Join `production` on `actual_production.production_id = production.id` to access planned targets and machine assignments."
       ],
       "columns": {
@@ -72,9 +72,13 @@
         },
         "product_color_id": {
           "type": "int(11)",
-          "business_meaning": "Product Color Id attribute of actual_production.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product Color Id attribute linking to product_color.id.",
+          "behavioral_rules": [
+            "Foreign key to `product_color.id`. Join `product_color pc ON actual_production.product_color_id = pc.id` to retrieve `pc.color`."
+          ],
+          "join_warnings": [
+            "Do NOT join to the `color` table; join `product_color` on `product_color_id = product_color.id`."
+          ],
           "aggregation_formula": null
         },
         "batch_no": {
@@ -3740,13 +3744,13 @@
       "domain": "Production",
       "table_meaning": "Factory production planning orders specifying target quantities for machines and products.",
       "table_behavioral_rules": [
-        "Color Foreign Key: In production table, `production.product_color_id` links directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON production.product_color_id = c.id` (NEVER join `product_color`).",
+        "Color Foreign Key: In production table, `production.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON production.product_color_id = pc.id` (NEVER join `color` table).",
         "Production Quantity: `production.qty` is the primary production and batch quantity. For general queries asking for production quantity, batch quantity, or quantity produced for a batch or product, use `production.qty`. Do NOT use `actual_production.apq` unless the user explicitly asks for APQ / actual floor output vs target.",
         "Target vs Actual: If explicitly comparing planned vs actual, `production.qty` represents the batch target quantity, and `actual_production.apq` represents recorded APQ output. Never use `actual_production.apq` alone for general production quantity questions as many batches only have quantity in `production.qty`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
-        "In production table, `product_color_id` joins to `color.id` (table `color`), NOT `product_color.id`.",
+        "In production table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
         "To find production shortfalls or actual outputs, LEFT JOIN `actual_production` on `production.id = actual_production.production_id`."
       ],
       "columns": {
@@ -3801,9 +3805,13 @@
         },
         "product_color_id": {
           "type": "int(11)",
-          "business_meaning": "Product Color Id attribute of production.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product Color Id attribute linking to product_color.id.",
+          "behavioral_rules": [
+            "Foreign key linking to `product_color.id`. Join `product_color pc ON production.product_color_id = pc.id` to access `pc.color`."
+          ],
+          "join_warnings": [
+            "Do NOT join to `color.id`; join `product_color` on `product_color_id = product_color.id`."
+          ],
           "aggregation_formula": null
         },
         "batch_no": {
@@ -3922,7 +3930,8 @@
       "domain": "Master Data",
       "table_meaning": "Color variants and SKUs for products.",
       "table_behavioral_rules": [
-        "Variant Name: Stored in `color_name`.",
+        "Primary table for product color variants. Target of foreign key `product_color_id` in production, stock, and sales_order_products.",
+        "Color Name: Stored in `product_color.color` (e.g. 'RED', 'WHITE').",
         "Product Linkage: `product_id` links to `product.id`.",
         "MUST always append `product_color.deleted_at IS NULL` in the WHERE clause."
       ],
@@ -5912,14 +5921,14 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Physical on-hand inventory balances by product, color, and warehouse location.",
       "table_behavioral_rules": [
-        "Color Foreign Key: In stock table, `stock.product_color_id` foreign-keys directly to `color.id` (table `color`, column `color.color`). ALWAYS join `color c ON s.product_color_id = c.id` (do NOT join `product_color`).",
+        "Color Foreign Key: In stock table, `stock.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON s.product_color_id = pc.id` (do NOT join `color`).",
         "Batch No vs Product Name: `stock.batch_no` contains numeric lot numbers (e.g. '739', '820'). Product SKU codes (e.g. 'CHP14065105-OUTER') are in `product.product_name`.",
         "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity. Absence of a row means zero stock.",
-        "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p LEFT JOIN stock s ON s.product_id = p.id LEFT JOIN color c ON s.product_color_id = c.id`.",
+        "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p LEFT JOIN stock s ON s.product_id = p.id LEFT JOIN product_color pc ON s.product_color_id = pc.id`.",
         "MUST always append `alias.deleted_at IS NULL` to exclude soft-deleted inventory."
       ],
       "join_warnings": [
-        "In stock table, `product_color_id` joins to `color.id` (table `color`), NOT `product_color.id`.",
+        "In stock table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
         "Never use an INNER JOIN on `stock` when querying for low stock or out-of-stock items; an INNER JOIN eliminates 0-stock products."
       ],
       "columns": {
@@ -5990,9 +5999,13 @@
         },
         "product_color_id": {
           "type": "bigint(20)",
-          "business_meaning": "Product Color Id attribute of stock.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product Color Id attribute of stock linking to product_color.id.",
+          "behavioral_rules": [
+            "Foreign key to `product_color.id`. Join `product_color pc ON stock.product_color_id = pc.id` to retrieve `pc.color`."
+          ],
+          "join_warnings": [
+            "Do NOT join to the `color` table; join `product_color` on `stock.product_color_id = product_color.id`."
+          ],
           "aggregation_formula": null
         },
         "batch_no": {
