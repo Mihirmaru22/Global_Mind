@@ -592,6 +592,8 @@
       "domain": "Sales",
       "table_meaning": "Outbound shipment dispatch notes and logistics manifests.",
       "table_behavioral_rules": [
+        "Delivery Challan (DC) vs Invoice: A Delivery Challan is a separate shipping/dispatch document, distinct from invoices. The DC number is stored in `dc_no` and the DC date is in `dc_date`.",
+        "Direct Party Link: `delivery_challan.party_id` connects DIRECTLY to `party.id`. For queries asking for delivery challans or DC numbers for a customer/party, join `party p ON delivery_challan.party_id = p.id`.",
         "Logistics Details: Carrier is `transport_name`, driver is `driver_name`, vehicle is `vehicle_no`.",
         "Sales Order Linkage: Links to `sales_order` via `sales_order_id`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
@@ -616,23 +618,34 @@
         },
         "dc_no": {
           "type": "int(11)",
-          "business_meaning": "Dc No attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Delivery Challan (DC) number. Authoritative column for DC numbers.",
+          "behavioral_rules": [
+            "Use `delivery_challan.dc_no` for all Delivery Challan (DC) number queries.",
+            "Never search for DC numbers in `stock.invoice_no`."
+          ],
+          "join_warnings": [
+            "Join `party p ON delivery_challan.party_id = p.id` to get customer/party details."
+          ],
           "aggregation_formula": null
         },
         "dc_date": {
           "type": "date",
-          "business_meaning": "Dc Date attribute of delivery_challan.",
-          "behavioral_rules": [],
+          "business_meaning": "Delivery Challan dispatch date.",
+          "behavioral_rules": [
+            "Use `delivery_challan.dc_date` for delivery challan dates."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "party_id": {
           "type": "int(11)",
-          "business_meaning": "Party Id attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Customer/Party ID of the delivery challan.",
+          "behavioral_rules": [
+            "`delivery_challan.party_id` links directly to `party.id`. ALWAYS join `party p ON delivery_challan.party_id = p.id`."
+          ],
+          "join_warnings": [
+            "Direct link to party. Do NOT route through sales_order to find the party."
+          ],
           "aggregation_formula": null
         },
         "sales_order_id": {
@@ -5961,7 +5974,8 @@
             "Calculate invoice count as `COUNT(DISTINCT stock.invoice_no)`."
           ],
           "join_warnings": [
-            "Do NOT use the proforma table for invoice queries unless the user specifically asks for proforma."
+            "Do NOT use the proforma table for invoice queries unless the user specifically asks for proforma.",
+            "Do NOT use `stock.invoice_no` for DC numbers. Delivery Challan numbers are stored in `delivery_challan.dc_no`."
           ],
           "aggregation_formula": null
         },
