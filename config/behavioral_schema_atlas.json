@@ -2526,6 +2526,8 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Packagings operational records in Packaging & Stock.",
       "table_behavioral_rules": [
+        "Carton Count vs Carton Quantity: Each row in `packagings` represents ONE physical carton box. `COUNT(pk.id)` or `COUNT(*)` returns the number of physical boxes (e.g. 412 cartons). `pk.qty` stores the product quantity inside that carton box. Therefore, `SUM(pk.qty)` returns the TOTAL CARTON QUANTITY (e.g. 152,354 units). When asked for 'carton quantity', 'total carton quantity', or 'quantity stored in warehouse', ALWAYS use `SUM(pk.qty)`, NEVER `COUNT(*)`!",
+        "Warehouse Matching: Warehouse codes (e.g. 'pm2bzd19') belong to `warehouse.warehouse_code` and warehouse names (e.g. '110') belong to `warehouse.location_name`. ALWAYS join `warehouse w ON packagings.warehouse_id = w.id` and filter `w.warehouse_code = '<code_or_name>'` or `w.location_name = '<name>'`. Do NOT filter `packagings.location_code` for warehouse codes; `location_code` only stores internal bin/rack shelf identifiers.",
         "MUST always append `packagings.deleted_at IS NULL` in the WHERE clause."
       ],
       "join_warnings": [],
@@ -2602,10 +2604,12 @@
         },
         "qty": {
           "type": "double",
-          "business_meaning": "Qty attribute of packagings.",
-          "behavioral_rules": [],
+          "business_meaning": "Product unit quantity contained inside the carton box.",
+          "behavioral_rules": [
+            "Authoritative column for carton quantity. To get the total carton quantity in a warehouse or product, use `SUM(packagings.qty)`. Do NOT use `COUNT(*)`, which only counts box rows."
+          ],
           "join_warnings": [],
-          "aggregation_formula": null
+          "aggregation_formula": "SUM(packagings.qty)"
         },
         "packaging_qty": {
           "type": "double",
@@ -7175,8 +7179,11 @@
     "warehouse": {
       "table_name": "warehouse",
       "domain": "Master Data",
-      "table_meaning": "Warehouse operational records in Master Data.",
+      "table_meaning": "Warehouse facility master definitions.",
       "table_behavioral_rules": [
+        "Warehouse Identification: Warehouses are identified by `warehouse.warehouse_code` (e.g. 'pm2bzd19') and `warehouse.location_name` (e.g. '110'). When a query specifies a warehouse code or name, ALWAYS match against `warehouse.warehouse_code` or `warehouse.location_name` (e.g. `WHERE (w.warehouse_code = 'pm2bzd19' OR w.location_name = '110')`). NEVER search for warehouse codes in `packagings.location_code`.",
+        "Link to Packagings: Connects to inventory cartons via `packagings.warehouse_id = warehouse.id`.",
+        "Carton Count vs Carton Quantity: In `packagings`, each row is one carton box. To calculate TOTAL CARTON QUANTITY (total product units inside cartons in a warehouse), use `SUM(pk.qty)` (e.g. 152,354 units). To calculate TOTAL CARTONS (number of physical boxes), use `COUNT(pk.id)` (e.g. 412 cartons). When asked for 'carton quantity' or 'quantity in warehouse', ALWAYS use `SUM(pk.qty)`, NOT `COUNT(*)`!",
         "MUST always append `warehouse.deleted_at IS NULL` in the WHERE clause."
       ],
       "join_warnings": [],
@@ -7190,15 +7197,19 @@
         },
         "location_name": {
           "type": "varchar(191)",
-          "business_meaning": "Location Name attribute of warehouse.",
-          "behavioral_rules": [],
+          "business_meaning": "Warehouse facility name or location number (e.g. '110', 'Main Warehouse').",
+          "behavioral_rules": [
+            "Use for matching warehouse names or location numbers."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "warehouse_code": {
           "type": "varchar(255)",
-          "business_meaning": "Warehouse Code attribute of warehouse.",
-          "behavioral_rules": [],
+          "business_meaning": "Warehouse alphanumeric code (e.g. 'pm2bzd19').",
+          "behavioral_rules": [
+            "Use `warehouse.warehouse_code` for matching warehouse codes."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },

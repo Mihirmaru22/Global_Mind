@@ -2062,10 +2062,17 @@
   },
   "packagings_qty": {
     "maps_to": "packagings.qty",
-    "note": "",
+    "note": "Authoritative product unit quantity inside carton boxes. For total carton quantity in a warehouse or product, use SUM(packagings.qty). Do NOT use COUNT(*), which only counts box rows.",
     "synonyms": [
       "packagings qty",
-      "qty"
+      "qty",
+      "carton quantity",
+      "total carton quantity",
+      "carton qty",
+      "cartons quantity",
+      "quantity in cartons",
+      "packaging quantity",
+      "carton stock"
     ]
   },
   "packagings_packaging_qty": {
@@ -4848,13 +4855,21 @@
   },
   "warehouse_location_name": {
     "maps_to": "warehouse.location_name",
-    "note": "",
-    "synonyms": []
+    "note": "Warehouse facility name or number (e.g. '110', 'Main Warehouse'). Linked to packagings via packagings.warehouse_id = warehouse.id.",
+    "synonyms": [
+      "warehouse location name",
+      "warehouse name",
+      "warehouse location"
+    ]
   },
   "warehouse_warehouse_code": {
     "maps_to": "warehouse.warehouse_code",
-    "note": "",
-    "synonyms": []
+    "note": "Authoritative warehouse code (e.g. 'pm2bzd19'). Match warehouse codes here, NOT in packagings.location_code! Linked to packagings via packagings.warehouse_id = warehouse.id.",
+    "synonyms": [
+      "warehouse code",
+      "warehouse identifier",
+      "wh code"
+    ]
   },
   "warehouse_status": {
     "maps_to": "warehouse.status",
