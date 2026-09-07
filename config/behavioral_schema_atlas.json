@@ -4210,11 +4210,14 @@
     "product_packaging_detail": {
       "table_name": "product_packaging_detail",
       "domain": "Packaging & Stock",
-      "table_meaning": "Product Packaging Detail operational records in Packaging & Stock.",
+      "table_meaning": "Product Packaging Specification / BOM details (pieces per carton). NOT for stock adjustments.",
       "table_behavioral_rules": [
+        "NOT A Stock Adjustment Table: Do NOT use this table for stock adjustments, stock write-offs, or adjusted quantity. Use `stock_adjustment` instead.",
         "MUST always append `product_packaging_detail.deleted_at IS NULL` in the WHERE clause."
       ],
-      "join_warnings": [],
+      "join_warnings": [
+        "Do NOT query this table for stock adjustments or stock-out / stock-in operations; use `stock_adjustment`."
+      ],
       "columns": {
         "id": {
           "type": "bigint(20) UNSIGNED",
@@ -6235,11 +6238,17 @@
     "stock_adjustment": {
       "table_name": "stock_adjustment",
       "domain": "Packaging & Stock",
-      "table_meaning": "Stock Adjustment operational records in Packaging & Stock.",
+      "table_meaning": "Primary table for inventory stock adjustments, stock-in additions, and stock-out write-offs.",
       "table_behavioral_rules": [
+        "Authoritative Table: `stock_adjustment` is the primary table for ALL manual stock adjustments (stock-in, stock-out, physical count corrections, scrap/wastage). NEVER query `stock` for stock adjustments (`stock` is for purchase inward and sales dispatches). NEVER query `product_packaging_detail` for stock adjustments (`product_packaging_detail` is a packaging BOM master table).",
+        "Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY two valid values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'Stock_Out'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.",
+        "Adjustment Date: `stock_adjustment.stock_adjustment_date` is the transaction date (e.g. `'2025-06-03'`).",
+        "Direct Category & Product Links: Connects directly to `category` via `category_id = category.id`, `product` via `product_id = product.id`, `product_color` via `product_color_id = product_color.id`, and `financial_year` via `financial_id = financial_year.id`.",
         "MUST always append `stock_adjustment.deleted_at IS NULL` in the WHERE clause."
       ],
-      "join_warnings": [],
+      "join_warnings": [
+        "Do NOT join `stock` or `product_packaging_detail` for stock adjustment queries; use `stock_adjustment` directly."
+      ],
       "columns": {
         "id": {
           "type": "bigint(20) UNSIGNED",
@@ -6257,15 +6266,19 @@
         },
         "transaction_type": {
           "type": "enum('StockOut','StockIn')",
-          "business_meaning": "Transaction Type attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Transaction adjustment direction: 'StockOut' (reduction/removal) or 'StockIn' (addition).",
+          "behavioral_rules": [
+            "Exact enum values: 'StockOut' and 'StockIn'. NEVER use 'OUT' or 'IN'."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "stock_adjustment_date": {
           "type": "date",
-          "business_meaning": "Stock Adjustment Date attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Date of stock adjustment transaction.",
+          "behavioral_rules": [
+            "Filter by date using `stock_adjustment.stock_adjustment_date = 'YYYY-MM-DD'`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
@@ -6278,38 +6291,46 @@
         },
         "category_id": {
           "type": "int(11)",
-          "business_meaning": "Category Id attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key to category.id. Links adjustment to category (e.g. 'Carton', 'Raw Material').",
+          "behavioral_rules": [
+            "Join `category c ON stock_adjustment.category_id = c.id` to filter by category name."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "product_id": {
           "type": "int(11)",
-          "business_meaning": "Product Id attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key to product.id. Links adjustment to product name.",
+          "behavioral_rules": [
+            "Join `product p ON stock_adjustment.product_id = p.id` to filter by product name."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "product_color_id": {
           "type": "int(11)",
-          "business_meaning": "Product Color Id attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key to product_color.id.",
+          "behavioral_rules": [
+            "Join `product_color pc ON stock_adjustment.product_color_id = pc.id`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "unit_id": {
           "type": "int(11)",
-          "business_meaning": "Unit Id attribute of stock_adjustment.",
+          "business_meaning": "Foreign key to unit.id.",
           "behavioral_rules": [],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "qty": {
           "type": "double",
-          "business_meaning": "Qty attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Adjusted stock quantity.",
+          "behavioral_rules": [
+            "Authoritative column for stock adjustment quantities. Use `SUM(stock_adjustment.qty)` for total adjusted quantity."
+          ],
           "join_warnings": [],
-          "aggregation_formula": null
+          "aggregation_formula": "SUM(stock_adjustment.qty)"
         },
         "created_id": {
           "type": "int(11)",

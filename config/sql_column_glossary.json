@@ -153,8 +153,14 @@
   },
   "stock_adjustment": {
     "maps_to": "stock_adjustment.qty",
-    "note": "Manual inventory corrections and adjustments.",
+    "note": "Authoritative table for stock adjustments (transaction_type='StockOut' or 'StockIn'). Never use stock or product_packaging_detail.",
     "synonyms": [
+      "stock adjustment",
+      "stock adjustments",
+      "stock-out",
+      "stock out",
+      "stock-in",
+      "stock in",
       "inventory correction",
       "stock write-off",
       "manual adjustment",
@@ -4372,13 +4378,24 @@
   },
   "stock_adjustment_transaction_type": {
     "maps_to": "stock_adjustment.transaction_type",
-    "note": "",
-    "synonyms": []
+    "note": "Exact enum values: 'StockOut' (stock reduction) and 'StockIn' (stock addition). NEVER use 'OUT' or 'IN'!",
+    "synonyms": [
+      "stock out",
+      "stock-out",
+      "stock in",
+      "stock-in",
+      "stockout",
+      "stockin",
+      "transaction type"
+    ]
   },
   "stock_adjustment_stock_adjustment_date": {
     "maps_to": "stock_adjustment.stock_adjustment_date",
-    "note": "",
-    "synonyms": []
+    "note": "Date of stock adjustment transaction.",
+    "synonyms": [
+      "stock adjustment date",
+      "adjustment date"
+    ]
   },
   "stock_adjustment_product_type_id": {
     "maps_to": "stock_adjustment.product_type_id",
@@ -4387,17 +4404,17 @@
   },
   "stock_adjustment_category_id": {
     "maps_to": "stock_adjustment.category_id",
-    "note": "",
+    "note": "Foreign key to category.id. Links adjustment to category (e.g. 'Carton', 'Raw Material').",
     "synonyms": []
   },
   "stock_adjustment_product_id": {
     "maps_to": "stock_adjustment.product_id",
-    "note": "",
+    "note": "Foreign key to product.id. Links adjustment to product name.",
     "synonyms": []
   },
   "stock_adjustment_product_color_id": {
     "maps_to": "stock_adjustment.product_color_id",
-    "note": "",
+    "note": "Foreign key to product_color.id.",
     "synonyms": []
   },
   "stock_adjustment_unit_id": {
@@ -4407,8 +4424,14 @@
   },
   "stock_adjustment_qty": {
     "maps_to": "stock_adjustment.qty",
-    "note": "",
-    "synonyms": []
+    "note": "Adjusted stock quantity. To get total adjusted quantity, use SUM(stock_adjustment.qty).",
+    "synonyms": [
+      "adjusted quantity",
+      "stock out quantity",
+      "stock in quantity",
+      "adjustment quantity",
+      "adjusted qty"
+    ]
   },
   "stock_adjustment_created_id": {
     "maps_to": "stock_adjustment.created_id",
