@@ -89,14 +89,14 @@ tasks:
       - provider: gemini
         model: gemini-3.5-flash
         priority: 1
-      - provider: groq
-        model: qwen/qwen3.8-27b
-        priority: 2
       - provider: nvidia_nim
-        model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
-        priority: 3
+        model: nvidia/nemotron-3.5-lightning-30b-a3b
+        priority: 2
       - provider: groq
         model: openai/gpt-oss-20b
+        priority: 3
+      - provider: groq
+        model: qwen/qwen3.8-27b
         priority: 4
 
   extraction:
