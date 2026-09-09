@@ -153,8 +153,14 @@
   },
   "stock_adjustment": {
     "maps_to": "stock_adjustment.qty",
-    "note": "Manual inventory corrections and adjustments.",
+    "note": "Authoritative table for stock adjustments (transaction_type='StockOut' or 'StockIn'). Never use stock or product_packaging_detail.",
     "synonyms": [
+      "stock adjustment",
+      "stock adjustments",
+      "stock-out",
+      "stock out",
+      "stock-in",
+      "stock in",
       "inventory correction",
       "stock write-off",
       "manual adjustment",
@@ -587,10 +593,14 @@
   },
   "delivery_challan_lr_number": {
     "maps_to": "delivery_challan.lr_number",
-    "note": "",
+    "note": "Use lr_number (NOT lr_no) in delivery_challan.",
     "synonyms": [
       "delivery challan lr number",
-      "lr number"
+      "lr number",
+      "lr no",
+      "lr",
+      "lorry receipt",
+      "consignment note"
     ]
   },
   "delivery_challan_lr_date": {
@@ -2058,10 +2068,17 @@
   },
   "packagings_qty": {
     "maps_to": "packagings.qty",
-    "note": "",
+    "note": "Authoritative product unit quantity inside carton boxes. For total carton quantity in a warehouse or product, use SUM(packagings.qty). Do NOT use COUNT(*), which only counts box rows.",
     "synonyms": [
       "packagings qty",
-      "qty"
+      "qty",
+      "carton quantity",
+      "total carton quantity",
+      "carton qty",
+      "cartons quantity",
+      "quantity in cartons",
+      "packaging quantity",
+      "carton stock"
     ]
   },
   "packagings_packaging_qty": {
@@ -3971,8 +3988,15 @@
   },
   "sales_order_so_due_date": {
     "maps_to": "sales_order.so_due_date",
-    "note": "",
-    "synonyms": []
+    "note": "Authoritative due date for sales orders and delivery challans (via delivery_challan.sales_order_id = sales_order.id)",
+    "synonyms": [
+      "due date",
+      "so due date",
+      "order due date",
+      "delivery due date",
+      "dc due date",
+      "challan due date"
+    ]
   },
   "sales_order_party_id": {
     "maps_to": "sales_order.party_id",
@@ -4354,13 +4378,24 @@
   },
   "stock_adjustment_transaction_type": {
     "maps_to": "stock_adjustment.transaction_type",
-    "note": "",
-    "synonyms": []
+    "note": "Exact enum values: 'StockOut' (stock reduction) and 'StockIn' (stock addition). NEVER use 'OUT' or 'IN'!",
+    "synonyms": [
+      "stock out",
+      "stock-out",
+      "stock in",
+      "stock-in",
+      "stockout",
+      "stockin",
+      "transaction type"
+    ]
   },
   "stock_adjustment_stock_adjustment_date": {
     "maps_to": "stock_adjustment.stock_adjustment_date",
-    "note": "",
-    "synonyms": []
+    "note": "Date of stock adjustment transaction.",
+    "synonyms": [
+      "stock adjustment date",
+      "adjustment date"
+    ]
   },
   "stock_adjustment_product_type_id": {
     "maps_to": "stock_adjustment.product_type_id",
@@ -4369,17 +4404,17 @@
   },
   "stock_adjustment_category_id": {
     "maps_to": "stock_adjustment.category_id",
-    "note": "",
+    "note": "Foreign key to category.id. Links adjustment to category (e.g. 'Carton', 'Raw Material').",
     "synonyms": []
   },
   "stock_adjustment_product_id": {
     "maps_to": "stock_adjustment.product_id",
-    "note": "",
+    "note": "Foreign key to product.id. Links adjustment to product name.",
     "synonyms": []
   },
   "stock_adjustment_product_color_id": {
     "maps_to": "stock_adjustment.product_color_id",
-    "note": "",
+    "note": "Foreign key to product_color.id.",
     "synonyms": []
   },
   "stock_adjustment_unit_id": {
@@ -4389,8 +4424,14 @@
   },
   "stock_adjustment_qty": {
     "maps_to": "stock_adjustment.qty",
-    "note": "",
-    "synonyms": []
+    "note": "Adjusted stock quantity. To get total adjusted quantity, use SUM(stock_adjustment.qty).",
+    "synonyms": [
+      "adjusted quantity",
+      "stock out quantity",
+      "stock in quantity",
+      "adjustment quantity",
+      "adjusted qty"
+    ]
   },
   "stock_adjustment_created_id": {
     "maps_to": "stock_adjustment.created_id",
@@ -4837,13 +4878,21 @@
   },
   "warehouse_location_name": {
     "maps_to": "warehouse.location_name",
-    "note": "",
-    "synonyms": []
+    "note": "Warehouse facility name or number (e.g. '110', 'Main Warehouse'). Linked to packagings via packagings.warehouse_id = warehouse.id.",
+    "synonyms": [
+      "warehouse location name",
+      "warehouse name",
+      "warehouse location"
+    ]
   },
   "warehouse_warehouse_code": {
     "maps_to": "warehouse.warehouse_code",
-    "note": "",
-    "synonyms": []
+    "note": "Authoritative warehouse code (e.g. 'pm2bzd19'). Match warehouse codes here, NOT in packagings.location_code! Linked to packagings via packagings.warehouse_id = warehouse.id.",
+    "synonyms": [
+      "warehouse code",
+      "warehouse identifier",
+      "wh code"
+    ]
   },
   "warehouse_status": {
     "maps_to": "warehouse.status",

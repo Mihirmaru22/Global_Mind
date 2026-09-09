@@ -191,7 +191,11 @@ class QueryPipeline:
                         model_used="none",
                         reasoning_task="sql_unavailable",
                     )
-                fallback_msg = "No relevant documents found. Please upload documents first."
+                db_keywords = ["sales", "order", "delivery", "challan", "stock", "product", "lead", "party", "customer", "vendor", "invoice", "quotation", "production", "carton", "qty", "quantity", "price", "rate"]
+                if any(k in question.lower() for k in db_keywords):
+                    fallback_msg = "No matching database records found for this query."
+                else:
+                    fallback_msg = "No relevant documents found. Please upload documents first."
 
                 return QueryResult(
                     query=question,

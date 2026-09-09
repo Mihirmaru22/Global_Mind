@@ -17,6 +17,7 @@ import rehypeHighlight from 'rehype-highlight'
 import clsx from 'clsx'
 import TextareaAutosize from 'react-textarea-autosize'
 import { useAppStore } from '../store/store.js'
+import MarkdownTable from './MarkdownTable.jsx'
 import MermaidDiagram from './MermaidDiagram.jsx'
 import IngestionCard from './IngestionCard.jsx'
 import ThinkingTrace from './ThinkingTrace.jsx'
@@ -87,6 +88,9 @@ const markdownComponents = {
     if (source !== null) return <MermaidDiagram code={source} />
     return <pre {...rest}>{children}</pre>
   },
+  table(props) {
+    return <MarkdownTable {...props} />
+  },
 }
 
 function useTypewriterText(text, enabled) {
@@ -127,7 +131,7 @@ function useTypewriterText(text, enabled) {
   return displayedText
 }
 
-export default function Message({ message, index = 0, chatId, isLast = false }) {
+export default function Message({ message, index = 0, chatId, isLast = false, hasLaterUserMessage = false }) {
   const markMessageAsSeen = useAppStore((state) => state.markMessageAsSeen)
   const setMessageFeedback = useAppStore((state) => state.setMessageFeedback)
   const regenerateMessage = useAppStore((state) => state.regenerateMessage)
@@ -159,7 +163,7 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
     (isAssistant && !isLoading && typedContent.length < (message.content || '').length) || isStreaming
   const feedback = message.feedback || null
   const canRegenerate = isAssistant && !isLoading && !isStreaming && isLast
-  const canEdit = !isAssistant && !loading
+  const canEdit = !isAssistant && !loading && !hasLaterUserMessage
   const versions = message.versions || []
   const activeVersion = message.activeVersion ?? Math.max(0, versions.length - 1)
   const hasVersions = versions.length > 1 && !isLoading && !isStreaming
@@ -428,13 +432,22 @@ export default function Message({ message, index = 0, chatId, isLast = false }) 
               <div className="message__actions message__actions--user">
                 <button
                   type="button"
-                  className="message__action"
-                  onClick={() => setIsEditing(true)}
-                  aria-label="Edit message"
-                  disabled={!canEdit}
+                  className={clsx('message__action', copied && 'message__action--active')}
+                  onClick={handleCopy}
+                  aria-label="Copy message"
                 >
-                  <PencilLine size={14} />
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
+                {canEdit ? (
+                  <button
+                    type="button"
+                    className="message__action"
+                    onClick={() => setIsEditing(true)}
+                    aria-label="Edit message"
+                  >
+                    <PencilLine size={14} />
+                  </button>
+                ) : null}
               </div>
             </>
           )}

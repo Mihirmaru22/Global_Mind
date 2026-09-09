@@ -10,12 +10,18 @@ const InputBox = forwardRef(function InputBox(
     onStop,
     disabled = false,
     loading = false,
+    cooldown = 0,
     placeholder = 'Write a message...',
     footer = null,
   },
   ref,
 ) {
-  const canSubmit = value.trim().length > 0 && !disabled && !loading
+  const isBlocked = disabled || loading || cooldown > 0
+  const canSubmit = value.trim().length > 0 && !isBlocked
+
+  const currentPlaceholder = cooldown > 0
+    ? `Rate protection: ready in ${cooldown}s...`
+    : placeholder
 
   return (
     <form
@@ -28,7 +34,7 @@ const InputBox = forwardRef(function InputBox(
       <TextareaAutosize
         ref={ref}
         className="composer__input"
-        placeholder={placeholder}
+        placeholder={currentPlaceholder}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
@@ -39,7 +45,7 @@ const InputBox = forwardRef(function InputBox(
         }}
         minRows={1}
         maxRows={5}
-        disabled={disabled || loading}
+        disabled={isBlocked}
       />
       <div className="composer__footer">
         <div className="composer__footer-left">{footer}</div>
@@ -53,6 +59,28 @@ const InputBox = forwardRef(function InputBox(
             >
               <Square size={14} fill="currentColor" />
             </button>
+          ) : cooldown > 0 ? (
+            <div
+              className="composer__cooldown"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '11px',
+                fontWeight: 600,
+                color: '#888',
+                cursor: 'not-allowed',
+                userSelect: 'none',
+                minWidth: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.12)'
+              }}
+              title={`Rate protection: ready in ${cooldown}s`}
+            >
+              {cooldown}s
+            </div>
           ) : (
             <button
               type="submit"

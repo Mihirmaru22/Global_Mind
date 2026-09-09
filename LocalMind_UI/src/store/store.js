@@ -13,7 +13,6 @@ import {
   getProviders,
   getProviderUsage,
   getSettings,
-  persistIngestionCard,
   renameChat as renameChatApi,
   saveSettings,
   scanIngestFolder,
@@ -53,11 +52,6 @@ function normalizeList(value, fallback = []) {
   return fallback
 }
 
-const demoChats = [
-  { id: 'chat-1', title: 'Project summary', updatedAt: new Date().toISOString() },
-  { id: 'chat-2', title: 'Document Q&A', updatedAt: new Date().toISOString() },
-]
-
 let requestSequence = 0
 
 function readStoredBoolean(key, fallback = false) {
@@ -78,10 +72,33 @@ function writeStoredBoolean(key, value) {
   }
 }
 
+// Pin state has no backend field (chats are just { id, title, updatedAt }),
+// so it's tracked client-side and persisted to localStorage. This means it
+// won't sync across devices — a small backend addition (a `pinned` column +
+// PATCH support) would be needed for that.
+const PINNED_CHATS_KEY = 'localmind-pinned-chats'
+
+function readStoredIdSet(key) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw)
+    return new Set(Array.isArray(parsed) ? parsed : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function writeStoredIdSet(key, set) {
+  try {
+    localStorage.setItem(key, JSON.stringify([...set]))
+  } catch {
+    // Ignore storage issues; pin state just won't survive a reload.
+  }
+}
+
 function buildUntitledChatTitle(prompt) {
-  const trimmed = prompt.trim()
-  if (trimmed.length <= 48) return trimmed
-  return `${trimmed.slice(0, 45).trimEnd()}...`
+  return prompt.trim()
 }
 
 function touchChat(chats, chatId) {
@@ -299,19 +316,30 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
 }
 
 export const useAppStore = create((set, get) => ({
-  chats: demoChats,
-  activeChatId: demoChats[0].id,
+  chats: [],
+  activeChatId: null,
   messagesByChatId: {},
+  draftsByChatId: {},
   documents: [],
   overview: null,
   settings: null,
   providers: [],
   providerUsage: [],
   loading: false,
+  chatsLoading: true,
   sidebarOpen: false,
   sidebarCollapsed: readStoredBoolean('localmind-sidebar-collapsed', false),
+  pinnedChatIds: readStoredIdSet(PINNED_CHATS_KEY),
   selectedDocId: null,
   activeRequest: null,
+  // true = user clicked "New Chat" but hasn't sent a message yet.
+  // In this state activeChatId is null and no backend chat has been created.
+  // The real chat is created lazily on the first sendPrompt().
+  pendingChat: false,
+  // Live progress for a document being ingested/replaced in the Documents
+  // page. Not tied to a chat message — the whole point is that ingestion no
+  // longer creates a chat. Cleared once the pipeline finishes.
+  ingestionProgress: null,
 
   initApp: async () => {
     set({ loading: true })
@@ -332,7 +360,7 @@ export const useAppStore = create((set, get) => ({
         model: 'Mistral 7B Instruct',
         streamResponses: true,
         autoSync: true,
-        theme: 'dark',
+        theme: 'light',
         provider: defaultProvider,
         ...settings,
       }
@@ -353,22 +381,22 @@ export const useAppStore = create((set, get) => ({
         mergedSettings.provider = defaultProvider
       }
 
-      const normalizedChats = normalizeList(chats, demoChats)
+      const normalizedChats = normalizeList(chats, [])
       const normalizedDocuments = normalizeList(documents, [])
-      const activeChatId = normalizedChats?.[0]?.id || get().activeChatId
+      const activeChatId = normalizedChats?.[0]?.id || null
       const messages = activeChatId ? await getMessages(activeChatId) : []
 
       set({
         overview,
-        chats: normalizedChats.length ? normalizedChats : demoChats,
+        chats: normalizedChats,
         activeChatId,
-        messagesByChatId: { [activeChatId]: (messages || []).filter(Boolean) },
+        messagesByChatId: activeChatId ? { [activeChatId]: (messages || []).filter(Boolean) } : {},
         settings: mergedSettings,
         providers: providerOptions,
         documents: normalizedDocuments,
       })
     } finally {
-      set({ loading: false })
+      set({ loading: false, chatsLoading: false })
     }
 
     // Fire-and-forget: on first app load, scan the server's inbox folder and
@@ -404,7 +432,7 @@ export const useAppStore = create((set, get) => ({
         toast.info('No files found', {
           id: toastId,
           description: 'Nothing in the inbox folder to ingest.',
-          duration: Infinity,
+          duration: 4000,
         })
         return
       }
@@ -426,52 +454,39 @@ export const useAppStore = create((set, get) => ({
         notify(`${ingested} new file${plural(ingested)} ingested`, {
           id: toastId,
           description,
-          duration: Infinity,
+          duration: 4000,
         })
       } else {
         toast.info('No new files', {
           id: toastId,
           description: description || 'Everything in the inbox folder is already ingested.',
-          duration: Infinity,
+          duration: 4000,
         })
       }
     } catch (error) {
       toast.error('Inbox scan failed', {
         id: toastId,
         description: error.message || 'The server could not scan the inbox folder.',
-        duration: Infinity,
-      })
-    }
-  },
-
-  // Sync the live database schema into Qdrant for Schema RAG.
-  runSchemaSync: async () => {
-    const toastId = toast.loading('Syncing database schema...')
-    try {
-      const result = await syncSchema()
-      const tables = result?.tables_synced || 0
-      
-      toast.success('Schema sync complete', {
-        id: toastId,
-        description: `Successfully embedded ${tables} table${plural(tables)} into the vector store.`,
-        duration: 5000,
-      })
-    } catch (error) {
-      toast.error('Schema sync failed', {
-        id: toastId,
-        description: error.response?.data?.detail || error.message || 'Could not sync schema.',
-        duration: Infinity,
+        duration: 6000,
       })
     }
   },
 
   selectChat: async (chatId) => {
-    set({ activeChatId: chatId, sidebarOpen: false })
+    set({ activeChatId: chatId, sidebarOpen: false, pendingChat: false })
     const { messagesByChatId } = get()
     if (messagesByChatId[chatId]) return
     const messages = await getMessages(chatId)
     set((state) => ({
       messagesByChatId: { ...state.messagesByChatId, [chatId]: (messages || []).filter(Boolean) },
+    }))
+  },
+
+  setDraft: (chatId, text) => {
+    // When in pending mode (no real chat yet), store the draft under '__pending__'
+    const key = chatId || '__pending__'
+    set((state) => ({
+      draftsByChatId: { ...state.draftsByChatId, [key]: text },
     }))
   },
 
@@ -484,14 +499,26 @@ export const useAppStore = create((set, get) => ({
       return { sidebarCollapsed: nextValue }
     }),
 
-  newChat: async () => {
-    const chat = await createChat('New Chat')
-    set((state) => ({
-      chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, demoChats)],
-      activeChatId: chat.id,
-      sidebarOpen: false,
-      messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
-    }))
+  newChat: () => {
+    const { pendingChat, activeChatId, messagesByChatId, chats } = get()
+
+    // Already in pending mode (clicked New Chat, haven't sent anything yet) — stay put.
+    if (pendingChat) {
+      set({ sidebarOpen: false })
+      return
+    }
+
+    // Already on an existing untitled empty chat — treat it as the pending slot.
+    const activeChat = chats.find((c) => c.id === activeChatId)
+    const activeMessages = messagesByChatId[activeChatId] || []
+    if (activeChat?.isUntitled && activeMessages.length === 0) {
+      set({ sidebarOpen: false })
+      return
+    }
+
+    // Enter pending mode: no API call, no sidebar entry yet.
+    // The chat is created for real on the first sendPrompt().
+    set({ activeChatId: null, pendingChat: true, sidebarOpen: false })
   },
 
   renameChat: async (chatId, title) => {
@@ -548,6 +575,8 @@ export const useAppStore = create((set, get) => ({
     const remainingChats = state.chats.filter((chat) => chat.id !== chatId)
     const restMessages = { ...state.messagesByChatId }
     delete restMessages[chatId]
+    const restDrafts = { ...state.draftsByChatId }
+    delete restDrafts[chatId]
 
     try {
       await deleteChatApi(chatId)
@@ -561,6 +590,7 @@ export const useAppStore = create((set, get) => ({
         chats: [{ ...chat, title: 'New Chat', isUntitled: true }],
         activeChatId: chat.id,
         messagesByChatId: { [chat.id]: [] },
+        draftsByChatId: restDrafts,
         sidebarOpen: false,
       })
       return
@@ -570,13 +600,38 @@ export const useAppStore = create((set, get) => ({
       chats: remainingChats,
       activeChatId: state.activeChatId === chatId ? remainingChats[0].id : state.activeChatId,
       messagesByChatId: restMessages,
+      draftsByChatId: restDrafts,
       sidebarOpen: false,
     })
   },
 
   sendPrompt: async (content) => {
-    const { activeChatId } = get()
-    if (!activeChatId || !content.trim() || get().activeRequest) return
+    let { activeChatId, pendingChat } = get()
+    if (!content.trim() || get().activeRequest) return
+
+    // ── Lazy chat creation ─────────────────────────────────────────────────
+    // If the user clicked "New Chat" but hasn't sent anything yet, now is the
+    // moment we actually create the backend chat and add it to the sidebar.
+    if (pendingChat || !activeChatId) {
+      const chat = await createChat('New Chat')
+      const pendingDraft = get().draftsByChatId['__pending__']
+      set((state) => {
+        const nextDrafts = { ...state.draftsByChatId }
+        delete nextDrafts['__pending__']
+        if (pendingDraft) nextDrafts[chat.id] = pendingDraft
+        return {
+          chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, [])],
+          activeChatId: chat.id,
+          pendingChat: false,
+          messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
+          draftsByChatId: nextDrafts,
+        }
+      })
+      activeChatId = chat.id
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    if (!activeChatId) return
 
     const prompt = content.trim()
     const activeChat = get().chats.find((chat) => chat.id === activeChatId)
@@ -595,6 +650,10 @@ export const useAppStore = create((set, get) => ({
       messagesByChatId: {
         ...state.messagesByChatId,
         [activeChatId]: [...(state.messagesByChatId[activeChatId] || []), userMessage, placeholder],
+      },
+      draftsByChatId: {
+        ...state.draftsByChatId,
+        [activeChatId]: '',
       },
       activeRequest: { id: requestId, chatId: activeChatId, placeholderId: placeholder.id },
       loading: true,
@@ -738,6 +797,9 @@ export const useAppStore = create((set, get) => ({
     const messageIndex = messages.findIndex((message) => message.id === messageId)
     const message = messages[messageIndex]
     if (!message || message.role !== 'user') return
+    // A user turn stays editable until another user turn appears after it.
+    // Assistant replies in between do not lock it; the next user message does.
+    if (messages.slice(messageIndex + 1).some((entry) => entry.role === 'user')) return
 
     const requestId = ++requestSequence
     const placeholder = createLoadingAssistantMessage(requestId)
@@ -777,44 +839,64 @@ export const useAppStore = create((set, get) => ({
     return uploaded
   },
 
-  // Upload + ingest a file into its own chat, streaming the 10-stage pipeline
-  // progress into a persistent card (kind: 'ingestion') that survives reload.
+  // Upload + ingest a file, streaming the 10-stage pipeline progress into
+  // `ingestionProgress` for the Documents page to render. Deliberately does
+  // NOT create a chat — ingestion is a document-library action, not a
+  // conversation. Progress lives only for the duration of the upload; it
+  // doesn't persist across a reload (that would need a small backend change
+  // to store per-document stage history instead of per-chat messages).
   ingestDocument: async (file) =>
-    get()._streamIngestionCard({
+    get()._streamIngestionProgress({
       file,
-      title: `📄 ${file.name}`,
       stream: (onEvent) => uploadDocumentStream(file, onEvent),
       doneVerb: 'Ingested',
       failVerb: 'Ingestion',
     }),
 
-  // Replace an existing document with a new file. Uses the same streaming card
-  // so the user sees the full pipeline run; the backend keeps the old version
-  // live until the new one is fully indexed (safe atomic cutover).
+  // Replace an existing document with a new file, same non-chat progress
+  // stream. The backend keeps the old version live until the new one is
+  // fully indexed (safe atomic cutover).
   replaceDocument: async (oldDocumentId, file) =>
-    get()._streamIngestionCard({
+    get()._streamIngestionProgress({
       file,
-      title: `♻️ Replace → ${file.name}`,
       stream: (onEvent) => replaceDocumentStream(oldDocumentId, file, onEvent),
       doneVerb: 'Replaced with',
       failVerb: 'Replace',
     }),
+
+  // Sync the live database schema into Qdrant for Schema RAG.
+  runSchemaSync: async () => {
+    const toastId = toast.loading('Syncing database schema...')
+    try {
+      const result = await syncSchema()
+      const tables = result?.tables_synced || 0
+
+      toast.success('Schema sync complete', {
+        id: toastId,
+        description: `Successfully embedded ${tables} table${plural(tables)} into the vector store.`,
+        duration: 5000,
+      })
+    } catch (error) {
+      toast.error('Schema sync failed', {
+        id: toastId,
+        description: error.response?.data?.detail || error.message || 'Could not sync schema.',
+        duration: 6000,
+      })
+    }
+  },
 
   deleteDocument: async (documentId) => {
     await deleteDocumentApi(documentId)
     await get().refreshDocuments()
   },
 
-  // Shared driver for ingest/replace: opens a chat, streams stage events into a
-  // persistent ingestion card, refreshes the document list, and persists the
-  // finished card so its step trace survives a reload.
-  _streamIngestionCard: async ({ file, title, stream, doneVerb, failVerb }) => {
-    const chat = await createChat(title)
-    const messageId = `ingest-${Date.now()}`
-    const card = {
-      id: messageId,
-      role: 'assistant',
-      kind: 'ingestion',
+  // Shared driver for ingest/replace: streams stage events straight into
+  // `ingestionProgress` (no chat, no persistent message) and refreshes the
+  // document list once the pipeline finishes.
+  _streamIngestionProgress: async ({ file, stream, doneVerb, failVerb }) => {
+    const progressId = `ingest-${Date.now()}`
+    const progress = {
+      id: progressId,
       fileName: file.name,
       status: 'running',
       steps: INGESTION_STAGES.map((label, i) => ({
@@ -826,48 +908,33 @@ export const useAppStore = create((set, get) => ({
       summary: null,
       content: '',
       createdAt: new Date().toISOString(),
-      chatId: chat.id,
     }
 
-    set((state) => ({
-      chats: [
-        { ...chat, title, isUntitled: false },
-        ...normalizeList(state.chats, demoChats),
-      ],
-      activeChatId: chat.id,
-      messagesByChatId: { ...state.messagesByChatId, [chat.id]: [card] },
-      sidebarOpen: false,
-    }))
+    set({ ingestionProgress: progress })
 
-    const patchCard = (updater) =>
-      set((state) => ({
-        messagesByChatId: {
-          ...state.messagesByChatId,
-          [chat.id]: (state.messagesByChatId[chat.id] || []).map((m) =>
-            m.id === messageId ? { ...m, ...updater(m) } : m,
-          ),
-        },
-      }))
+    const patchProgress = (updater) =>
+      set((state) => {
+        if (!state.ingestionProgress || state.ingestionProgress.id !== progressId) return state
+        return { ingestionProgress: { ...state.ingestionProgress, ...updater(state.ingestionProgress) } }
+      })
 
     try {
       await stream((event) => {
         if (event.type === 'progress') {
-          patchCard((m) => ({
-            steps: m.steps.map((s) =>
+          patchProgress((p) => ({
+            steps: p.steps.map((s) =>
               s.stage === event.stage
                 ? { ...s, status: event.status, detail: event.detail || s.detail }
                 : s,
             ),
           }))
         } else if (event.type === 'skipped') {
-          patchCard(() => ({ status: 'skipped' }))
+          patchProgress(() => ({ status: 'skipped' }))
         } else if (event.type === 'complete') {
           const result = event.result || {}
-          patchCard((m) => ({
+          patchProgress((p) => ({
             status: event.skipped ? 'skipped' : 'done',
-            // Any stage not explicitly closed out (e.g. skipped uploads) is
-            // resolved so no spinner is left hanging.
-            steps: m.steps.map((s) =>
+            steps: p.steps.map((s) =>
               s.status === 'pending' || s.status === 'running'
                 ? { ...s, status: event.skipped ? 'skipped' : 'done' }
                 : s,
@@ -882,36 +949,19 @@ export const useAppStore = create((set, get) => ({
               : `${doneVerb} ${file.name}: ${result.total_chunks ?? 0} chunks across ${result.total_pages ?? 0} page(s).`,
           }))
         } else if (event.type === 'error') {
-          patchCard(() => ({ status: 'error', content: `${failVerb} failed: ${event.message || 'unknown error'}` }))
+          patchProgress(() => ({ status: 'error', content: `${failVerb} failed: ${event.message || 'unknown error'}` }))
         }
       })
     } catch (error) {
       console.error(`${failVerb} stream failed:`, error)
-      patchCard(() => ({ status: 'error', content: `${failVerb} failed — check server logs.` }))
+      patchProgress(() => ({ status: 'error', content: `${failVerb} failed — check server logs.` }))
     }
 
     await get().refreshDocuments()
-
-    // Persist the finished card so the step trace stays after a reload.
-    const finalCard = (get().messagesByChatId[chat.id] || []).find((m) => m.id === messageId)
-    if (finalCard) {
-      try {
-        await persistIngestionCard(chat.id, {
-          id: finalCard.id,
-          fileName: finalCard.fileName,
-          status: finalCard.status,
-          steps: finalCard.steps,
-          summary: finalCard.summary,
-          content: finalCard.content,
-          createdAt: finalCard.createdAt,
-        })
-      } catch (error) {
-        console.warn('Failed to persist ingestion card:', error)
-      }
-    }
-
-    return finalCard
+    return get().ingestionProgress
   },
+
+  clearIngestionProgress: () => set({ ingestionProgress: null }),
 
   refreshDocuments: async () => {
     const documents = await getDocuments()
@@ -930,4 +980,15 @@ export const useAppStore = create((set, get) => ({
   },
 
   selectDocument: (docId) => set({ selectedDocId: docId }),
+
+  // Pin/unpin — client-side only (see PINNED_CHATS_KEY note above).
+  togglePinChat: (chatId) => {
+    set((state) => {
+      const next = new Set(state.pinnedChatIds)
+      if (next.has(chatId)) next.delete(chatId)
+      else next.add(chatId)
+      writeStoredIdSet(PINNED_CHATS_KEY, next)
+      return { pinnedChatIds: next }
+    })
+  },
 }))

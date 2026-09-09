@@ -136,6 +136,11 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
     cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
     target = cleaned if cleaned else text.strip()
 
+    # Strip markdown json/sql wrapper if whole text is wrapped
+    if target.startswith("```json") or target.startswith("```sql"):
+        target = re.sub(r"^```(?:json|sql)?\s*", "", target)
+        target = re.sub(r"\s*```$", "", target).strip()
+
     # 1. Try parsing direct JSON
     try:
         data = json.loads(target)
@@ -144,26 +149,37 @@ def extract_cot_and_sql(text: str) -> tuple[str, str]:
     except Exception:
         pass
 
-    # 2. Try regex extraction of JSON "sql" field
+    # 2. Try markdown ```sql ... ``` block anywhere in text
+    m = _FENCE_RE.search(text)
+    if m and m.group(1).strip():
+        sql = m.group(1).strip()
+        cot = text[:m.start()].strip()
+        return cot, sql
+
+    # 3. Try regex extraction of JSON "sql" field (closed quote)
     json_sql_match = re.search(r"\"sql\"\s*:\s*\"(.*?)(?<!\\)\"", target, re.DOTALL)
     if json_sql_match:
         sql_cand = json_sql_match.group(1).strip().replace('\\"', '"').replace('\\n', '\n')
         if sql_cand and any(sql_cand.upper().strip().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
             return target[:json_sql_match.start()].strip(), sql_cand
 
-    # 3. Try markdown ```sql ... ``` block
-    m = _FENCE_RE.search(target)
-    if m and m.group(1).strip():
-        sql = m.group(1).strip()
-        cot = target[:m.start()].strip()
-        return cot, sql
+    # 4. Try regex extraction of unclosed JSON "sql" field (truncated output)
+    json_sql_unclosed = re.search(r"\"sql\"\s*:\s*\"(SELECT\b.*?)$", target, re.DOTALL | re.IGNORECASE)
+    if json_sql_unclosed:
+        sql_cand = json_sql_unclosed.group(1).strip().replace('\\"', '"').replace('\\n', '\n').rstrip('"').rstrip('}').strip()
+        if sql_cand:
+            return target[:json_sql_unclosed.start()].strip(), sql_cand
 
-    # 4. Try finding starting SQL keyword
+    # 5. Try finding standalone SQL keyword if target is pure SQL (must not contain markdown formatting)
+    if not any(c in target for c in ("**", "##", "\n* ", "\n- ", ":\n")) and any(target.upper().strip().startswith(kw) for kw in ("SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH")) and (not target.upper().strip().startswith("WITH") or " AS" in target.upper()[:60]):
+        return "", target
+
     km = _SQL_START_RE.search(target)
     if km and km.start() >= 0:
-        cot = target[:km.start()].strip()
-        sql = target[km.start():].strip()
-        return cot, sql
+        candidate_sql = target[km.start():].strip()
+        if not any(c in candidate_sql for c in ("**", "##", "\n* ", "\n- ", ":\n")):
+            cot = target[:km.start()].strip()
+            return cot, candidate_sql
 
     return "", target
 
@@ -1433,7 +1449,7 @@ class SQLRetriever:
                 query_vector=dense_vec,
                 sparse_vector=sparse_vec,
                 query_text=query,
-                top_k=8,
+                top_k=4,
                 filters={"chunk_type": ChunkType.SQL_SCHEMA.value},
             )
             
@@ -1450,50 +1466,71 @@ class SQLRetriever:
             glossary_tables = set(re.findall(r'\b([a-zA-Z0-9_]+)\.[a-zA-Z0-9_]+', glossary_text))
 
             query_lower = query.lower()
-            if any(k in query_lower for k in ["order", "sales", "bought", "buying", "spent", "spending", "buyer", "customer", "client", "revenue", "turnover"]):
+            if any(k in query_lower for k in ["order", "sales", "bought", "buying", "spent", "spending", "buyer", "customer", "client", "revenue", "turnover", "po number", "party po", "customer po", "po_no"]):
                 glossary_tables.update(["sales_order", "sales_order_products", "party", "product", "financial_year"])
             if any(k in query_lower for k in ["purchase", "supplier", "vendor", "procure", "inward", "raw material"]):
                 glossary_tables.update(["purchase", "purchase_products", "party", "product", "financial_year"])
             if any(k in query_lower for k in ["stock", "inventory", "warehouse", "carton", "on hand"]):
-                glossary_tables.update(["stock", "product", "product_color", "category"])
-            if any(k in query_lower for k in ["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq"]):
-                glossary_tables.update(["production", "actual_production", "machine", "product", "product_color"])
+                glossary_tables.update(["stock", "product", "product_color", "category", "product_type", "sales_order", "party", "packagings", "warehouse"])
+            if any(k in query_lower for k in ["location", "location_code", "stored", "storage", "where is", "bin", "rack"]):
+                glossary_tables.update(["packagings", "warehouse", "product"])
+            if any(k in query_lower for k in ["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq", "ppq"]):
+                glossary_tables.update(["production", "actual_production", "product", "product_color", "category", "product_type", "financial_year", "machine"])
+            if any(k in query_lower for k in ["color", "colour"]):
+                glossary_tables.update(["product_color", "product", "production", "stock"])
+            if any(k in query_lower for k in ["unit", "uom", "measurement", "unit of measure"]):
+                glossary_tables.update(["unit", "product"])
+            if any(k in query_lower for k in ["machine", "equipment"]):
+                glossary_tables.update(["machine", "production", "product"])
+            if any(k in query_lower for k in ["packaging", "packing", "carton verify"]):
+                glossary_tables.update(["packagings", "production", "product", "product_color", "warehouse"])
+            if any(k in query_lower for k in ["financial year", "fiscal year", "current financial", "fyear", "financial_year"]):
+                glossary_tables.update(["financial_year"])
+            if any(k in query_lower for k in ["finished good", "product type", "raw material"]):
+                glossary_tables.update(["product_type", "product", "category"])
             if any(k in query_lower for k in ["lead", "inquiry", "inquiries", "prospect", "followup", "deal", "pipeline"]):
                 glossary_tables.update(["lead", "lead_history", "users", "party"])
-            if any(k in query_lower for k in ["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver"]):
-                glossary_tables.update(["delivery_challan", "delivery_challan_products", "party", "sales_order"])
-            if any(k in query_lower for k in ["proforma", "invoice", "bill", "gst", "tax", "quotation"]):
+            if any(k in query_lower for k in ["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver", "dc", "dc_no", "dc no", "dc number", "due date", "so_due_date"]):
+                glossary_tables.update(["delivery_challan", "delivery_challan_products", "party", "sales_order", "financial_year"])
+            if any(k in query_lower for k in ["invoice", "invoice count", "invoice_no", "invoices"]):
+                glossary_tables.update(["stock", "party", "financial_year"])
+            if any(k in query_lower for k in ["proforma", "bill", "gst", "tax", "quotation"]):
                 glossary_tables.update(["proforma", "quotation", "party", "financial_year"])
             if any(k in query_lower for k in ["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"]):
                 glossary_tables.update(["party", "financial_year", "party_opening_balance", "sales_order", "receipt"])
+            if any(k in query_lower for k in ["adjustment", "adjust", "stock-out", "stock out", "stockout", "stock-in", "stock in", "stockin"]):
+                glossary_tables.update(["stock_adjustment", "product", "category", "product_color", "unit", "financial_year"])
 
             full_ddls = _extract_table_ddl_map(full_schema) if full_schema else {}
             candidate_list: list[dict[str, Any]] = []
             seen_tables: set[str] = set()
 
+            # Priority 1: Domain anchor & glossary tables first
+            anchor_extra = []
+            for g_table in sorted(glossary_tables):
+                if g_table in full_ddls:
+                    if g_table not in retrieved_tables:
+                        anchor_extra.append(full_ddls[g_table])
+                        retrieved_tables.add(g_table)
+                    if g_table not in seen_tables:
+                        seen_tables.add(g_table)
+                        candidate_list.append({
+                            "table_name": g_table,
+                            "ddl": full_ddls[g_table],
+                            "source": "domain_anchor",
+                        })
+
+            # Priority 2: Vector RAG chunks
             for chunk in chunks:
                 tbls = _extract_schema_table_names(chunk.chunk.content)
                 for tbl in tbls:
-                    if tbl not in seen_tables:
+                    if tbl not in seen_tables and tbl in full_ddls:
                         seen_tables.add(tbl)
                         candidate_list.append({
                             "table_name": tbl,
                             "ddl": chunk.chunk.content,
                             "source": "vector_rag",
                         })
-
-            anchor_extra = []
-            for g_table in sorted(glossary_tables):
-                if g_table not in retrieved_tables and g_table in full_ddls:
-                    anchor_extra.append(full_ddls[g_table])
-                    retrieved_tables.add(g_table)
-                if g_table not in seen_tables and g_table in full_ddls:
-                    seen_tables.add(g_table)
-                    candidate_list.append({
-                        "table_name": g_table,
-                        "ddl": full_ddls[g_table],
-                        "source": "domain_anchor",
-                    })
 
             if anchor_extra:
                 retrieved_schema += "\n\n-- Domain Anchor & Glossary Tables:\n" + "\n\n".join(anchor_extra)
@@ -1629,14 +1666,7 @@ class SQLRetriever:
         system_prompt = f"""You are Global Mind, an expert Enterprise Business Intelligence Agent for {self._dialect.name}.
 Your goal is to translate the business question into a valid, executable, read-only {self._dialect.name} SELECT query.
 
-Respond with valid JSON:
-{{
-  "intent": "summary_of_intent",
-  "tables": ["table1"],
-  "joins": [],
-  "filters": ["status = 'Y'", "deleted_at IS NULL"],
-  "sql": "SELECT COUNT(id) AS total_customers FROM party WHERE status = 'Y' AND deleted_at IS NULL;"
-}}
+IMPORTANT: Output ONLY the final SQL query in a ```sql ... ``` code block. Strictly NO introductory explanations, NO conversational prose, NO step-by-step bullet points.
 
 Rules:
 - Read-Only: SELECT statements only. If the schema cannot answer, respond with exactly NO_SQL.
@@ -1696,7 +1726,7 @@ Schema:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query},
                 ],
-                max_tokens=2048
+                max_tokens=768
             )
             if budget_ctrl and budget_ctrl.llm_calls == initial_calls:
                 budget_ctrl.record_call(tokens_used=250, is_repair=False)
@@ -1797,33 +1827,50 @@ Schema:
     })
 
     _OUTPUT_READABILITY_RULES = """
-Output readability & database-specific schema rules:
-- Never return a raw ID column (e.g. customer_id, product_id, order_id) by itself if a related table has a human-readable name, title, or label for it. JOIN to that table and return the readable value instead of, or alongside, the ID.
-- Give every selected column a clear, descriptive alias using AS, so the result is understandable on its own without needing to see the query (e.g. SELECT c.name AS customer_name, SUM(o.amount) AS total_revenue - not SELECT c.name, SUM(o.amount)).
-- Name each alias based on what the user actually asked for, ONLY when that wording accurately describes what the column holds (e.g. if the user asked "who spent the most", alias the result as top_customer or total_spent, not c1 or col2). Never invent a label that misrepresents the data - e.g. do not call a product_type_id column "technology_used" just because the word "technology" appeared in the question.
-- Include any extra column that adds useful context to the answer (name, category, date, status) even if not strictly required to answer narrowly - the goal is a result a person can read and understand directly, not just the minimum data needed.
-- "Most"/"highest"/"best" used in singular form (no number given) means exactly ONE result - apply LIMIT 1. "Top N" means LIMIT N. If the question asks to rank/list multiple items without a specific count, use a sensible default limit (e.g. LIMIT 20) rather than returning every row unbounded.
-- Always filter out soft-deleted records (WHERE deleted_at IS NULL or AND t.deleted_at IS NULL) on all tables that possess a deleted_at column.
-- Financial Year handling: If a specific year is mentioned (e.g. '2024-2025' or '24-25'), join financial_year and filter on financial_year.fyear LIKE '%2024%'. For relative periods like 'this financial year' or 'current fiscal year', filter financial_year.current_year = 'Y'. If no year is specified for an all-time total, do not restrict by financial_year.
-- Revenue vs Invoiced/Tax: Calculate standard sales revenue as product sales value SUM(p.rate * sop.qty). If the user specifically asks for invoiced sales, tax-inclusive billing, or GST, query proforma (proforma.grand_total, proforma.gst_amount).
-- Order Value & Purchase Value: sales_order and purchase tables have NO total amount column. Calculate sales order value as SUM(sop.qty * p.rate) from sales_order_products sop JOIN product p ON sop.product_id = p.id. Calculate purchase value as SUM(pp.qty * p.rate) from purchase_products pp JOIN product p ON pp.product_id = p.id.
-- Lead Status: In the lead table, status values are 'Pending', 'In-Progress', 'Success' (won), and 'Reject' (lost). Open / active / in-pipeline leads are WHERE status IN ('Pending', 'In-Progress'). Do NOT use status = 'Open'.
-- Lead Source: lead.lead_generate_from values are 'SalesExecutive', 'SocialMedia', 'Email', 'Website', 'Reference', 'Telecalling'.
-- Active / Inactive Status Flags: party.status, product.status, category.status, machine.status, unit.status, users.status, warehouse.status, product_type.status all use 'Y' for active/enabled and 'N' for inactive/disabled. Never use 'Active', 1, or true.
-- Customer vs Supplier: The party table holds both customers and suppliers (profile_type is 'Party' for all). To find suppliers, join to the purchase table (party.id = purchase.party_id). To find customers, join to sales_order (party.id = sales_order.party_id).
-- Product Types: product_type_id = 1 means 'Raw Material' and product_type_id = 2 means 'Finished Goods' (joined via product_type.id).
-- Stock Quantity: stock.qty is stored as VARCHAR - ALWAYS use CAST(stock.qty AS DECIMAL(10,2)) or CAST(stock.qty AS UNSIGNED) when aggregating (SUM/AVG) or doing numeric comparisons.
-- Stock Status: stock.status uses 'B' for Booked / available on-hand stock and 'D' for Dispatched / out stock.
-- Carton Verification: stock.carton_verify_status and packagings.carton_verify_status use 'P' for Pending (unverified) and 'V' for Verified.
-- Low Stock & Shortages: To find products running low or out of stock, start from product p JOIN product_color pc ON p.id = pc.product_id (or product p) and LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id AND s.status = 'B' AND s.deleted_at IS NULL. Calculate COALESCE(SUM(CAST(s.qty AS DECIMAL(10,2))), 0) AS current_stock. When comparing against minimum threshold, use pc.minimum_stock > 0 HAVING current_stock < pc.minimum_stock or ORDER BY current_stock ASC, pc.minimum_stock DESC. Do NOT use INNER JOIN stock because out-of-stock items have no rows in the stock table.
-- Production Planned vs Actual: In production table, qty is the planned/target quantity. In actual_production table, apq is the actual produced quantity. Shortfall is (production.qty - actual_production.apq).
-- Inactive Customers (Anti-Join): To find customers who haven't placed orders recently (e.g. in last 3 or 6 months), use party p LEFT JOIN sales_order so ON p.id = so.party_id AND so.deleted_at IS NULL AND so.sales_order_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) WHERE p.status = 'Y' AND p.deleted_at IS NULL AND so.id IS NULL.
-- Party Name Column: In party table, customer/supplier name is party.party_name (NEVER party.name).
-- Non-Existent Status Columns: quotation, proforma, and purchase tables DO NOT have a status column. NEVER write quotation.status, proforma.status, or purchase.status.
-- Delivery Challan Columns: In delivery_challan, transport agency is transport_name (NOT transporter_name) and order link is sales_order_id.
-- Lead Sales Rep & Followup: lead.lead_assign_to links to users.id (sales rep name is users.name). Lead followup medium column is followup_medimum ('Email','Call','PersonalMeeting','WhatsappMessage').
-- State and City Names: State is linked via party.state_id = states.id (states.name). Cities are stored directly as text strings in party.city.
-- When filtering by entity or location names (e.g. customer name, state name, product name), match against the text column (e.g. party.party_name, states.name) rather than numeric IDs.
+Core SQL Generation & Schema Mapping Protocol:
+- 4-Step Schema Resolution: Before writing any SQL, strictly resolve:
+  1. Business Intent: What is the user asking for? (Identify exact business entities and metrics).
+  2. Table Selection: Which table physically stores that data? (e.g. product definitions in `product`, machine definitions in `machine`, batch production quantities in `production`, actual invoices in `stock` where `stock_type = 'PI'`, delivery challans in `delivery_challan`, stock adjustments in `stock_adjustment` (NOT `stock` or `product_packaging_detail`), order due dates in `sales_order`, product colors in `product_color`, bin/carton storage locations in `packagings`, measurement units in `unit`, customer orders in `sales_order`).
+  3. Column Resolution: Which specific column stores the value? (e.g. stock adjustment transaction type in `stock_adjustment.transaction_type` with exact values `'StockOut'` and `'StockIn'` (NEVER `'OUT'` or `'IN'`); adjusted quantity in `SUM(stock_adjustment.qty)`; warehouse code in `warehouse.warehouse_code`, NOT in `packagings.location_code`; total carton quantity in `SUM(packagings.qty)`, NOT `COUNT(*)`; order/delivery due date in `sales_order.so_due_date`; DC numbers in `delivery_challan.dc_no`, NOT in `stock.invoice_no`; product color in `product_color.color`, NOT in table `color`; production quantity in `production.qty`, NOT in `actual_production.apq`; product names/codes in `product.product_name`, not in `batch_no` or `unit_name`; storage codes in `packagings.location_code`, not `warehouse`; customer PO in `sales_order.party_po_no`, not `purchase.ref_po_no`).
+  4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly: `stock_adjustment.category_id = category.id`; `stock_adjustment.product_id = product.id`; `stock_adjustment.product_color_id = product_color.id`; `packagings.warehouse_id = warehouse.id`; `delivery_challan.sales_order_id = sales_order.id` for due dates; `delivery_challan.party_id = party.id`; `production.product_color_id = product_color.id`; `production.product_id = product.id`; `production.machine_id = machine.id`; `stock.party_id = party.id` for invoices).
+- SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).
+- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.
+- Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.
+- In party table, customer/supplier name is `party.party_name` (NEVER party.name). Contact persons are `party.contact_person1`.
+- In lead table, search `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.
+- Unified Contact Search: For generic contact info without 'lead'/'customer', UNION ALL across party and lead.
+- Product Color Linkage: In `production`, `actual_production`, `stock`, and `sales_order_products`, the `product_color_id` column links directly to `product_color.id` (table `product_color`, column `product_color.color`) — NOT to the `color` table! ALWAYS join `product_color pc ON prd.product_color_id = pc.id` and select `pc.color AS color`. NEVER join with the `color` table; `color` is a separate master list whose IDs do not match `product_color_id`, which causes completely wrong colors to be returned.
+- Blocked Cartons: In `stock`, `party_id` is NULL. Join party through `sales_order`: `stock s JOIN sales_order so ON s.so_id = so.id JOIN party p ON so.party_id = p.id WHERE s.status = 'B'`.
+- Delivery Challan & Pending Sales Orders: To find Sales Orders with pending/undelivered quantity for delivery challan creation, query:
+SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_date, p.party_name AS customer_name, pr.product_name AS product_name, sop.qty AS ordered_quantity, COALESCE(SUM(dcp.qty), 0) AS delivered_quantity, (sop.qty - COALESCE(SUM(dcp.qty), 0)) AS pending_quantity FROM sales_order so JOIN sales_order_products sop ON so.id = sop.sales_order_id JOIN party p ON so.party_id = p.id JOIN product pr ON sop.product_id = pr.id LEFT JOIN delivery_challan dc ON so.id = dc.sales_order_id AND dc.deleted_at IS NULL LEFT JOIN delivery_challan_products dcp ON dc.id = dcp.dc_id AND dcp.product_id = sop.product_id AND dcp.deleted_at IS NULL WHERE so.deleted_at IS NULL AND sop.deleted_at IS NULL AND p.deleted_at IS NULL AND pr.deleted_at IS NULL AND p.status = 'Y' GROUP BY so.sales_order_no, so.sales_order_date, p.party_name, pr.product_name, sop.qty HAVING pending_quantity > 0 ORDER BY so.sales_order_no, pr.product_name;
+- Fuzzy LIKE Filtering: Always filter descriptive text columns (categories, products, colors, names) using `LIKE '%<term>%'` rather than strict `=`. For categories with spelling variations like 'CHANGABLE PACK', match `c.category_name LIKE '%CHANG%PACK%'` (the database category is 'CHANGEABLE PACK').
+- Production Quantity & Batches: In the `production` table, the primary production/batch quantity is stored in `production.qty`. When asked for the production quantity, batch quantity, or quantity produced for a batch or product, ALWAYS select `production.qty AS production_quantity` (or `SUM(prd.qty)`). NEVER select `actual_production.apq` as the default production quantity, because `actual_production.apq` is unpopulated or 0 for many batches (which causes queries to return 0), while `production.qty` contains the true quantity. Only query `actual_production.apq` if the user explicitly asks for 'actual production quantity' or 'APQ' compared to planned targets.
+- Machine & Product Production: Product names/codes (e.g. 'CAP03', 'CHP06070110-INNER') are stored in `product.product_name` (NEVER in `production.batch_no` or `stock.batch_no`). To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `m.machine_name`.
+- Warehouse & Packaging: Warehouse Identification, Carton Count vs Carton Quantity:
+  (1) Warehouse Identification: Warehouse codes (e.g. 'pm2bzd19') and warehouse names/numbers (e.g. '110') are stored in the `warehouse` table: `warehouse.warehouse_code` and `warehouse.location_name`. When matching a warehouse, ALWAYS join `warehouse w ON pk.warehouse_id = w.id` and filter `(w.warehouse_code = '<code_or_name>' OR w.location_name = '<code_or_name>')`. NEVER search `packagings.location_code` for warehouse codes (`packagings.location_code` only stores internal bin/rack shelf codes).
+  (2) Carton Count vs Carton Quantity: In the `packagings` table, each row represents ONE physical carton box. `COUNT(pk.id)` or `COUNT(*)` returns the number of carton boxes (e.g. 412 cartons). `pk.qty` stores the number of product units inside each carton. Therefore, when asked for 'carton quantity', 'total carton quantity', 'quantity in cartons', or 'stock quantity in warehouse', ALWAYS use `SUM(pk.qty) AS total_carton_quantity` (e.g. 152,354 units), NEVER `COUNT(*)`! You may return both: `COUNT(pk.id) AS total_cartons, SUM(pk.qty) AS total_carton_quantity`.
+  (3) Product Storage Locations: To find where a product is stored or what warehouse/bin it is in, join `packagings pk JOIN warehouse w ON pk.warehouse_id = w.id JOIN product p ON pk.product_id = p.id WHERE p.product_name LIKE '%<term>%'`. Return `p.product_name`, `w.warehouse_code`, `w.location_name AS warehouse_location`, `pk.location_code AS bin_location`, `pk.carton_no`, `pk.qty AS carton_qty`.
+- Stock Adjustments (StockOut vs StockIn): All inventory stock adjustments (stock-in additions, stock-out write-offs, physical count adjustments) are stored in the dedicated `stock_adjustment` table:
+  (1) Table Selection: ALWAYS use `stock_adjustment` when asked about stock adjustments, stock-out, stock-in, or adjusted quantity. NEVER use `stock` (which is for purchase inward and sales dispatches) and NEVER use `product_packaging_detail` (which is a packaging BOM master table).
+  (2) Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY TWO exact enum values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'STOCK_OUT'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.
+  (3) Columns & Direct Foreign Keys:
+      - Adjustment Date: `sa.stock_adjustment_date` (e.g. `WHERE sa.stock_adjustment_date = '2025-06-03'`).
+      - Adjusted Quantity: `sa.qty` (or `SUM(sa.qty) AS total_adjusted_quantity`).
+      - Category Link: `JOIN category c ON sa.category_id = c.id WHERE c.category_name LIKE '%<name>%'`.
+      - Product Link: `JOIN product p ON sa.product_id = p.id WHERE p.product_name LIKE '%<name>%'`.
+      - Color Link: `JOIN product_color pc ON sa.product_color_id = pc.id`.
+  (4) Canonical Query Templates:
+      - Adjustment Count by Date: `SELECT COUNT(*) AS stock_out_adjustment_count FROM stock_adjustment sa WHERE sa.deleted_at IS NULL AND sa.stock_adjustment_date = '<date>' AND sa.transaction_type = 'StockOut';`
+      - Category Stock-out Quantity: `SELECT c.category_name, SUM(sa.qty) AS total_stock_out_quantity FROM stock_adjustment sa JOIN category c ON sa.category_id = c.id WHERE sa.deleted_at IS NULL AND c.deleted_at IS NULL AND c.category_name LIKE '%<cat>%' AND sa.transaction_type = 'StockOut' AND sa.stock_adjustment_date = '<date>' GROUP BY c.category_name;`
+      - Product Adjusted Quantity: `SELECT p.product_name, sa.transaction_type, SUM(sa.qty) AS total_qty_adjusted FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%' GROUP BY p.product_name, sa.transaction_type;`
+- Product Units of Measure: The unit table contains unit definitions ('Pcs', 'Kg', 'Nos', etc.) and NEVER contains product names. To find the unit for a product (e.g. 'CAP03'), ALWAYS query: `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%' AND p.deleted_at IS NULL AND u.deleted_at IS NULL`. Return `p.product_name` and `u.unit_name AS unit_of_measure`. Never search `unit.unit_name` for product names.
+- Product Type vs Category: There are two places with product type: (1) `category.product_type` stores enum `'RM'` (Raw Material). (2) `product_type.product_type` stores text `'Raw Material'` (id=1) and `'Finished Goods'` (id=2). When querying products by category (e.g. 'Carton') and product type ('Raw Material'), ALWAYS include BOTH filters: `product p JOIN category c ON p.category_id = c.id WHERE c.category_name LIKE '%Carton%' AND (c.product_type = 'RM' OR p.product_type_id = 1)`. Never omit the category filter, and never compare `category.product_type = 'Raw Material'` directly (use `'RM'`).
+- Customer PO vs Supplier PO vs Proforma PO: PO numbers exist in 3 distinct places: (1) Customer/Party PO: `sales_order.party_po_no` (and `sales_order.party_po_date`). For questions asking for "party's PO number", "customer PO", or "PO number for sales order/party", ALWAYS query `sales_order so JOIN party p ON so.party_id = p.id`. (2) Proforma PO: `proforma.po_no` (only for proforma invoice questions). (3) Supplier/Vendor PO: `purchase.ref_po_no` (only for supplier inward purchase orders). NEVER use `purchase.ref_po_no` for customer/party PO requests.
+- Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies "proforma".
+- Delivery Challan (DC) vs Invoice & Due Date: A Delivery Challan (DC) and an Invoice are completely separate documents! Actual DC numbers and dates are stored in the `delivery_challan` table: `dc.dc_no` (DC number) and `dc.dc_date` (DC date). Logistics columns: `dc.transport_name` (carrier name) and `dc.lr_number` (Lorry Receipt / LR number — NOT `lr_no`). The customer/party is linked directly via `delivery_challan.party_id = party.id`. NEVER search for DC numbers in `stock.invoice_no` or `stock`! IMPORTANT: `delivery_challan` has NO due date column; the order due date is stored in `sales_order.so_due_date`. When a query asks for the due date of a DC, you MUST join `sales_order`: `LEFT JOIN sales_order so ON dc.sales_order_id = so.id` and select `so.so_due_date AS due_date`.
+- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! For example, `dc_no = 527` and `sales_order_no = 405` exist in multiple financial years for completely different parties. (1) If a financial year is specified (e.g. 'in 2024-2025' or 'this year'), join `financial_year fy ON t.financial_id = fy.id` and filter `fy.fyear = '...'` or `fy.current_year = 'Y'`. (2) If NO financial year is specified: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` (e.g. `ORDER BY dc.dc_date DESC LIMIT 1` or `ORDER BY so.sales_order_date DESC LIMIT 1`), and include `fy.fyear AS financial_year` in the SELECT clause so the user knows which financial year the document belongs to. Never return multiple unranked records from older years for a singular document question.
+- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
+- Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries (WITH prod_m AS (...), stock_m AS (...), so_m AS (...)) aggregated per `(product_id, product_color_id)` before joining to `product p` to prevent Cartesian join multiplication.
 """
 
     def _is_safe_read_query(self, sql: str) -> bool:

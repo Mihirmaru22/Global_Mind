@@ -186,7 +186,7 @@ async def attempt_delta_repair(
             response = await router.chat(
                 messages=payload,
                 task="repair",
-                max_tokens=1024,
+                max_tokens=512,
                 temperature=0.0,
             )
             if budget_ctrl and budget_ctrl.repair_attempts == initial_repairs:

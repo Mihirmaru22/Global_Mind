@@ -12,10 +12,12 @@
       "domain": "Production",
       "table_meaning": "Actual completed factory floor manufacturing yields and batch outputs.",
       "table_behavioral_rules": [
+        "Color Foreign Key: In actual_production table, `actual_production.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON actual_production.product_color_id = pc.id` (NEVER join `color` table).",
         "Actual Output Metric: `apq` represents Actual Production Quantity. Always use `SUM(apq)` to compute total manufactured yield.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
+        "In actual_production table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
         "Join `production` on `actual_production.production_id = production.id` to access planned targets and machine assignments."
       ],
       "columns": {
@@ -70,9 +72,13 @@
         },
         "product_color_id": {
           "type": "int(11)",
-          "business_meaning": "Product Color Id attribute of actual_production.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product Color Id attribute linking to product_color.id.",
+          "behavioral_rules": [
+            "Foreign key to `product_color.id`. Join `product_color pc ON actual_production.product_color_id = pc.id` to retrieve `pc.color`."
+          ],
+          "join_warnings": [
+            "Do NOT join to the `color` table; join `product_color` on `product_color_id = product_color.id`."
+          ],
           "aggregation_formula": null
         },
         "batch_no": {
@@ -86,9 +92,12 @@
           "type": "double",
           "business_meaning": "Actual Production Quantity achieved on factory floor.",
           "behavioral_rules": [
-            "Actual output metric; use SUM(apq) for completed manufacturing yield."
+            "Actual floor output metric (APQ); only use when the question explicitly asks for 'actual production quantity' or 'APQ'.",
+            "Do NOT use `actual_production.apq` as the default production quantity for a batch or product; use `production.qty` instead because many batches do not have recorded actual_production rows."
           ],
-          "join_warnings": [],
+          "join_warnings": [
+            "For general production quantity or batch quantity queries, use `production.qty` from the `production` table. Do NOT rely solely on `actual_production.apq`."
+          ],
           "aggregation_formula": "SUM(actual_production.apq)"
         },
         "created_id": {
@@ -276,9 +285,14 @@
         },
         "product_type": {
           "type": "enum('RM')",
-          "business_meaning": "Product Type attribute of category.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product type indicator in category ('RM' = Raw Material).",
+          "behavioral_rules": [
+            "Stores 'RM' for Raw Material.",
+            "When filtering by category (e.g. Carton) and Raw Material, write: `category.category_name LIKE '%Carton%' AND (category.product_type = 'RM' OR p.product_type_id = 1)`."
+          ],
+          "join_warnings": [
+            "Do not write `category.product_type = 'Raw Material'`; the enum value is 'RM'. For text 'Raw Material', join table `product_type pt ON p.product_type_id = pt.id`."
+          ],
           "aggregation_formula": null
         },
         "status": {
@@ -578,6 +592,10 @@
       "domain": "Sales",
       "table_meaning": "Outbound shipment dispatch notes and logistics manifests.",
       "table_behavioral_rules": [
+        "Delivery Challan (DC) vs Invoice: A Delivery Challan is a separate shipping/dispatch document, distinct from invoices. The DC number is stored in `dc_no` and the DC date is in `dc_date`.",
+        "Financial Year Reset: `dc_no` is NOT globally unique; it repeats across different financial years (e.g. DC 527 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific DC number without a financial year specified, ALWAYS order by `dc_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON delivery_challan.financial_id = fy.id` to include `fy.fyear`.",
+        "Due Date Linkage: Delivery challan has NO due_date column. The due date of the underlying order is stored in `sales_order.so_due_date`. When queried for the due date of a delivery challan (DC), ALWAYS join `sales_order so ON delivery_challan.sales_order_id = so.id` and select `so.so_due_date AS due_date`.",
+        "Direct Party Link: `delivery_challan.party_id` connects DIRECTLY to `party.id`. For queries asking for delivery challans or DC numbers for a customer/party, join `party p ON delivery_challan.party_id = p.id`.",
         "Logistics Details: Carrier is `transport_name`, driver is `driver_name`, vehicle is `vehicle_no`.",
         "Sales Order Linkage: Links to `sales_order` via `sales_order_id`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
@@ -602,30 +620,47 @@
         },
         "dc_no": {
           "type": "int(11)",
-          "business_meaning": "Dc No attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Delivery Challan (DC) number. Repeats across different financial years.",
+          "behavioral_rules": [
+            "Use `delivery_challan.dc_no` for all Delivery Challan (DC) number queries.",
+            "Document numbers repeat in different financial years! When querying a specific `dc_no` without a year specified, order by `dc_date DESC LIMIT 1` to return the latest record, and join `financial_year fy ON delivery_challan.financial_id = fy.id` to include `fy.fyear`.",
+            "Never search for DC numbers in `stock.invoice_no`."
+          ],
+          "join_warnings": [
+            "Join `party p ON delivery_challan.party_id = p.id` to get customer/party details.",
+            "Always join `financial_year fy ON delivery_challan.financial_id = fy.id` when disambiguating multi-year delivery challans."
+          ],
           "aggregation_formula": null
         },
         "dc_date": {
           "type": "date",
-          "business_meaning": "Dc Date attribute of delivery_challan.",
-          "behavioral_rules": [],
+          "business_meaning": "Delivery Challan dispatch date.",
+          "behavioral_rules": [
+            "Use `delivery_challan.dc_date` for delivery challan dates."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "party_id": {
           "type": "int(11)",
-          "business_meaning": "Party Id attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Customer/Party ID of the delivery challan.",
+          "behavioral_rules": [
+            "`delivery_challan.party_id` links directly to `party.id`. ALWAYS join `party p ON delivery_challan.party_id = p.id`."
+          ],
+          "join_warnings": [
+            "Direct link to party. Do NOT route through sales_order to find the party."
+          ],
           "aggregation_formula": null
         },
         "sales_order_id": {
           "type": "int(11)",
-          "business_meaning": "Sales Order Id attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Foreign key linking delivery challan to sales_order.id.",
+          "behavioral_rules": [
+            "Join `sales_order so ON delivery_challan.sales_order_id = so.id` to access `so.so_due_date` (due date) and `so.sales_order_no`."
+          ],
+          "join_warnings": [
+            "Delivery challan has no due date column; due dates must be fetched from `sales_order.so_due_date` via this join."
+          ],
           "aggregation_formula": null
         },
         "remarks": {
@@ -637,16 +672,24 @@
         },
         "transport_name": {
           "type": "varchar(255)",
-          "business_meaning": "Transport Name attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Carrier, transporter, or logistics agency name for the shipment.",
+          "behavioral_rules": [
+            "Use `delivery_challan.transport_name` for transporter / carrier name queries."
+          ],
+          "join_warnings": [
+            "Do NOT use transporter_name; the column is `transport_name`."
+          ],
           "aggregation_formula": null
         },
         "lr_number": {
           "type": "varchar(100)",
-          "business_meaning": "Lr Number attribute of delivery_challan.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Lorry Receipt (LR) number or consignment note number.",
+          "behavioral_rules": [
+            "Use `delivery_challan.lr_number` (NOT lr_no) for LR number queries."
+          ],
+          "join_warnings": [
+            "Do NOT use `lr_no`; the column is named `lr_number`."
+          ],
           "aggregation_formula": null
         },
         "lr_date": {
@@ -1303,7 +1346,8 @@
         "Lead Name Search: A lead can be referenced by person contact name (`lead.contact_name`) or company (`lead.company_name`). When filtering by a lead or client name in WHERE clause, check `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.",
         "Sales Rep Allocation: Assigned sales representative is stored in `lead_assign_to`, which foreign-keys to `users.id` (`users.name`).",
         "Follow-up Medium Typo: Column is named `followup_medimum` (with an extra 'm'). Allowed values: 'Email', 'Call', 'PersonalMeeting', 'WhatsappMessage'.",
-        "Follow-up Date Filtering: For open leads or companies with follow-ups in a given year (e.g. 2023), query `lead.company_name` and filter `YEAR(lead.next_followup_date) = YYYY AND lead.deleted_at IS NULL`.",
+        "Open Leads Follow-up Rule: For open leads waiting for follow-up, do NOT restrict to >= CURDATE() unless 'future' or 'upcoming' is explicitly requested; filter by `status IN ('Pending', 'In-Progress') AND next_followup_date IS NOT NULL`.",
+        "Follow-up Inquiries by Year: When asked for follow-ups in a specific year (e.g. 2023), filter on `YEAR(lead.next_followup_date) = YYYY`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
@@ -2482,6 +2526,8 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Packagings operational records in Packaging & Stock.",
       "table_behavioral_rules": [
+        "Carton Count vs Carton Quantity: Each row in `packagings` represents ONE physical carton box. `COUNT(pk.id)` or `COUNT(*)` returns the number of physical boxes (e.g. 412 cartons). `pk.qty` stores the product quantity inside that carton box. Therefore, `SUM(pk.qty)` returns the TOTAL CARTON QUANTITY (e.g. 152,354 units). When asked for 'carton quantity', 'total carton quantity', or 'quantity stored in warehouse', ALWAYS use `SUM(pk.qty)`, NEVER `COUNT(*)`!",
+        "Warehouse Matching: Warehouse codes (e.g. 'pm2bzd19') belong to `warehouse.warehouse_code` and warehouse names (e.g. '110') belong to `warehouse.location_name`. ALWAYS join `warehouse w ON packagings.warehouse_id = w.id` and filter `w.warehouse_code = '<code_or_name>'` or `w.location_name = '<name>'`. Do NOT filter `packagings.location_code` for warehouse codes; `location_code` only stores internal bin/rack shelf identifiers.",
         "MUST always append `packagings.deleted_at IS NULL` in the WHERE clause."
       ],
       "join_warnings": [],
@@ -2558,10 +2604,12 @@
         },
         "qty": {
           "type": "double",
-          "business_meaning": "Qty attribute of packagings.",
-          "behavioral_rules": [],
+          "business_meaning": "Product unit quantity contained inside the carton box.",
+          "behavioral_rules": [
+            "Authoritative column for carton quantity. To get the total carton quantity in a warehouse or product, use `SUM(packagings.qty)`. Do NOT use `COUNT(*)`, which only counts box rows."
+          ],
           "join_warnings": [],
-          "aggregation_formula": null
+          "aggregation_formula": "SUM(packagings.qty)"
         },
         "packaging_qty": {
           "type": "double",
@@ -2607,15 +2655,21 @@
         },
         "location_code": {
           "type": "text",
-          "business_meaning": "Location Code attribute of packagings.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Bin/rack storage location code for packaged goods (e.g. 762FZNSH, KJGHV4RY, R2P1ZKQ3).",
+          "behavioral_rules": [
+            "To find where a product (e.g. CHP18080120-INNER) is stored in the warehouse, query `packagings pk JOIN warehouse w ON pk.warehouse_id = w.id JOIN product p ON pk.product_id = p.id WHERE p.product_name LIKE '%<product>%' OR pk.location_code LIKE '%<location_code>%'`."
+          ],
+          "join_warnings": [
+            "Do NOT search the warehouse master table directly for product storage location codes; location codes are stored in packagings.location_code."
+          ],
           "aggregation_formula": null
         },
         "warehouse_id": {
           "type": "int(11)",
-          "business_meaning": "Warehouse Id attribute of packagings.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key linking packaging records to warehouse.id.",
+          "behavioral_rules": [
+            "Join `warehouse w ON packagings.warehouse_id = w.id` to get `w.location_name` and `w.warehouse_code`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
@@ -3601,7 +3655,8 @@
       "domain": "Master Data",
       "table_meaning": "Master product SKU catalog.",
       "table_behavioral_rules": [
-        "Product Name: Stored in `product_name`.",
+        "Product Name & SKU: Stored in `product.product_name`. Alphanumeric item codes (e.g. 'CHP14065105-OUTER', '34150250-OUTER') are product names in `product.product_name` (NOT batch numbers).",
+        "Product Color & Stock: When queried for a product's stock and color, query `product p JOIN product_color pc ON pc.product_id = p.id LEFT JOIN stock s ON s.product_id = p.id AND s.product_color_id = pc.id AND s.deleted_at IS NULL WHERE p.product_name LIKE '%<sku>%' GROUP BY p.product_name, pc.color`.",
         "Unit Price: Stored in `rate`.",
         "Minimum Stock Threshold: Stored in `minimum_stock`.",
         "Finished Goods Enum: `product_type_id = 2` designates Finished Goods.",
@@ -3722,10 +3777,13 @@
       "domain": "Production",
       "table_meaning": "Factory production planning orders specifying target quantities for machines and products.",
       "table_behavioral_rules": [
-        "Target vs Actual: `production.qty` represents the PLANNED TARGET quantity. Achieved output is stored in `actual_production.apq`.",
+        "Color Foreign Key: In production table, `production.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON production.product_color_id = pc.id` (NEVER join `color` table).",
+        "Production Quantity: `production.qty` is the primary production and batch quantity. For general queries asking for production quantity, batch quantity, or quantity produced for a batch or product, use `production.qty`. Do NOT use `actual_production.apq` unless the user explicitly asks for APQ / actual floor output vs target.",
+        "Target vs Actual: If explicitly comparing planned vs actual, `production.qty` represents the batch target quantity, and `actual_production.apq` represents recorded APQ output. Never use `actual_production.apq` alone for general production quantity questions as many batches only have quantity in `production.qty`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
       ],
       "join_warnings": [
+        "In production table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
         "To find production shortfalls or actual outputs, LEFT JOIN `actual_production` on `production.id = actual_production.production_id`."
       ],
       "columns": {
@@ -3780,9 +3838,13 @@
         },
         "product_color_id": {
           "type": "int(11)",
-          "business_meaning": "Product Color Id attribute of production.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product Color Id attribute linking to product_color.id.",
+          "behavioral_rules": [
+            "Foreign key linking to `product_color.id`. Join `product_color pc ON production.product_color_id = pc.id` to access `pc.color`."
+          ],
+          "join_warnings": [
+            "Do NOT join to `color.id`; join `product_color` on `product_color_id = product_color.id`."
+          ],
           "aggregation_formula": null
         },
         "batch_no": {
@@ -3808,18 +3870,25 @@
         },
         "qty": {
           "type": "double",
-          "business_meaning": "Planned production target quantity.",
+          "business_meaning": "Primary production quantity of the batch (also serves as production target).",
           "behavioral_rules": [
-            "Represents planned target; compare against actual_production.apq to compute shortfalls."
+            "Primary quantity field for production batches. For questions asking for production quantity or batch quantity, select `production.qty AS production_quantity` (or `SUM(production.qty)`).",
+            "Do NOT use actual_production.apq for general production quantity queries, as actual_production is unpopulated or 0 for many batches."
           ],
           "join_warnings": [],
           "aggregation_formula": "SUM(production.qty)"
         },
         "machine_id": {
           "type": "int(11)",
-          "business_meaning": "Machine Id attribute of production.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Foreign key linking production to machine.id.",
+          "behavioral_rules": [
+            "Foreign key linking to `machine.id`.",
+            "Join `machine m ON production.machine_id = m.id` to access `m.machine_name`.",
+            "To find which machine made a product (e.g. CAP03), join `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product>%'`."
+          ],
+          "join_warnings": [
+            "Do NOT search for product names inside production.batch_no; always join product table."
+          ],
           "aggregation_formula": null
         },
         "created_id": {
@@ -3894,7 +3963,8 @@
       "domain": "Master Data",
       "table_meaning": "Color variants and SKUs for products.",
       "table_behavioral_rules": [
-        "Variant Name: Stored in `color_name`.",
+        "Primary table for product color variants. Target of foreign key `product_color_id` in production, stock, and sales_order_products.",
+        "Color Name: Stored in `product_color.color` (e.g. 'RED', 'WHITE').",
         "Product Linkage: `product_id` links to `product.id`.",
         "MUST always append `product_color.deleted_at IS NULL` in the WHERE clause."
       ],
@@ -4140,11 +4210,14 @@
     "product_packaging_detail": {
       "table_name": "product_packaging_detail",
       "domain": "Packaging & Stock",
-      "table_meaning": "Product Packaging Detail operational records in Packaging & Stock.",
+      "table_meaning": "Product Packaging Specification / BOM details (pieces per carton). NOT for stock adjustments.",
       "table_behavioral_rules": [
+        "NOT A Stock Adjustment Table: Do NOT use this table for stock adjustments, stock write-offs, or adjusted quantity. Use `stock_adjustment` instead.",
         "MUST always append `product_packaging_detail.deleted_at IS NULL` in the WHERE clause."
       ],
-      "join_warnings": [],
+      "join_warnings": [
+        "Do NOT query this table for stock adjustments or stock-out / stock-in operations; use `stock_adjustment`."
+      ],
       "columns": {
         "id": {
           "type": "bigint(20) UNSIGNED",
@@ -5414,6 +5487,7 @@
       "table_meaning": "Customer sales order headers recording order dates, customer references, and financial year links.",
       "table_behavioral_rules": [
         "NON-EXISTENT COLUMN: `sales_order` has NO total amount column. You MUST calculate order totals by joining `sales_order_products` and `product` via SUM(sop.qty * p.rate).",
+        "Financial Year Reset: `sales_order_no` is NOT globally unique; it repeats across different financial years (e.g. Sales Order 405 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific order number without a year specified, ALWAYS order by `sales_order_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON sales_order.financial_id = fy.id` to include `fy.fyear`.",
         "Customer Linkage: `party_id` links to `party.id`. Always join `party` to get `party.party_name`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause.",
         "For current financial year filtering, join `financial_year` and filter `financial_year.current_year = 'Y'`."
@@ -5445,9 +5519,13 @@
         },
         "sales_order_no": {
           "type": "int(11)",
-          "business_meaning": "Sales Order No attribute of sales_order.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Sales Order Number. Repeats across different financial years.",
+          "behavioral_rules": [
+            "Document numbers repeat in different financial years! When querying a specific `sales_order_no` without a year specified, order by `sales_order_date DESC LIMIT 1` to return the latest record, and join `financial_year fy ON sales_order.financial_id = fy.id` to include `fy.fyear`."
+          ],
+          "join_warnings": [
+            "Always join `financial_year fy ON sales_order.financial_id = fy.id` when disambiguating multi-year orders."
+          ],
           "aggregation_formula": null
         },
         "sales_order_date": {
@@ -5459,8 +5537,11 @@
         },
         "so_due_date": {
           "type": "date",
-          "business_meaning": "So Due Date attribute of sales_order.",
-          "behavioral_rules": [],
+          "business_meaning": "Sales order delivery due date / commitment date.",
+          "behavioral_rules": [
+            "Authoritative column for order and delivery due dates.",
+            "For Delivery Challan due dates, join `sales_order so ON delivery_challan.sales_order_id = so.id` and select `so.so_due_date AS due_date`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
@@ -5473,9 +5554,13 @@
         },
         "party_po_no": {
           "type": "varchar(191)",
-          "business_meaning": "Party Po No attribute of sales_order.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Customer's / Party's Purchase Order number placed on us.",
+          "behavioral_rules": [
+            "When user asks for 'party PO number', 'customer PO', or 'PO number' for an order, query `sales_order.party_po_no` (join `party p ON sales_order.party_id = p.id`)."
+          ],
+          "join_warnings": [
+            "Do NOT use purchase.ref_po_no for customer PO requests; purchase.ref_po_no is for inward supplier purchases."
+          ],
           "aggregation_formula": null
         },
         "party_po_date": {
@@ -5880,12 +5965,14 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Physical on-hand inventory balances by product, color, and warehouse location.",
       "table_behavioral_rules": [
-        "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity (status = 'B'). Absence of a row means zero stock.",
-        "To find zero-stock or low-stock items, you MUST start from the `product` table and use a LEFT JOIN to `stock`.",
-        "MUST filter status = 'B' for on-hand available stock ('D' represents dispatched/historical rows).",
+        "Color Foreign Key: In stock table, `stock.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON s.product_color_id = pc.id` (do NOT join `color`).",
+        "Batch No vs Product Name: `stock.batch_no` contains numeric lot numbers (e.g. '739', '820'). Product SKU codes (e.g. 'CHP14065105-OUTER') are in `product.product_name`.",
+        "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity. Absence of a row means zero stock.",
+        "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p LEFT JOIN stock s ON s.product_id = p.id LEFT JOIN product_color pc ON s.product_color_id = pc.id`.",
         "MUST always append `alias.deleted_at IS NULL` to exclude soft-deleted inventory."
       ],
       "join_warnings": [
+        "In stock table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
         "Never use an INNER JOIN on `stock` when querying for low stock or out-of-stock items; an INNER JOIN eliminates 0-stock products."
       ],
       "columns": {
@@ -5912,9 +5999,15 @@
         },
         "invoice_no": {
           "type": "varchar(191)",
-          "business_meaning": "Invoice No attribute of stock.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Actual Invoice Number for purchase inward / invoice stock movements.",
+          "behavioral_rules": [
+            "For invoice queries (e.g. invoice list, invoice count), query `stock` where `stock_type = 'PI'`.",
+            "Calculate invoice count as `COUNT(DISTINCT stock.invoice_no)`."
+          ],
+          "join_warnings": [
+            "Do NOT use the proforma table for invoice queries unless the user specifically asks for proforma.",
+            "Do NOT use `stock.invoice_no` for DC numbers. Delivery Challan numbers are stored in `delivery_challan.dc_no`."
+          ],
           "aggregation_formula": null
         },
         "invoice_date": {
@@ -5927,8 +6020,12 @@
         "party_id": {
           "type": "bigint(20)",
           "business_meaning": "Party Id attribute of stock.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "behavioral_rules": [
+            "When `stock_type = 'PI'`, `stock.party_id` connects DIRECTLY to `party.id`. Join `party p ON stock.party_id = p.id`."
+          ],
+          "join_warnings": [
+            "For `stock_type = 'PI'`, join party directly via `stock.party_id = party.id`. Do NOT route through sales_order."
+          ],
           "aggregation_formula": null
         },
         "product_type_id": {
@@ -5947,9 +6044,13 @@
         },
         "product_color_id": {
           "type": "bigint(20)",
-          "business_meaning": "Product Color Id attribute of stock.",
-          "behavioral_rules": [],
-          "join_warnings": [],
+          "business_meaning": "Product Color Id attribute of stock linking to product_color.id.",
+          "behavioral_rules": [
+            "Foreign key to `product_color.id`. Join `product_color pc ON stock.product_color_id = pc.id` to retrieve `pc.color`."
+          ],
+          "join_warnings": [
+            "Do NOT join to the `color` table; join `product_color` on `stock.product_color_id = product_color.id`."
+          ],
           "aggregation_formula": null
         },
         "batch_no": {
@@ -6137,11 +6238,17 @@
     "stock_adjustment": {
       "table_name": "stock_adjustment",
       "domain": "Packaging & Stock",
-      "table_meaning": "Stock Adjustment operational records in Packaging & Stock.",
+      "table_meaning": "Primary table for inventory stock adjustments, stock-in additions, and stock-out write-offs.",
       "table_behavioral_rules": [
+        "Authoritative Table: `stock_adjustment` is the primary table for ALL manual stock adjustments (stock-in, stock-out, physical count corrections, scrap/wastage). NEVER query `stock` for stock adjustments (`stock` is for purchase inward and sales dispatches). NEVER query `product_packaging_detail` for stock adjustments (`product_packaging_detail` is a packaging BOM master table).",
+        "Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY two valid values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'Stock_Out'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.",
+        "Adjustment Date: `stock_adjustment.stock_adjustment_date` is the transaction date (e.g. `'2025-06-03'`).",
+        "Direct Category & Product Links: Connects directly to `category` via `category_id = category.id`, `product` via `product_id = product.id`, `product_color` via `product_color_id = product_color.id`, and `financial_year` via `financial_id = financial_year.id`.",
         "MUST always append `stock_adjustment.deleted_at IS NULL` in the WHERE clause."
       ],
-      "join_warnings": [],
+      "join_warnings": [
+        "Do NOT join `stock` or `product_packaging_detail` for stock adjustment queries; use `stock_adjustment` directly."
+      ],
       "columns": {
         "id": {
           "type": "bigint(20) UNSIGNED",
@@ -6159,15 +6266,19 @@
         },
         "transaction_type": {
           "type": "enum('StockOut','StockIn')",
-          "business_meaning": "Transaction Type attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Transaction adjustment direction: 'StockOut' (reduction/removal) or 'StockIn' (addition).",
+          "behavioral_rules": [
+            "Exact enum values: 'StockOut' and 'StockIn'. NEVER use 'OUT' or 'IN'."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "stock_adjustment_date": {
           "type": "date",
-          "business_meaning": "Stock Adjustment Date attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Date of stock adjustment transaction.",
+          "behavioral_rules": [
+            "Filter by date using `stock_adjustment.stock_adjustment_date = 'YYYY-MM-DD'`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
@@ -6180,38 +6291,46 @@
         },
         "category_id": {
           "type": "int(11)",
-          "business_meaning": "Category Id attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key to category.id. Links adjustment to category (e.g. 'Carton', 'Raw Material').",
+          "behavioral_rules": [
+            "Join `category c ON stock_adjustment.category_id = c.id` to filter by category name."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "product_id": {
           "type": "int(11)",
-          "business_meaning": "Product Id attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key to product.id. Links adjustment to product name.",
+          "behavioral_rules": [
+            "Join `product p ON stock_adjustment.product_id = p.id` to filter by product name."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "product_color_id": {
           "type": "int(11)",
-          "business_meaning": "Product Color Id attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Foreign key to product_color.id.",
+          "behavioral_rules": [
+            "Join `product_color pc ON stock_adjustment.product_color_id = pc.id`."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "unit_id": {
           "type": "int(11)",
-          "business_meaning": "Unit Id attribute of stock_adjustment.",
+          "business_meaning": "Foreign key to unit.id.",
           "behavioral_rules": [],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "qty": {
           "type": "double",
-          "business_meaning": "Qty attribute of stock_adjustment.",
-          "behavioral_rules": [],
+          "business_meaning": "Adjusted stock quantity.",
+          "behavioral_rules": [
+            "Authoritative column for stock adjustment quantities. Use `SUM(stock_adjustment.qty)` for total adjusted quantity."
+          ],
           "join_warnings": [],
-          "aggregation_formula": null
+          "aggregation_formula": "SUM(stock_adjustment.qty)"
         },
         "created_id": {
           "type": "int(11)",
@@ -6894,9 +7013,13 @@
       "domain": "Master Data",
       "table_meaning": "Unit operational records in Master Data.",
       "table_behavioral_rules": [
-        "MUST always append `unit.deleted_at IS NULL` in the WHERE clause."
+        "MUST always append `unit.deleted_at IS NULL` in the WHERE clause.",
+        "The unit table contains master units of measurement ('Pcs', 'Kg', 'Nos', 'Set', etc.), NOT product names.",
+        "To find the unit for a product, query `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%'`."
       ],
-      "join_warnings": [],
+      "join_warnings": [
+        "Never filter unit.unit_name by product names (e.g. CAP03); always join through product.unit_id."
+      ],
       "columns": {
         "id": {
           "type": "bigint(20) UNSIGNED",
@@ -7077,8 +7200,11 @@
     "warehouse": {
       "table_name": "warehouse",
       "domain": "Master Data",
-      "table_meaning": "Warehouse operational records in Master Data.",
+      "table_meaning": "Warehouse facility master definitions.",
       "table_behavioral_rules": [
+        "Warehouse Identification: Warehouses are identified by `warehouse.warehouse_code` (e.g. 'pm2bzd19') and `warehouse.location_name` (e.g. '110'). When a query specifies a warehouse code or name, ALWAYS match against `warehouse.warehouse_code` or `warehouse.location_name` (e.g. `WHERE (w.warehouse_code = 'pm2bzd19' OR w.location_name = '110')`). NEVER search for warehouse codes in `packagings.location_code`.",
+        "Link to Packagings: Connects to inventory cartons via `packagings.warehouse_id = warehouse.id`.",
+        "Carton Count vs Carton Quantity: In `packagings`, each row is one carton box. To calculate TOTAL CARTON QUANTITY (total product units inside cartons in a warehouse), use `SUM(pk.qty)` (e.g. 152,354 units). To calculate TOTAL CARTONS (number of physical boxes), use `COUNT(pk.id)` (e.g. 412 cartons). When asked for 'carton quantity' or 'quantity in warehouse', ALWAYS use `SUM(pk.qty)`, NOT `COUNT(*)`!",
         "MUST always append `warehouse.deleted_at IS NULL` in the WHERE clause."
       ],
       "join_warnings": [],
@@ -7092,15 +7218,19 @@
         },
         "location_name": {
           "type": "varchar(191)",
-          "business_meaning": "Location Name attribute of warehouse.",
-          "behavioral_rules": [],
+          "business_meaning": "Warehouse facility name or location number (e.g. '110', 'Main Warehouse').",
+          "behavioral_rules": [
+            "Use for matching warehouse names or location numbers."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },
         "warehouse_code": {
           "type": "varchar(255)",
-          "business_meaning": "Warehouse Code attribute of warehouse.",
-          "behavioral_rules": [],
+          "business_meaning": "Warehouse alphanumeric code (e.g. 'pm2bzd19').",
+          "behavioral_rules": [
+            "Use `warehouse.warehouse_code` for matching warehouse codes."
+          ],
           "join_warnings": [],
           "aggregation_formula": null
         },

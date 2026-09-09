@@ -10,15 +10,35 @@ import ProviderStatus from './ProviderStatus.jsx'
 export default function Chat() {
   const activeChatId = useAppStore((state) => state.activeChatId)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
+  const draftsByChatId = useAppStore((state) => state.draftsByChatId)
+  const setDraft = useAppStore((state) => state.setDraft)
   const sendPrompt = useAppStore((state) => state.sendPrompt)
   const stopGeneration = useAppStore((state) => state.stopGeneration)
   const activeRequest = useAppStore((state) => state.activeRequest)
   const chats = useAppStore((state) => state.chats)
   const loading = useAppStore((state) => state.loading)
-  const [value, setValue] = useState('')
+  const value = draftsByChatId[activeChatId || '__pending__'] || ''
   const inputRef = useRef(null)
   const bottomRef = useRef(null)
   const isGenerating = Boolean(activeRequest)
+  const [cooldown, setCooldown] = useState(0)
+  const prevGeneratingRef = useRef(isGenerating)
+
+  useEffect(() => {
+    // When generation completes, trigger 3s rate-protection cooldown
+    if (prevGeneratingRef.current && !isGenerating) {
+      setCooldown(3)
+    }
+    prevGeneratingRef.current = isGenerating
+  }, [isGenerating])
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = setTimeout(() => {
+      setCooldown((prev) => Math.max(0, prev - 1))
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [cooldown])
 
   const messages = useMemo(
     () => messagesByChatId[activeChatId] || [],
@@ -62,6 +82,7 @@ export default function Chat() {
                   message={message}
                   index={index}
                   chatId={activeChatId}
+                  hasLaterUserMessage={messages.slice(index + 1).some((entry) => entry.role === 'user')}
                   isLast={index === messages.length - 1}
                 />
               ))
@@ -72,15 +93,7 @@ export default function Chat() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
               >
-                <p className="hero__eyebrow">Private intelligence</p>
-                <h2 className="hero__title">
-                  How can I help <em>you</em> today?
-                </h2>
-                {/* <p className="hero__copy">
-                  Your data stays on your machine. This UI is showing static demo
-                  content for now, and the live API hook points are documented in
-                  the data layer for later.
-                </p> */}
+                <h2 className="hero__title">What would you like to know?</h2>
                 <div className="feature-grid">
                   <article className="feature-card">
                     <strong className="feature-card__title">Multi-Format Support</strong>
@@ -89,7 +102,7 @@ export default function Chat() {
 
                   <article className="feature-card">
                     <strong className="feature-card__title">Trusted Answers</strong>
-                    <p className="feature-card__text">Responses based only on your documents.</p>
+                    <p className="feature-card__text">Responses based only on your data & documents.</p>
                   </article>
 
                   <article className="feature-card">
@@ -110,12 +123,11 @@ export default function Chat() {
         <InputBox
           ref={inputRef}
           value={value}
-          onChange={setValue}
+          onChange={(text) => setDraft(activeChatId, text)}
           onSubmit={async () => {
             if (isGenerating) return
             const prompt = value.trim()
             if (!prompt) return
-            setValue('')
             await sendPrompt(prompt)
             inputRef.current?.focus()
           }}
@@ -125,6 +137,7 @@ export default function Chat() {
           }}
           loading={isGenerating}
           disabled={isGenerating}
+          cooldown={cooldown}
           footer={<ProviderStatus />}
         />
       </div>
