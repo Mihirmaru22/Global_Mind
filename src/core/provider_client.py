@@ -804,6 +804,50 @@ def get_shared_routes() -> dict[str, TaskRoute]:
     return _shared_routes
 
 
+async def stream_with_budget_limit(
+    stream_iterable: AsyncGenerator[str, None],
+    limit: int = 8000,
+    model_name: str = "",
+    provider_name: str = "",
+    counter: StreamTokenCounter | None = None,
+) -> AsyncGenerator[str, None]:
+    """Wrap an async text stream with StreamTokenCounter real-time circuit breaking.
+
+    Yields chunks as they arrive. If the token count exceeds hard_limit + safety_buffer,
+    interrupts the stream immediately, logs the cutoff, and terminates cleanly.
+    """
+    if counter is None:
+        counter = StreamTokenCounter(
+            hard_limit=limit,
+            model_name=model_name,
+            provider_name=provider_name,
+        )
+
+    try:
+        async for chunk in stream_iterable:
+            if chunk:
+                counter.add_chunk(chunk)
+                yield chunk
+
+                # Hard Interrupt Check
+                if counter.check_limit():
+                    logger.warning(
+                        "Stream truncated at %d tokens (hard_limit=%d, model=%s/%s)",
+                        counter.current_count,
+                        counter.hard_limit,
+                        provider_name,
+                        model_name,
+                    )
+                    break
+    except TokenBudgetExceededError:
+        logger.warning(
+            "Stream TokenBudgetExceededError at %d tokens (hard_limit=%d)",
+            counter.current_count,
+            counter.hard_limit,
+        )
+        return
+
+
 # ---------------------------------------------------------------------------
 # Router — the main entry point for all LLM/vision calls
 # ---------------------------------------------------------------------------
@@ -1144,50 +1188,6 @@ class ProviderRouter:
         retry_after = _rate_limit_retry_after(exc)
         if retry_after is not None:
             self._rate_limiter.report_429(provider_name, retry_after)
-
-async def stream_with_budget_limit(
-    stream_iterable: AsyncGenerator[str, None],
-    limit: int = 8000,
-    model_name: str = "",
-    provider_name: str = "",
-    counter: StreamTokenCounter | None = None,
-) -> AsyncGenerator[str, None]:
-    """Wrap an async text stream with StreamTokenCounter real-time circuit breaking.
-
-    Yields chunks as they arrive. If the token count exceeds hard_limit + safety_buffer,
-    interrupts the stream immediately, logs the cutoff, and terminates cleanly.
-    """
-    if counter is None:
-        counter = StreamTokenCounter(
-            hard_limit=limit,
-            model_name=model_name,
-            provider_name=provider_name,
-        )
-
-    try:
-        async for chunk in stream_iterable:
-            if chunk:
-                counter.add_chunk(chunk)
-                yield chunk
-
-                # Hard Interrupt Check
-                if counter.check_limit():
-                    logger.warning(
-                        "Stream truncated at %d tokens (hard_limit=%d, model=%s/%s)",
-                        counter.current_count,
-                        counter.hard_limit,
-                        provider_name,
-                        model_name,
-                    )
-                    break
-    except TokenBudgetExceededError:
-        logger.warning(
-            "Stream TokenBudgetExceededError at %d tokens (hard_limit=%d)",
-            counter.current_count,
-            counter.hard_limit,
-        )
-        return
-
 
     async def chat_stream(
         self,
