@@ -6,17 +6,15 @@ Takes a question, retrieves relevant chunks, reranks, and generates an answer.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
 
 from src.core.config import settings
 from src.core.pipeline_metrics import log_event as _log_pipeline_event
 from src.core.provider_client import ProviderRouter
 from src.core.rate_limiter import get_shared_rate_limiter
-from src.models.schemas import QueryResult, RetrievedChunk, ThinkingStep, TokenUsage
+from src.models.schemas import QueryResult, RetrievedChunk, ThinkingStep
 from src.stages.s10_embeddings import EmbeddingService
 from src.stages.s11_vector_store import QdrantStore
 from src.stages.s12_s13_s14_retrieval import (
@@ -32,8 +30,6 @@ from src.utils.query_classifier import QueryType, classify_query
 from src.utils.semantic_cache import get_semantic_cache
 from src.utils.query_budget import get_or_create_budget_controller
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_current_query_id, timed_stage
-from src.prompts.intent_router import build_intent_router_prompt
-from src.pipeline.hybrid_merger import merge_hybrid_responses
 
 logger = logging.getLogger(__name__)
 
@@ -96,50 +92,6 @@ class QueryPipeline:
         self._sql_retriever = SQLRetriever(self._router, self._store, self._embeddings)
         self._reranker = Reranker(self._rate_limiter)
         self._generator = Generator(self._router)
-        self._force_hybrid_routing = False
-
-    async def _classify_intent(self, question: str) -> dict[str, Any]:
-        """Step 1: Classify user question into SQL_ONLY, RAG_ONLY, HYBRID_PARALLEL, or ABSTAIN."""
-        prompt = build_intent_router_prompt(question)
-        try:
-            raw_response = await self._router.chat(
-                task="classification",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-            )
-            text = raw_response.strip()
-            if text.startswith("```"):
-                text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-                text = re.sub(r"\s*```$", "", text)
-            try:
-                parsed = json.loads(text.strip())
-            except json.JSONDecodeError:
-                match = re.search(r"(\{.*\})", text, re.DOTALL)
-                if match:
-                    parsed = json.loads(match.group(1))
-                else:
-                    raise
-
-            if isinstance(parsed, dict) and "route_type" in parsed:
-                route = str(parsed["route_type"]).upper().strip()
-                if route in ("SQL_ONLY", "RAG_ONLY", "HYBRID_PARALLEL", "ABSTAIN"):
-                    parsed["route_type"] = route
-                    return parsed
-        except Exception as e:
-            logger.warning("Intent classification failed or unparseable: %s", e)
-
-        db_keywords = [
-            "sales", "order", "stock", "product", "lead", "party", "customer",
-            "vendor", "invoice", "quotation", "production", "carton", "qty",
-            "quantity", "price", "rate", "count", "how many", "total",
-        ]
-        is_db = any(k in question.lower() for k in db_keywords)
-        default_route = "SQL_ONLY" if is_db else "HYBRID_PARALLEL"
-        return {
-            "route_type": default_route,
-            "confidence_score": 0.5,
-            "reasoning": f"Default fallback routing ({default_route})",
-        }
 
     async def query(
         self,
@@ -147,7 +99,7 @@ class QueryPipeline:
         filters: dict | None = None,
         history: list[dict] | None = None,
     ) -> QueryResult:
-        """Run a full RAG query: retrieve -> rerank -> generate.
+        """Run a full RAG query: retrieve Ã¢â€ â€™ rerank Ã¢â€ â€™ generate.
 
         Args:
             question: The user's natural-language question.
@@ -160,7 +112,7 @@ class QueryPipeline:
         import uuid
         query_id = f"gm-q-{uuid.uuid4()}"
         set_current_query_id(query_id)
-        budget_ctrl = get_or_create_budget_controller(query_id=query_id, force_new=True, max_tokens=16000, hard_limit=16000, max_llm_calls=8)
+        budget_ctrl = get_or_create_budget_controller(query_id=query_id, force_new=True)
         logger.info("=== Query [%s] [Budget Limit: %d]: %s ===", query_id, budget_ctrl.max_tokens, question[:100])
 
         import os
@@ -195,16 +147,11 @@ class QueryPipeline:
                     reasoning_task="document_listing",
                 )
 
-            # Handle empty / whitespace input early
-            if not question or not question.strip():
-                return QueryResult(
-                    query=question,
-                    answer="No relevant documents found. Please upload documents first.",
-                    model_used="none",
-                    reasoning_task="no_results",
-                )
-
-            # Consult the conversation ONLY when the message looks like it depends on it.
+            # Consult the conversation ONLY when the message looks like it depends on
+            # it. A self-contained or new-topic question skips history entirely and is
+            # answered exactly as it would be with no conversation — so history never
+            # biases an unrelated question. When it is a follow-up, rewrite it into a
+            # standalone query so retrieval continues the current thread.
             needs_context = bool(history) and _looks_like_followup(question)
             search_query = question
             if needs_context:
@@ -217,293 +164,92 @@ class QueryPipeline:
             if exhaustive:
                 logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
 
-            use_intent_routing = (
-                isinstance(self._router, ProviderRouter)
-                or getattr(self, "_force_hybrid_routing", False)
+            # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
+            logger.info("[Tokens: %d/%d] [Stage 12] Parallel SQL & Vector Retrieval", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+            sql_coro = self._sql_retriever.retrieve(search_query)
+            doc_coro = self._retriever.retrieve(
+                search_query,
+                top_k=settings.retrieval_top_k,
+                filters=filters,
+                exhaustive=exhaustive,
             )
 
-            if use_intent_routing:
-                intent = await self._classify_intent(search_query)
-                route_type = intent.get("route_type", "HYBRID_PARALLEL").upper()
-                logger.info(
-                    "[Tokens: %d/%d] [Step 1: Router] Query classified as: %s (confidence: %.2f)",
-                    budget_ctrl.get_current_usage(),
-                    budget_ctrl.max_tokens,
-                    route_type,
-                    intent.get("confidence_score", 0.0),
-                )
-
-                if route_type == "ABSTAIN":
-                    msg = (
-                        "I cannot answer this question as it is outside the domain of this system "
-                        "(internal ERP operational data and company documentation). Please ask a question "
-                        "related to your business records, stock, orders, or uploaded company policies."
-                    )
-                    return QueryResult(
-                        query=question,
-                        answer=msg,
-                        citations=[],
-                        model_used="none",
-                        reasoning_task="abstain",
-                        chunks_retrieved=0,
-                        chunks_after_rerank=0,
-                    )
-
-                elif route_type == "SQL_ONLY":
-                    logger.info(
-                        "[Tokens: %d/%d] [Route: SQL_ONLY] Executing live SQL retrieval only (bypassing vector search)",
-                        budget_ctrl.get_current_usage(),
-                        budget_ctrl.max_tokens,
-                    )
-                    sql_chunks = await self._sql_retriever.retrieve(search_query)
-                    sql_infra_error = self._sql_retriever.last_infra_error
-                    if not sql_chunks:
-                        if sql_infra_error:
-                            return QueryResult(
-                                query=question,
-                                answer=_SQL_UNAVAILABLE_MSG,
-                                model_used="none",
-                                reasoning_task="sql_unavailable",
-                            )
-                        return QueryResult(
-                            query=question,
-                            answer="No matching database records found for this query.",
-                            model_used="none",
-                            reasoning_task="no_results",
-                        )
-                    result = await self._generator.generate(
-                        question, sql_chunks, history=gen_history, source_mode="sql_only"
-                    )
-                    result.chunks_retrieved = len(sql_chunks)
-                    result.chunks_after_rerank = len(sql_chunks)
-
-                elif route_type == "RAG_ONLY":
-                    logger.info(
-                        "[Tokens: %d/%d] [Route: RAG_ONLY] Executing vector retrieval only (bypassing SQL)",
-                        budget_ctrl.get_current_usage(),
-                        budget_ctrl.max_tokens,
-                    )
-                    vector_chunks = await self._retriever.retrieve(
-                        search_query,
-                        top_k=settings.retrieval_top_k,
-                        filters=filters,
-                        exhaustive=exhaustive,
-                    )
-                    if not vector_chunks:
-                        return QueryResult(
-                            query=question,
-                            answer="No relevant documents found. Please upload documents first.",
-                            model_used="none",
-                            reasoning_task="no_results",
-                        )
-                    if exhaustive:
-                        reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
-                    else:
-                        logger.info(
-                            "[Tokens: %d/%d] [Stage 13] Reranking",
-                            budget_ctrl.get_current_usage(),
-                            budget_ctrl.max_tokens,
-                        )
-                        reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
-                        reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-                    reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
-                    if not reranked:
-                        return QueryResult(
-                            query=question,
-                            answer="No relevant documents found. Please upload documents first.",
-                            model_used="none",
-                            reasoning_task="no_results",
-                        )
-                    context_limit = None if exhaustive else settings.generation_context_k
-                    mode = _source_mode(reranked)
-                    result = await self._generator.generate(
-                        question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
-                    )
-                    result.chunks_retrieved = len(vector_chunks)
-                    result.chunks_after_rerank = len(reranked)
-
-                else:  # HYBRID_PARALLEL
-                    logger.info(
-                        "[Tokens: %d/%d] [Route: HYBRID_PARALLEL] Executing parallel SQL + Vector Retrieval",
-                        budget_ctrl.get_current_usage(),
-                        budget_ctrl.max_tokens,
-                    )
-                    sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
-                    doc_task = asyncio.create_task(
-                        self._retriever.retrieve(
-                            search_query,
-                            top_k=settings.retrieval_top_k,
-                            filters=filters,
-                            exhaustive=exhaustive,
-                        )
-                    )
-                    sql_chunks, vector_chunks = await asyncio.gather(sql_task, doc_task)
-                    sql_infra_error = self._sql_retriever.last_infra_error
-
-                    reranked = []
-                    if vector_chunks:
-                        if exhaustive:
-                            reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
-                        else:
-                            reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
-                            reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-                        reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
-
-                    if not sql_chunks and not reranked:
-                        if sql_infra_error:
-                            return QueryResult(
-                                query=question,
-                                answer=_SQL_UNAVAILABLE_MSG,
-                                model_used="none",
-                                reasoning_task="sql_unavailable",
-                            )
-                        merged = await merge_hybrid_responses(
-                            question, None, None, route_type="HYBRID_PARALLEL", router=self._router
-                        )
-                        return QueryResult(
-                            query=question,
-                            answer=merged.get("unified_answer") or merged.get("final_answer", "No matching data found."),
-                            model_used="none",
-                            reasoning_task="no_results",
-                        )
-
-                    sql_payload = None
-                    if sql_chunks:
-                        sql_payload = {
-                            "status": "success",
-                            "table_markdown": sql_chunks[0].chunk.content,
-                            "explanation": getattr(self._sql_retriever, "last_cot_plan", "") or "SQL query executed.",
-                            "confidence": getattr(self._sql_retriever, "last_confidence_score", 0.95) or 0.95,
-                        }
-
-                    rag_payload = None
-                    rag_gen_res = None
-                    if reranked:
-                        context_limit = None if exhaustive else settings.generation_context_k
-                        mode = _source_mode(reranked)
-                        try:
-                            rag_gen_res = await self._generator.generate(
-                                question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
-                            )
-                            rag_payload = {
-                                "answer": rag_gen_res.answer,
-                                "sources": [c.source_file for c in rag_gen_res.citations if c.source_file],
-                                "confidence": 0.95,
-                            }
-                        except Exception as rag_err:
-                            logger.warning("RAG generation failed in hybrid path: %s", rag_err)
-                            rag_payload = {
-                                "answer": "Document guidance retrieved: " + (reranked[0].chunk.content[:300] if reranked else ""),
-                                "sources": [c.chunk.source_file for c in reranked if c.chunk.source_file],
-                                "confidence": 0.6,
-                            }
-
-                    try:
-                        merged = await merge_hybrid_responses(
-                            user_question=question,
-                            sql_result=sql_payload,
-                            rag_result=rag_payload,
-                            route_type="HYBRID_PARALLEL",
-                            router=self._router,
-                        )
-                        final_answer = merged.get("unified_answer") or merged.get("final_answer", "")
-                    except Exception as merge_err:
-                        logger.warning("Hybrid merger LLM failed: %s", merge_err)
-                        parts = []
-                        if sql_payload and sql_payload.get("table_markdown"):
-                            parts.append(sql_payload["table_markdown"])
-                        if rag_payload and rag_payload.get("answer"):
-                            parts.append(rag_payload["answer"])
-                        final_answer = "\n\n".join(parts) if parts else "No matching data found."
-                    model_val = getattr(self._router, "last_used", None)
-                    model_str = model_val if isinstance(model_val, str) else "hybrid_merger"
-                    usage_val = getattr(self._router, "usage", None)
-                    usage_obj = usage_val if isinstance(usage_val, TokenUsage) else TokenUsage()
-                    citations = rag_gen_res.citations if rag_gen_res else []
-                    result = QueryResult(
-                        query=question,
-                        answer=final_answer,
-                        citations=citations,
-                        model_used=model_str,
-                        reasoning_task="hybrid_parallel",
-                        chunks_retrieved=len(sql_chunks) + len(vector_chunks),
-                        chunks_after_rerank=len(sql_chunks) + len(reranked),
-                        usage=usage_obj,
-                    )
-
+            # Coordinator merges isolated outputs after gather completes
+            sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
+            logger.info("Retrieved %d vector chunks and %d SQL chunks", len(vector_chunks), len(sql_chunks))
+            sql_infra_error = self._sql_retriever.last_infra_error
+            if sql_chunks:
+                logger.info("SQL query succeeded and returned rows.")
             else:
-                # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
-                logger.info("[Tokens: %d/%d] [Stage 12] Parallel SQL & Vector Retrieval", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                sql_coro = self._sql_retriever.retrieve(search_query)
-                doc_coro = self._retriever.retrieve(
-                    search_query,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
+                logger.info("SQL query returned no results or failed.")
 
-                # Coordinator merges isolated outputs after gather completes
-                sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
-                logger.info("Retrieved %d vector chunks and %d SQL chunks", len(vector_chunks), len(sql_chunks))
-                sql_infra_error = self._sql_retriever.last_infra_error
-                if sql_chunks:
-                    logger.info("SQL query succeeded and returned rows.")
-                else:
-                    logger.info("SQL query returned no results or failed.")
-
-                if not vector_chunks and not sql_chunks:
-                    if sql_infra_error:
-                        return QueryResult(
-                            query=question,
-                            answer=_SQL_UNAVAILABLE_MSG,
-                            model_used="none",
-                            reasoning_task="sql_unavailable",
-                        )
-                    db_keywords = ["sales", "order", "delivery", "challan", "stock", "product", "lead", "party", "customer", "vendor", "invoice", "quotation", "production", "carton", "qty", "quantity", "price", "rate"]
-                    if any(k in question.lower() for k in db_keywords):
-                        fallback_msg = "No matching database records found for this query."
-                    else:
-                        fallback_msg = "No relevant documents found. Please upload documents first."
-
-                    return QueryResult(
-                        query=question,
-                        answer=fallback_msg,
-                        model_used="none",
-                        reasoning_task="no_results",
-                    )
-
-                if exhaustive or not vector_chunks:
-                    reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
-                else:
-                    logger.info("[Tokens: %d/%d] [Stage 13] Reranking", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                    reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
-                    reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-                reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
-                reranked = _pin_sql_result_chunks(reranked, sql_chunks)
-                logger.info("Final context: %d chunks", len(reranked))
-
-                if not reranked and sql_infra_error:
+            if not vector_chunks and not sql_chunks:
+                if sql_infra_error:
                     return QueryResult(
                         query=question,
                         answer=_SQL_UNAVAILABLE_MSG,
                         model_used="none",
                         reasoning_task="sql_unavailable",
                     )
+                db_keywords = ["sales", "order", "delivery", "challan", "stock", "product", "lead", "party", "customer", "vendor", "invoice", "quotation", "production", "carton", "qty", "quantity", "price", "rate"]
+                if any(k in question.lower() for k in db_keywords):
+                    fallback_msg = "No matching database records found for this query."
+                else:
+                    fallback_msg = "No relevant documents found. Please upload documents first."
 
-                logger.info("[Tokens: %d/%d] [Stage 14] Generating answer", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                context_limit = None if exhaustive else settings.generation_context_k
-                mode = _source_mode(reranked)
-                _log_pipeline_event("routing_decision", {
-                    "mode": mode,
-                    "sql_rows": len(sql_chunks),
-                    "doc_chunks": len(vector_chunks),
-                    "reranked": len(reranked),
-                }, query=question)
-                result = await self._generator.generate(
-                    question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
+                return QueryResult(
+                    query=question,
+                    answer=fallback_msg,
+                    model_used="none",
+                    reasoning_task="no_results",
                 )
-                result.chunks_retrieved = len(vector_chunks + sql_chunks)
-                result.chunks_after_rerank = len(reranked)
+
+            # Stage 13 — Reranking. SQL chunks NEVER go here — solo or blended.
+            # A live-db table shouldn't leave your infra via the reranker's API call,
+            # and there's only ever one SQL chunk, so ranking it is meaningless.
+            # Only vector_chunks go to the reranker; _pin_sql_result_chunks (below)
+            # re-attaches the SQL chunk to the front unconditionally afterward, so
+            # it always survives to generation regardless of what the reranker did
+            # with the documents.
+            if exhaustive or not vector_chunks:
+                reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
+            else:
+                logger.info("[Tokens: %d/%d] [Stage 13] Reranking", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+                reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
+                reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+            reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
+            reranked = _pin_sql_result_chunks(reranked, sql_chunks)
+            logger.info("Final context: %d chunks", len(reranked))
+
+            # Everything the documents returned was filtered out as irrelevant, and
+            # the SQL path went silent only because its models were unreachable — so
+            # say that, instead of letting generation report "not in my documents".
+            if not reranked and sql_infra_error:
+                return QueryResult(
+                    query=question,
+                    answer=_SQL_UNAVAILABLE_MSG,
+                    model_used="none",
+                    reasoning_task="sql_unavailable",
+                )
+
+            # Stage 14 — Generation (the user's original question + conversation,
+            # but only when the question actually depends on it)
+            logger.info("[Tokens: %d/%d] [Stage 14] Generating answer", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+            # Exhaustive queries keep every reranked chunk (recall matters); normal
+            # queries feed only the top few into the prompt to save input tokens.
+            context_limit = None if exhaustive else settings.generation_context_k
+            mode = _source_mode(reranked)
+            _log_pipeline_event("routing_decision", {
+                "mode": mode,
+                "sql_rows": len(sql_chunks),
+                "doc_chunks": len(vector_chunks),
+                "reranked": len(reranked),
+            }, query=question)
+            result = await self._generator.generate(
+                question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
+            )
+            result.chunks_retrieved = len(vector_chunks + sql_chunks)
+            result.chunks_after_rerank = len(reranked)
 
             total_used = budget_ctrl.get_current_usage()
             status_str = "Truncated" if budget_ctrl.counter.is_exceeded else "Success"
@@ -545,7 +291,7 @@ class QueryPipeline:
 
         logger.info("=== Query Stream: %s ===", question[:100])
 
-        # Short-circuit: document listing question — answer from registry
+        # Short-circuit: document listing question Ã¢â‚¬â€  answer from registry
         if _is_document_listing_query(question):
             # ARCH-9: registry reads block; run off the event loop.
             answer = await asyncio.to_thread(_build_document_list_answer)
@@ -558,6 +304,8 @@ class QueryPipeline:
             )
             return
 
+        # Reasoning trace ("thinking") Ã¢â‚¬â€  each step is streamed live to the UI as
+        # it happens and collected onto the final QueryResult so it persists.
         thinking: list[ThinkingStep] = []
 
         def _think(label: str, detail: str = "") -> ThinkingStep:
@@ -565,19 +313,9 @@ class QueryPipeline:
             thinking.append(step)
             return step
 
-        # Handle empty / whitespace input early
-        if not question or not question.strip():
-            fallback_msg = "No relevant documents found. Please upload documents first."
-            yield fallback_msg
-            yield QueryResult(
-                query=question,
-                answer=fallback_msg,
-                model_used="none",
-                reasoning_task="no_results",
-                thinking=thinking,
-            )
-            return
-
+        # Consult the conversation ONLY when the message looks like a follow-up
+        # (see query()) Ã¢â‚¬â€  a self-contained/new-topic question stays stateless so
+        # history can't bias it.
         needs_context = bool(history) and _looks_like_followup(question)
         search_query = question
         if needs_context:
@@ -589,268 +327,23 @@ class QueryPipeline:
 
         exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
-            logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
+            logger.info("Exhaustive query detected Ã¢â‚¬â€  boosting top_k and skipping rerank")
 
-        use_intent_routing = (
-            isinstance(self._router, ProviderRouter)
-            or getattr(self, "_force_hybrid_routing", False)
-        )
-
-        if use_intent_routing:
-            intent = await self._classify_intent(search_query)
-            route_type = intent.get("route_type", "HYBRID_PARALLEL").upper()
-            yield _think("Routing intent", f"Classified query as {route_type}")
-
-            if route_type == "ABSTAIN":
-                fallback_msg = (
-                    "I cannot answer this question as it is outside the domain of this system "
-                    "(internal ERP operational data and company documentation). Please ask a question "
-                    "related to your business records, stock, orders, or uploaded company policies."
-                )
-                yield fallback_msg
-                yield QueryResult(
-                    query=question,
-                    answer=fallback_msg,
-                    citations=[],
-                    model_used="none",
-                    reasoning_task="abstain",
-                    chunks_retrieved=0,
-                    chunks_after_rerank=0,
-                    thinking=thinking,
-                )
-                return
-
-            elif route_type == "SQL_ONLY":
-                yield _think("Queried the live database", "Executing targeted SQL query...")
-                sql_chunks = await self._sql_retriever.retrieve(search_query)
-                sql_infra_error = self._sql_retriever.last_infra_error
-                if not sql_chunks:
-                    if sql_infra_error:
-                        yield _SQL_UNAVAILABLE_MSG
-                        yield QueryResult(
-                            query=question,
-                            answer=_SQL_UNAVAILABLE_MSG,
-                            model_used="none",
-                            reasoning_task="sql_unavailable",
-                            thinking=thinking,
-                        )
-                        return
-                    fallback_msg = "No matching database records found for this query."
-                    yield fallback_msg
-                    yield QueryResult(
-                        query=question,
-                        answer=fallback_msg,
-                        model_used="none",
-                        reasoning_task="no_results",
-                        thinking=thinking,
-                    )
-                    return
-
-                sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
-                sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
-                yield _think("Queried the live database", sql_detail)
-                yield _think("Writing the answer")
-
-                async for chunk in self._generator.generate_stream(
-                    question, sql_chunks, history=gen_history, source_mode="sql_only"
-                ):
-                    if isinstance(chunk, QueryResult):
-                        if chunk.model_used:
-                            thinking.append(ThinkingStep(label="Answered using", detail=chunk.model_used))
-                        chunk.thinking = thinking
-                    yield chunk
-                return
-
-            elif route_type == "RAG_ONLY":
-                yield _think("Searched the documents", "Searching indexed documents...")
-                vector_chunks = await self._retriever.retrieve(
-                    search_query,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
-                doc_names = list(dict.fromkeys(
-                    Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
-                ))
-                if doc_names:
-                    shown = ", ".join(doc_names[:3])
-                    more = f" +{len(doc_names) - 3} more" if len(doc_names) > 3 else ""
-                    doc_detail = f"{len(vector_chunks)} passage(s) in {shown}{more}"
-                else:
-                    doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
-                yield _think("Searched the documents", doc_detail)
-
-                if not vector_chunks:
-                    fallback_msg = "No relevant documents found. Please upload documents first."
-                    yield fallback_msg
-                    yield QueryResult(
-                        query=question,
-                        answer=fallback_msg,
-                        model_used="none",
-                        reasoning_task="no_results",
-                        thinking=thinking,
-                    )
-                    return
-
-                if exhaustive:
-                    reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
-                else:
-                    reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
-                    reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-                reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
-
-                if not reranked:
-                    fallback_msg = "No relevant documents found. Please upload documents first."
-                    yield fallback_msg
-                    yield QueryResult(
-                        query=question,
-                        answer=fallback_msg,
-                        model_used="none",
-                        reasoning_task="no_results",
-                        thinking=thinking,
-                    )
-                    return
-
-                top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
-                rank_detail = f"kept the {len(reranked)} best — top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
-                yield _think("Ranked the most relevant sources", rank_detail)
-                yield _think("Writing the answer")
-
-                context_limit = None if exhaustive else settings.generation_context_k
-                mode = _source_mode(reranked)
-                async for chunk in self._generator.generate_stream(
-                    question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
-                ):
-                    if isinstance(chunk, QueryResult):
-                        if chunk.model_used:
-                            thinking.append(ThinkingStep(label="Answered using", detail=chunk.model_used))
-                        chunk.thinking = thinking
-                    yield chunk
-                return
-
-            else:  # HYBRID_PARALLEL
-                yield _think("Understanding the question", "checking live database and documents in parallel")
-                sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
-                vector_chunks = await self._retriever.retrieve(
-                    search_query,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
-                doc_names = list(dict.fromkeys(
-                    Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
-                ))
-                if doc_names:
-                    shown = ", ".join(doc_names[:3])
-                    more = f" +{len(doc_names) - 3} more" if len(doc_names) > 3 else ""
-                    doc_detail = f"{len(vector_chunks)} passage(s) in {shown}{more}"
-                else:
-                    doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
-                yield _think("Searched the documents", doc_detail)
-
-                sql_chunks = await sql_task
-                sql_infra_error = self._sql_retriever.last_infra_error
-                if sql_chunks:
-                    sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
-                    sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
-                    yield _think("Queried the live database", sql_detail)
-                else:
-                    yield _think("Queried the live database", "no matching rows -- checking documents instead")
-
-                reranked = []
-                if vector_chunks:
-                    if exhaustive:
-                        reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
-                    else:
-                        reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
-                        reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
-                    reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
-
-                if not sql_chunks and not reranked:
-                    if sql_infra_error:
-                        yield _SQL_UNAVAILABLE_MSG
-                        yield QueryResult(
-                            query=question,
-                            answer=_SQL_UNAVAILABLE_MSG,
-                            model_used="none",
-                            reasoning_task="sql_unavailable",
-                            thinking=thinking,
-                        )
-                        return
-                    fallback_msg = "No matching database records or documents found."
-                    yield fallback_msg
-                    yield QueryResult(
-                        query=question,
-                        answer=fallback_msg,
-                        model_used="none",
-                        reasoning_task="no_results",
-                        thinking=thinking,
-                    )
-                    return
-
-                yield _think("Merging responses", "Synthesizing hybrid response...")
-                sql_payload = None
-                if sql_chunks:
-                    sql_payload = {
-                        "status": "success",
-                        "table_markdown": sql_chunks[0].chunk.content,
-                        "explanation": getattr(self._sql_retriever, "last_cot_plan", "") or "SQL query executed.",
-                        "confidence": getattr(self._sql_retriever, "last_confidence_score", 0.95) or 0.95,
-                    }
-
-                rag_payload = None
-                rag_gen_res = None
-                if reranked:
-                    context_limit = None if exhaustive else settings.generation_context_k
-                    mode = _source_mode(reranked)
-                    rag_gen_res = await self._generator.generate(
-                        question, reranked, history=gen_history, context_limit=context_limit, source_mode=mode
-                    )
-                    rag_payload = {
-                        "answer": rag_gen_res.answer,
-                        "sources": [c.source_file for c in rag_gen_res.citations if c.source_file],
-                        "confidence": 0.95,
-                    }
-
-                merged = await merge_hybrid_responses(
-                    user_question=question,
-                    sql_result=sql_payload,
-                    rag_result=rag_payload,
-                    route_type="HYBRID_PARALLEL",
-                    router=self._router,
-                )
-                final_answer = merged.get("unified_answer") or merged.get("final_answer", "")
-                citations = rag_gen_res.citations if rag_gen_res else []
-                yield final_answer
-                model_val = getattr(self._router, "last_used", None)
-                model_str = model_val if isinstance(model_val, str) else "hybrid_merger"
-                usage_val = getattr(self._router, "usage", None)
-                usage_obj = usage_val if isinstance(usage_val, TokenUsage) else TokenUsage()
-                yield QueryResult(
-                    query=question,
-                    answer=final_answer,
-                    citations=citations,
-                    model_used=model_str,
-                    reasoning_task="hybrid_parallel",
-                    chunks_retrieved=len(sql_chunks) + len(vector_chunks),
-                    chunks_after_rerank=len(sql_chunks) + len(reranked),
-                    usage=usage_obj,
-                    thinking=thinking,
-                )
-                return
-
-        # Legacy streaming flow (when use_intent_routing is False)
         yield _think("Understanding the question", "checking live database and documents in parallel")
 
         sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
 
-        # Stage 12 — Vector Retrieval (always runs; see query() for rationale).
+        # Stage 12 Ã¢â‚¬â€  Vector Retrieval (always runs; see query() for rationale).
+        # Document context is never skipped so a document-only answer can't be
+        # hijacked by the gpu_sales table, and regenerating stays consistent.
         vector_chunks = await self._retriever.retrieve(
             search_query,
             top_k=settings.retrieval_top_k,
             filters=filters,
             exhaustive=exhaustive,
         )
+        # Name the actual source files this question matched against, so two
+        # different questions never show the same trace.
         doc_names = list(dict.fromkeys(
             Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
         ))
@@ -865,6 +358,8 @@ class QueryPipeline:
         sql_chunks = await sql_task
         sql_infra_error = self._sql_retriever.last_infra_error
         if sql_chunks:
+            # Surface the actual generated SQL, not a canned phrase Ã¢â‚¬â€  every
+            # question produces a different query.
             sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
             sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
             yield _think("Queried the live database", sql_detail)
@@ -894,7 +389,7 @@ class QueryPipeline:
             )
             return
 
-        # Stage 13 — Reranking. SQL chunks NEVER go here — solo or blended.
+        # Stage 13 Ã¢â‚¬â€  Reranking. SQL chunks NEVER go here Ã¢â‚¬â€  solo or blended.
         if exhaustive or not vector_chunks:
             reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
         else:
@@ -903,6 +398,9 @@ class QueryPipeline:
         reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
 
+        # Documents all filtered as irrelevant and SQL went silent only because
+        # its models were unreachable — tell the user that, don't imply the data
+        # is missing.
         if not reranked and sql_infra_error:
             yield _SQL_UNAVAILABLE_MSG
             yield QueryResult(
@@ -915,10 +413,18 @@ class QueryPipeline:
             return
 
         top_source = Path(reranked[0].chunk.source_file).name if reranked and reranked[0].chunk.source_file else None
-        rank_detail = f"kept the {len(reranked)} best — top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
+        rank_detail = f"kept the {len(reranked)} best Ã¢â‚¬â€  top match: {top_source}" if top_source else f"kept the top {len(reranked)}"
         yield _think("Ranked the most relevant sources", rank_detail)
         yield _think("Writing the answer")
 
+        # Stage 14 Ã¢â‚¬â€  Generation. generate_stream yields answer text chunks and,
+        # finally, the QueryResult Ã¢â‚¬â€  attach the collected thinking to it and
+        # note which provider/model actually answered, so the trace closes out
+        # with a real, per-question detail rather than a static label. The
+        # user's original question drives the answer; history is included only
+        # for genuine follow-ups (gen_history), never forced on new topics.
+        # Exhaustive queries keep every reranked chunk; normal queries feed only
+        # the top few into the prompt (saves input tokens without hurting quality).
         context_limit = None if exhaustive else settings.generation_context_k
         mode = _source_mode(reranked)
         _log_pipeline_event("routing_decision", {
