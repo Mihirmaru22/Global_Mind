@@ -635,6 +635,27 @@ def extract_analytical_intent(query: str) -> dict[str, Any]:
     if any(k in q for k in ["inactive", "haven't ordered", "no orders"]):
         intent["filters"].append("inactive (no recent orders)")
 
+    # Temporal Scope & Intent Detection (Distinguish Current vs All-Time / Cumulative)
+    has_current_marker = bool(re.search(
+        r"\b(current|this year|this financial year|this fiscal year|active year|current financial|current fiscal|ongoing|present year)\b",
+        q
+    ))
+    has_all_time_marker = bool(re.search(
+        r"\b(total|all|all-time|all time|history|historical|overall|cumulative|ever|across all years|lifetime|entire)\b",
+        q
+    ))
+    has_cumulative_metric = (
+        intent.get("aggregation") in ("SUM", "COUNT", "AVG")
+        or bool(re.search(r"\b(quantity adjusted|adjusted quantity|adjusted qty|total quantity|total qty|how many|how much|sum of)\b", q))
+    )
+
+    if has_current_marker:
+        intent["temporal_scope"] = "CURRENT_YEAR"
+    elif has_all_time_marker or has_cumulative_metric or intent["time_period"] is None:
+        intent["temporal_scope"] = "ALL_TIME"
+    else:
+        intent["temporal_scope"] = "SPECIFIC_PERIOD"
+
     return intent
 
 
@@ -1553,7 +1574,9 @@ class SQLRetriever:
             if any(k in query_lower for k in ["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"]):
                 glossary_tables.update(["party", "financial_year", "party_opening_balance", "sales_order", "receipt"])
             if any(k in query_lower for k in ["adjustment", "adjust", "stock-out", "stock out", "stockout", "stock-in", "stock in", "stockin"]):
-                glossary_tables.update(["stock_adjustment", "product", "category", "product_color", "unit", "financial_year"])
+                glossary_tables.update(["stock_adjustment", "product", "category", "product_color", "unit"])
+                if any(k in query_lower for k in ["year", "fiscal", "current", "fyear", "annual"]):
+                    glossary_tables.add("financial_year")
 
             full_ddls = _extract_table_ddl_map(full_schema) if full_schema else {}
             candidate_list: list[dict[str, Any]] = []
@@ -1706,6 +1729,14 @@ class SQLRetriever:
             intent_summary_lines.append(f"- Aggregation: {intent['aggregation']}")
         if intent["limit"]:
             intent_summary_lines.append(f"- Limit: {intent['limit']} (Sorting: {intent['sorting'] or 'DESC'})")
+        if intent.get("temporal_scope") == "CURRENT_YEAR":
+            intent_summary_lines.append(
+                "- Temporal Scope: CURRENT FINANCIAL YEAR (Join financial_year and filter `financial_year.current_year = 'Y'`)"
+            )
+        elif intent.get("temporal_scope") == "ALL_TIME":
+            intent_summary_lines.append(
+                "- Temporal Scope: ALL-TIME / CUMULATIVE (DO NOT filter by `financial_year.current_year = 'Y'`. Sum/aggregate across ALL available years!)"
+            )
 
         intent_section = (
             "\nExtracted Business Intent:\n" + "\n".join(intent_summary_lines) + "\n"
@@ -1731,6 +1762,10 @@ Rules:
 - Status Flags: Active='Y', Inactive='N'. Stock booked='B', dispatched='D'.
 - Customer vs Supplier: In party table, join to sales_order for Customers, or purchase for Suppliers.
 - Current Date: {current_date_str} (Use for relative date calculations like 'this year', 'last month').
+- Temporal Scope & Financial Year Filtering:
+  * ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'.
+  * Negative Constraint: If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years.
+  * Ambiguity Handling: If the temporal intent is ambiguous between current vs all-time, PREFER the broader scope (all-time). NEVER silently narrow cumulative or aggregate queries to the current financial year.
 
 {intent_section}
 Schema:
@@ -1897,7 +1932,7 @@ Schema:
             "- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.",
             "- Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.",
             "- Fuzzy LIKE Filtering: Always filter descriptive text columns (categories, products, colors, names) using `LIKE '%<term>%'` rather than strict `=`. For categories with spelling variations like 'CHANGABLE PACK', match `c.category_name LIKE '%CHANG%PACK%'` (the database category is 'CHANGEABLE PACK').",
-            "- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`."
+            "- Temporal Scope & Financial Year Filtering: ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'. If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years. When the user DOES explicitly request the current financial year, NEVER filter using `YEAR(date) = YEAR(CURDATE())`; ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`."
         ]
 
         # Machine & Product Production
@@ -1960,7 +1995,8 @@ Schema:
                 "- Stock Adjustments (StockOut vs StockIn): All inventory stock adjustments (stock-in additions, stock-out write-offs, physical count adjustments) are stored in the dedicated `stock_adjustment` table:\n"
                 "  (1) Table Selection: ALWAYS use `stock_adjustment` when asked about stock adjustments, stock-out, stock-in, or adjusted quantity. NEVER use `stock` (which is for purchase inward and sales dispatches) and NEVER use `product_packaging_detail` (which is a packaging BOM master table).\n"
                 "  (2) Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY TWO exact enum values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'STOCK_OUT'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.\n"
-                "  (3) Columns & Direct Foreign Keys: Adjustment Date `sa.stock_adjustment_date`, Adjusted Quantity `sa.qty` (or `SUM(sa.qty) AS total_adjusted_quantity`), Category Link `JOIN category c ON sa.category_id = c.id`, Product Link `JOIN product p ON sa.product_id = p.id`, Color Link `JOIN product_color pc ON sa.product_color_id = pc.id`."
+                "  (3) Columns & Direct Foreign Keys: Adjustment Date `sa.stock_adjustment_date`, Adjusted Quantity `sa.qty` (or `SUM(sa.qty) AS total_adjusted_quantity`), Category Link `JOIN category c ON sa.category_id = c.id`, Product Link `JOIN product p ON sa.product_id = p.id`, Color Link `JOIN product_color pc ON sa.product_color_id = pc.id`.\n"
+                "  (4) All-Time vs Current Year: For 'quantity adjusted' or 'total adjusted quantity' without an explicit year qualifier, DO NOT join financial_year and DO NOT filter current_year = 'Y'! Sum across all records: `SELECT SUM(sa.qty) AS total_adjusted_quantity FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%'`."
             )
 
         # Delivery Challan & Pending Sales Orders
@@ -2000,7 +2036,7 @@ Schema:
         if any(t in tables for t in ["delivery_challan", "sales_order", "purchase", "proforma", "production"]) or any(k in q for k in ["dc_no", "so_no", "order_no", "number", "latest"]):
             rules.append(
                 "- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! "
-                "If a financial year is specified, join `financial_year fy ON t.financial_id = fy.id`. If NO financial year is specified: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` and include `fy.fyear AS financial_year` in SELECT."
+                "If a financial year is specified, join `financial_year fy ON t.financial_id = fy.id`. If NO financial year is specified for a SINGLE DOCUMENT LOOKUP: the user intends the LATEST record! Sort by date DESC with `LIMIT 1` and include `fy.fyear AS financial_year` in SELECT. Do NOT apply LIMIT 1 or current_year filtering to cumulative/aggregate queries."
             )
 
         # Multi-domain Report
@@ -2049,13 +2085,14 @@ SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_dat
       - Adjustment Count by Date: `SELECT COUNT(*) AS stock_out_adjustment_count FROM stock_adjustment sa WHERE sa.deleted_at IS NULL AND sa.stock_adjustment_date = '<date>' AND sa.transaction_type = 'StockOut';`
       - Category Stock-out Quantity: `SELECT c.category_name, SUM(sa.qty) AS total_stock_out_quantity FROM stock_adjustment sa JOIN category c ON sa.category_id = c.id WHERE sa.deleted_at IS NULL AND c.deleted_at IS NULL AND c.category_name LIKE '%<cat>%' AND sa.transaction_type = 'StockOut' AND sa.stock_adjustment_date = '<date>' GROUP BY c.category_name;`
       - Product Adjusted Quantity: `SELECT p.product_name, sa.transaction_type, SUM(sa.qty) AS total_qty_adjusted FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%' GROUP BY p.product_name, sa.transaction_type;`
+      - Product Total Adjusted Quantity (All-Time): `SELECT SUM(sa.qty) AS total_qty_adjusted FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%';`
 - Product Units of Measure: The unit table contains unit definitions ('Pcs', 'Kg', 'Nos', etc.) and NEVER contains product names. To find the unit for a product (e.g. 'CAP03'), ALWAYS query: `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%' AND p.deleted_at IS NULL AND u.deleted_at IS NULL`. Return `p.product_name` and `u.unit_name AS unit_of_measure`. Never search `unit.unit_name` for product names.
 - Product Type vs Category: There are two places with product type: (1) `category.product_type` stores enum `'RM'` (Raw Material). (2) `product_type.product_type` stores text `'Raw Material'` (id=1) and `'Finished Goods'` (id=2). When querying products by category (e.g. 'Carton') and product type ('Raw Material'), ALWAYS include BOTH filters: `product p JOIN category c ON p.category_id = c.id WHERE c.category_name LIKE '%Carton%' AND (c.product_type = 'RM' OR p.product_type_id = 1)`. Never omit the category filter, and never compare `category.product_type = 'Raw Material'` directly (use `'RM'`).
 - Customer PO vs Supplier PO vs Proforma PO: PO numbers exist in 3 distinct places: (1) Customer/Party PO: `sales_order.party_po_no` (and `sales_order.party_po_date`). For questions asking for "party's PO number", "customer PO", or "PO number for sales order/party", ALWAYS query `sales_order so JOIN party p ON so.party_id = p.id`. (2) Proforma PO: `proforma.po_no` (only for proforma invoice questions). (3) Supplier/Vendor PO: `purchase.ref_po_no` (only for supplier inward purchase orders). NEVER use `purchase.ref_po_no` for customer/party PO requests.
 - Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies "proforma".
 - Delivery Challan (DC) vs Invoice & Due Date: A Delivery Challan (DC) and an Invoice are completely separate documents! Actual DC numbers and dates are stored in the `delivery_challan` table: `dc.dc_no` (DC number) and `dc.dc_date` (DC date). Logistics columns: `dc.transport_name` (carrier name) and `dc.lr_number` (Lorry Receipt / LR number — NOT `lr_no`). The customer/party is linked directly via `delivery_challan.party_id = party.id`. NEVER search for DC numbers in `stock.invoice_no` or `stock`! IMPORTANT: `delivery_challan` has NO due date column; the order due date is stored in `sales_order.so_due_date`. When a query asks for the due date of a DC, you MUST join `sales_order`: `LEFT JOIN sales_order so ON dc.sales_order_id = so.id` and select `so.so_due_date AS due_date`.
-- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! For example, `dc_no = 527` and `sales_order_no = 405` exist in multiple financial years for completely different parties. (1) If a financial year is specified (e.g. 'in 2024-2025' or 'this year'), join `financial_year fy ON t.financial_id = fy.id` and filter `fy.fyear = '...'` or `fy.current_year = 'Y'`. (2) If NO financial year is specified: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` (e.g. `ORDER BY dc.dc_date DESC LIMIT 1` or `ORDER BY so.sales_order_date DESC LIMIT 1`), and include `fy.fyear AS financial_year` in the SELECT clause so the user knows which financial year the document belongs to. Never return multiple unranked records from older years for a singular document question.
-- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
+- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! For example, `dc_no = 527` and `sales_order_no = 405` exist in multiple financial years for completely different parties. (1) If a financial year is specified (e.g. 'in 2024-2025' or 'this year'), join `financial_year fy ON t.financial_id = fy.id` and filter `fy.fyear = '...'` or `fy.current_year = 'Y'`. (2) If NO financial year is specified for a SINGLE DOCUMENT LOOKUP: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` (e.g. `ORDER BY dc.dc_date DESC LIMIT 1` or `ORDER BY so.sales_order_date DESC LIMIT 1`), and include `fy.fyear AS financial_year` in the SELECT clause so the user knows which financial year the document belongs to. (3) For AGGREGATE or cumulative metric queries (e.g. sums, counts, totals), do NOT apply LIMIT 1 and do NOT filter by current_year unless explicitly asked.
+- Temporal Scope & Financial Year Filtering: ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'. If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years. When the user DOES explicitly request the current financial year, NEVER filter using `YEAR(date) = YEAR(CURDATE())`; ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
 - Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries (WITH prod_m AS (...), stock_m AS (...), so_m AS (...)) aggregated per `(product_id, product_color_id)` before joining to `product p` to prevent Cartesian join multiplication.
 """
 

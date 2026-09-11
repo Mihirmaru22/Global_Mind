@@ -100,3 +100,26 @@ async def test_invoice_gt0091_schema_retrieval_and_sql_gen():
     sql = await retriever._generate_sql(q, schema)
     assert "purchase" in sql.lower()
     assert "gt/0091" in sql.lower() or "0091" in sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_hdblow_quantity_adjusted_temporal_intent_sql_gen():
+    """Verify Q5 generated SQL does not narrow scope to current_year and returns 158,298."""
+    router = ProviderRouter()
+    retriever = SQLRetriever(router=router)
+    q = "What is the HD-BLOW 54GB quantity adjusted?"
+    schema = await retriever._get_schema(q)
+    sql = await retriever._generate_sql(q, schema)
+
+    assert "current_year" not in sql.lower(), f"Generated SQL should not filter by current_year: {sql}"
+
+    rows = await run_readonly_query(sql)
+    assert len(rows) >= 1
+    total_val = None
+    for k, v in rows[0].items():
+        if any(term in k.lower() for term in ["qty", "quantity", "total", "sum", "adjusted"]):
+            total_val = int(float(v))
+            break
+    if total_val is None:
+        total_val = int(float(list(rows[0].values())[-1]))
+    assert total_val == 158298, f"Expected 158,298, got {total_val} from rows: {rows}"

@@ -1021,7 +1021,7 @@
   },
   "financial_year_current_year": {
     "maps_to": "financial_year.current_year",
-    "note": "Allowed values: 'N', 'Y'. Values are 'Y' (current fiscal year) and 'N'. For current fiscal year filter financial_year.current_year = 'Y'.",
+    "note": "Allowed values: 'N', 'Y'. Values are 'Y' (current fiscal year) and 'N'. ONLY filter financial_year.current_year = 'Y' when user explicitly requests current/this year data; DO NOT filter by current_year for cumulative or all-time queries.",
     "synonyms": [
       "current fiscal year",
       "active financial year",

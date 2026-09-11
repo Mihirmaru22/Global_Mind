@@ -5490,7 +5490,7 @@
         "Financial Year Reset: `sales_order_no` is NOT globally unique; it repeats across different financial years (e.g. Sales Order 405 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific order number without a year specified, ALWAYS order by `sales_order_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON sales_order.financial_id = fy.id` to include `fy.fyear`.",
         "Customer Linkage: `party_id` links to `party.id`. Always join `party` to get `party.party_name`.",
         "MUST always append `alias.deleted_at IS NULL` in WHERE clause.",
-        "For current financial year filtering, join `financial_year` and filter `financial_year.current_year = 'Y'`."
+        "ONLY when explicitly querying the current financial year ('current', 'this year', 'active'), join `financial_year` and filter `financial_year.current_year = 'Y'`. For all-time, cumulative, or unconstrained queries, DO NOT filter by current_year."
       ],
       "join_warnings": [
         "Do NOT attempt to SELECT total_amount, grand_total, or status from `sales_order` (they do not exist on this table)."
