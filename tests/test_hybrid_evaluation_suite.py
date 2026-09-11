@@ -291,4 +291,70 @@ async def test_soft_delete_history_sql_gen():
         assert "deleted_at is null" not in sql.lower(), f"History query should not filter deleted_at IS NULL: {sql}"
 
 
+def test_enforce_soft_delete_sanitizer():
+    """Verify code-level defense-in-depth SQL sanitizer enforces soft-delete deterministically."""
+    from src.stages.s12b_sql_retrieval import (
+        enforce_soft_delete_filter,
+        _get_tables_with_soft_delete,
+    )
+
+    tables = _get_tables_with_soft_delete()
+    assert "sales_order" in tables
+    assert "party" in tables
+    assert "product" in tables
+
+    # 1. Simple active query missing filter -> Injects WHERE deleted_at IS NULL
+    assert (
+        enforce_soft_delete_filter("SELECT * FROM sales_order", "ACTIVE_ONLY")
+        == "SELECT * FROM sales_order WHERE deleted_at IS NULL"
+    )
+
+    # 2. Existing WHERE clause missing filter -> Injects AND deleted_at IS NULL
+    assert (
+        enforce_soft_delete_filter("SELECT * FROM party WHERE status = 'Y'", "ACTIVE_ONLY")
+        == "SELECT * FROM party WHERE status = 'Y' AND deleted_at IS NULL"
+    )
+
+    # 3. History Intent -> Unchanged (allows all records)
+    assert (
+        enforce_soft_delete_filter("SELECT * FROM product", "INCLUDE_ARCHIVED")
+        == "SELECT * FROM product"
+    )
+
+    # 4. Zero regression: Already filtered query remains unchanged
+    sql_existing = "SELECT * FROM sales_order WHERE deleted_at IS NULL"
+    assert enforce_soft_delete_filter(sql_existing, "ACTIVE_ONLY") == sql_existing
+
+    # 5. Zero regression with table alias: Already filtered query remains unchanged
+    sql_alias_existing = "SELECT * FROM sales_order AS so WHERE so.deleted_at IS NULL"
+    assert enforce_soft_delete_filter(sql_alias_existing, "ACTIVE_ONLY") == sql_alias_existing
+
+    # 6. Target operational question 1: Average days between dates
+    q1 = "SELECT AVG(DATEDIFF(so.due_date, so.order_date)) AS avg_days FROM sales_order so"
+    res1 = enforce_soft_delete_filter(q1, "ACTIVE_ONLY")
+    assert "so.deleted_at IS NULL" in res1
+
+    # 7. Target operational question 2: Count active parties
+    q2 = "SELECT COUNT(*) AS total_parties FROM party p WHERE p.status = 'Y'"
+    res2 = enforce_soft_delete_filter(q2, "ACTIVE_ONLY")
+    assert "p.deleted_at IS NULL" in res2
+    assert "status = 'Y'" in res2
+
+    # 8. Complex multi-table JOIN -> Applies to all referenced soft-delete tables
+    q3 = "SELECT so.id, p.party_name FROM sales_order so JOIN party p ON so.party_id = p.id WHERE so.order_date > '2026-01-01'"
+    res3 = enforce_soft_delete_filter(q3, "ACTIVE_ONLY")
+    assert "so.deleted_at IS NULL" in res3
+    assert "p.deleted_at IS NULL" in res3
+
+    # 9. Explicit Deleted Intent -> Ensures deleted_at IS NOT NULL
+    res_del = enforce_soft_delete_filter("SELECT * FROM sales_order", "DELETED_ONLY")
+    assert "deleted_at IS NOT NULL" in res_del
+
+    # 10. Explicit Deleted Intent with erroneous IS NULL from LLM -> Inverts to IS NOT NULL
+    res_del_fix = enforce_soft_delete_filter("SELECT * FROM sales_order WHERE deleted_at IS NULL", "DELETED_ONLY")
+    assert "deleted_at IS NOT NULL" in res_del_fix
+    assert "deleted_at IS NULL" not in res_del_fix
+
+
+
 
