@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 import logging
 import re
 import uuid
@@ -22,6 +23,36 @@ from src.pipeline.query import QueryPipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def json_serial(obj: Any) -> Any:
+    """JSON serializer for objects not serializable by default json code."""
+    if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
+def sanitize_message_for_json(msg: Any) -> Any:
+    """Recursively converts non-serializable objects (dates, decimals, etc.) into JSON primitives."""
+    if msg is None or isinstance(msg, (str, int, float, bool)):
+        return msg
+    if isinstance(msg, (datetime.date, datetime.datetime, datetime.time)):
+        return msg.isoformat()
+    if isinstance(msg, Decimal):
+        return int(msg) if msg % 1 == 0 else float(msg)
+    if isinstance(msg, bytes):
+        return msg.decode("utf-8", errors="replace")
+    if isinstance(msg, dict):
+        return {k: sanitize_message_for_json(v) for k, v in msg.items()}
+    if isinstance(msg, (list, tuple, set)):
+        return [sanitize_message_for_json(v) for v in msg]
+    return str(msg)
 
 
 # Human-readable labels + display order for the provider picker. OpenRouter
@@ -278,6 +309,7 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
             "usage": result.usage.model_dump(),
             "sqlPayload": result.sql_payload,
         }
+        assistant_message = sanitize_message_for_json(assistant_message)
         state_manager.add_message(chat_id, assistant_message)
 
         # Update chat modified time
@@ -321,7 +353,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
             async for chunk in pipeline.query_stream(msg.message, history=history, mode=msg.mode):
                 if isinstance(chunk, ThinkingStep):
                     # A reasoning step — stream it live for the "thinking" block.
-                    yield f"data: {json.dumps({'type': 'thinking', 'step': chunk.model_dump()})}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'step': chunk.model_dump()}, default=json_serial)}\n\n"
                 elif isinstance(chunk, str):
                     yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
                 else:
@@ -338,10 +370,11 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
                         "usage": chunk.usage.model_dump(),
                         "sqlPayload": chunk.sql_payload,
                     }
+                    assistant_message = sanitize_message_for_json(assistant_message)
                     state_manager.add_message(chat_id, assistant_message)
                     state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})
                     
-                    yield f"data: {json.dumps({'type': 'done', 'message': assistant_message})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'message': assistant_message}, default=json_serial)}\n\n"
         except Exception as e:
             logger.exception("Failed to process stream message")
             error_message = {
@@ -352,7 +385,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
                 "chatId": chat_id,
             }
             state_manager.add_message(chat_id, error_message)
-            yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': error_message}, default=json_serial)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

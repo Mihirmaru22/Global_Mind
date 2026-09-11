@@ -7,6 +7,8 @@ executes it, and returns the results formatted as a context chunk.
 from __future__ import annotations
 
 from collections import OrderedDict
+import datetime
+from decimal import Decimal
 import functools
 import json
 import logging
@@ -53,6 +55,33 @@ from src.stages.sql_repair import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_cell_value(val: Any) -> Any:
+    """Ensure raw DB cell types (date, datetime, Decimal, bytes) are JSON serializable."""
+    if val is None or isinstance(val, (str, int, float, bool)):
+        return val
+    if isinstance(val, (datetime.date, datetime.datetime, datetime.time)):
+        return val.isoformat()
+    if isinstance(val, Decimal):
+        return int(val) if val % 1 == 0 else float(val)
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    if isinstance(val, (list, tuple)):
+        return [_sanitize_cell_value(v) for v in val]
+    if isinstance(val, dict):
+        return {k: _sanitize_cell_value(v) for k, v in val.items()}
+    return str(val)
+
+
+def _sanitize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert raw DB rows to JSON-safe dictionaries."""
+    if not rows:
+        return []
+    return [
+        {k: _sanitize_cell_value(v) for k, v in row.items()}
+        for row in rows
+    ]
 
 
 def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -> str:
@@ -999,7 +1028,7 @@ class SQLRetriever:
                 sql_payload = {
                     "query": sql,
                     "columns": headers,
-                    "rows": rows,
+                    "rows": _sanitize_rows(rows),
                     "row_count": len(rows),
                 }
                 self.last_sql_payload = sql_payload
@@ -1339,7 +1368,7 @@ class SQLRetriever:
                 sql_payload = {
                     "query": current_sql,
                     "columns": headers,
-                    "rows": rows,
+                    "rows": _sanitize_rows(rows),
                     "row_count": len(rows),
                 }
                 self.last_sql_payload = sql_payload

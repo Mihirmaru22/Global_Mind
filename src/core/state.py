@@ -25,6 +25,23 @@ from src.core.file_lock import LockMode, locked
 logger = logging.getLogger(__name__)
 
 
+def _json_serial(obj: Any) -> Any:
+    """Fallback JSON serializer for dates, decimals, sets, and byte strings."""
+    if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+        return obj.isoformat()
+    try:
+        from decimal import Decimal
+        if isinstance(obj, Decimal):
+            return int(obj) if obj % 1 == 0 else float(obj)
+    except ImportError:
+        pass
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+    return str(obj)
+
+
 class UIStateManager:
     """Manages JSON file-based persistence for the UI."""
 
@@ -53,7 +70,7 @@ class UIStateManager:
         prevents readers from seeing a partially-written file.
         """
         try:
-            content = json.dumps(data, indent=2, ensure_ascii=False)
+            content = json.dumps(data, indent=2, ensure_ascii=False, default=_json_serial)
             # Write to a temp file in the same directory, then atomically rename
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=path.stem
