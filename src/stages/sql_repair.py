@@ -72,8 +72,8 @@ def extract_schema_context_from_ddl(
     schema_dict: dict[str, list[str]] = {}
     target_tables = {t.lower() for t in relevant_tables} if relevant_tables else None
 
-    # Split by table blocks
-    table_blocks = full_schema.split("\n\n")
+    # Split by table blocks (handles both double-newline and compacted single-newline DDLs)
+    table_blocks = re.split(r"(?=(?:TABLE|CREATE\s+TABLE)\s+[a-zA-Z0-9_]+)", full_schema, flags=re.IGNORECASE)
     for block in table_blocks:
         block = block.strip()
         if not block:

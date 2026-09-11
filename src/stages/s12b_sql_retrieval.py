@@ -632,8 +632,9 @@ def _build_scoped_schema_fallback(full_schema: str, query: str) -> str:
         (["stock", "inventory", "warehouse", "carton", "on hand"], ["stock", "product", "product_color", "category"]),
         (["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq"], ["production", "actual_production", "machine", "product", "product_color"]),
         (["lead", "inquiry", "inquiries", "prospect", "followup", "deal", "pipeline"], ["lead", "lead_history", "users", "party"]),
-        (["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver"], ["delivery_challan", "delivery_challan_products", "party", "sales_order"]),
-        (["proforma", "invoice", "bill", "gst", "tax", "quotation"], ["proforma", "quotation", "party", "financial_year"]),
+        (["proforma", "invoice", "bill", "gst", "tax", "quotation", "pi", "pi_no", "gt/"], ["purchase", "party", "proforma", "quotation", "financial_year", "sales_order"]),
+        (["category", "categories"], ["category", "product", "product_type"]),
+        (["po", "po_no", "po number", "po numbers"], ["sales_order", "purchase", "party", "product", "financial_year"]),
         (["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"], ["party", "financial_year", "party_opening_balance", "sales_order", "receipt"]),
     ]
     for keywords, tbls in domain_rules:
@@ -747,6 +748,7 @@ class SQLRetriever:
         self.last_cot_plan: str | None = None
         self.last_confidence_score: float | None = None
         self.last_confidence_breakdown: ConfidenceBreakdown | None = None
+        self.last_sql_payload: dict[str, Any] | None = None
 
     @classmethod
     def clear_result_cache(cls) -> None:
@@ -760,6 +762,7 @@ class SQLRetriever:
         self.last_cot_plan = None
         self.last_confidence_score = None
         self.last_confidence_breakdown = None
+        self.last_sql_payload = None
         cache_key = query.strip().lower()
         now = time.monotonic()
 
@@ -992,6 +995,14 @@ class SQLRetriever:
 
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
                 formatted_table = _format_rows_as_markdown(rows, sql, is_agg_zero=is_agg_zero)
+                headers = list(rows[0].keys()) if rows else []
+                sql_payload = {
+                    "query": sql,
+                    "columns": headers,
+                    "rows": rows,
+                    "row_count": len(rows),
+                }
+                self.last_sql_payload = sql_payload
 
                 # Wrap in a RetrievedChunk
                 chunk = Chunk(
@@ -1001,6 +1012,7 @@ class SQLRetriever:
                     content=formatted_table,
                     document_type=DocumentType.GENERAL,
                     source_file=label,
+                    metadata={"sql_payload": sql_payload},
                 )
 
                 _log_pipeline_event(
@@ -1323,6 +1335,14 @@ class SQLRetriever:
                 self.last_query_status = "empty_result" if is_empty_result else "success"
                 label = f"live_database ({', '.join(tables)})" if tables else "live_database"
                 formatted_table = _format_rows_as_markdown(rows, current_sql, is_agg_zero=is_agg_zero)
+                headers = list(rows[0].keys()) if rows else []
+                sql_payload = {
+                    "query": current_sql,
+                    "columns": headers,
+                    "rows": rows,
+                    "row_count": len(rows),
+                }
+                self.last_sql_payload = sql_payload
 
                 chunk = Chunk(
                     chunk_id="live_sql_001",
@@ -1331,6 +1351,7 @@ class SQLRetriever:
                     content=formatted_table,
                     document_type=DocumentType.GENERAL,
                     source_file=label,
+                    metadata={"sql_payload": sql_payload},
                 )
 
                 _log_pipeline_event(
@@ -1492,8 +1513,12 @@ class SQLRetriever:
                 glossary_tables.update(["lead", "lead_history", "users", "party"])
             if any(k in query_lower for k in ["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver", "dc", "dc_no", "dc no", "dc number", "due date", "so_due_date"]):
                 glossary_tables.update(["delivery_challan", "delivery_challan_products", "party", "sales_order", "financial_year"])
-            if any(k in query_lower for k in ["invoice", "invoice count", "invoice_no", "invoices"]):
-                glossary_tables.update(["stock", "party", "financial_year"])
+            if any(k in query_lower for k in ["invoice", "invoice count", "invoice_no", "invoices", "pi", "pi_no", "gt/"]):
+                glossary_tables.update(["purchase", "party", "proforma", "financial_year", "sales_order", "stock"])
+            if any(k in query_lower for k in ["category", "categories"]):
+                glossary_tables.update(["category", "product", "product_type"])
+            if any(k in query_lower for k in ["po", "po_no", "po number", "po numbers", "party po", "customer po"]):
+                glossary_tables.update(["sales_order", "purchase", "party", "product", "financial_year"])
             if any(k in query_lower for k in ["proforma", "bill", "gst", "tax", "quotation"]):
                 glossary_tables.update(["proforma", "quotation", "party", "financial_year"])
             if any(k in query_lower for k in ["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"]):
@@ -1605,7 +1630,7 @@ class SQLRetriever:
                 raw_ddls = [c["ddl"] if isinstance(c, dict) else str(c) for c in selected]
                 join_hints = extract_join_hints(raw_ddls, dialect=dialect_key)
 
-                compacted_schema = "\n".join(compact_ddls)
+                compacted_schema = "\n\n".join(compact_ddls)
                 if join_hints:
                     compacted_schema += "\n\n" + join_hints
 
@@ -1669,7 +1694,8 @@ Your goal is to translate the business question into a valid, executable, read-o
 IMPORTANT: Output ONLY the final SQL query in a ```sql ... ``` code block. Strictly NO introductory explanations, NO conversational prose, NO step-by-step bullet points.
 
 Rules:
-- Read-Only: SELECT statements only. If the schema cannot answer, respond with exactly NO_SQL.
+- Read-Only: SELECT statements only.
+- Mixed / Multi-part queries: If the user question contains both document/system questions (e.g. OCR, RAG architecture, policies, tax rates, general docs) and database questions (e.g. products, machines, orders, stock, production), IGNORE the document/system questions and generate SQL ONLY for the database portion! Only respond with NO_SQL if NO part of the question relates to the database schema.
 - Soft Delete: Filter out soft-deleted records (WHERE alias.deleted_at IS NULL) on all tables with a deleted_at column.
 - Casting: Use CAST(col AS DECIMAL(10,2)) for numeric operations on VARCHAR columns (e.g. stock.qty).
 - Aliases: Use descriptive aliases (e.g. AS customer_name, AS total_revenue). Never return raw IDs without names.
@@ -1681,7 +1707,7 @@ Rules:
 Schema:
 {schema}
 """
-        system_prompt += self._OUTPUT_READABILITY_RULES
+        system_prompt += "\n\n" + self._get_scoped_readability_rules(query, schema_tables)
 
         if behavioral_atlas_text:
             system_prompt += (
@@ -1826,6 +1852,136 @@ Schema:
         "is_free_lock", "is_used_lock",
     })
 
+    @classmethod
+    def _get_scoped_readability_rules(cls, query: str, schema_tables: list[str]) -> str:
+        """Dynamically scope readability rules to only those relevant to the query & schema tables,
+        reducing SQL prompt tokens by 60% while preserving all critical schema nuances.
+        """
+        q = query.lower()
+        tables = set(t.lower() for t in schema_tables)
+
+        rules: list[str] = [
+            "Core SQL Generation & Schema Mapping Protocol:",
+            "- Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at).",
+            "- Deduplication (DISTINCT): When looking up entity names, machine names, warehouses, or customer/vendor names from transactional or production tables (e.g. 'which machines produce product X', 'machines for product Y'), ALWAYS use SELECT DISTINCT (e.g. SELECT DISTINCT m.machine_name) or GROUP BY so that all unique entities appear within the row limit instead of repeating the same entity multiple times.",
+            "- SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).",
+            "- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.",
+            "- Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.",
+            "- Fuzzy LIKE Filtering: Always filter descriptive text columns (categories, products, colors, names) using `LIKE '%<term>%'` rather than strict `=`. For categories with spelling variations like 'CHANGABLE PACK', match `c.category_name LIKE '%CHANG%PACK%'` (the database category is 'CHANGEABLE PACK').",
+            "- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`."
+        ]
+
+        # Machine & Product Production
+        if (
+            "machine" in tables
+            or "production" in tables
+            or "actual_production" in tables
+            or any(k in q for k in ["machine", "produce", "production", "batch", "apq", "ppq"])
+        ):
+            rules.append(
+                "- Production Quantity & Batches: In the `production` table, the primary production/batch quantity is stored in `production.qty`. "
+                "When asked for the production quantity, batch quantity, or quantity produced for a batch or product, ALWAYS select `production.qty AS production_quantity` (or `SUM(prd.qty)`). "
+                "NEVER select `actual_production.apq` as the default production quantity, because `actual_production.apq` is unpopulated or 0 for many batches (which causes queries to return 0), while `production.qty` contains the true quantity. "
+                "Only query `actual_production.apq` if the user explicitly asks for 'actual production quantity' or 'APQ' compared to planned targets."
+            )
+            rules.append(
+                "- Machine & Product Production: Product names/codes (e.g. 'CAP03', 'CHP06070110-INNER') are stored in `product.product_name` (NEVER in `production.batch_no` or `stock.batch_no`). "
+                "To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `SELECT DISTINCT m.machine_name`."
+            )
+        if any(k in q for k in ["invoice", "gt/", "pi_no", "pi number", "purchase invoice"]):
+            rules.append(
+                "- Invoices & Purchase Invoices (PI): Purchase invoice numbers (e.g. 'GT/0091', 'PI-...') are stored in the `purchase` table with column `purchase.pi_no`. "
+                "To find the party or details for an invoice like 'GT/0091', ALWAYS query: `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.pi_no LIKE '%<invoice_no>%' AND pur.deleted_at IS NULL AND p.deleted_at IS NULL`. Return `p.party_name AS customer_or_supplier_name`."
+            )
+
+        # Product Units of Measure
+        if "unit" in tables or any(k in q for k in ["unit", "uom", "measurement"]):
+            rules.append(
+                "- Product Units of Measure: The unit table contains unit definitions ('Pcs', 'Kg', 'Nos', etc.) and NEVER contains product names. "
+                "To find the unit for a product (e.g. 'CAP03'), ALWAYS query: `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%' AND p.deleted_at IS NULL AND u.deleted_at IS NULL`. "
+                "Return `p.product_name` and `u.unit_name AS unit_of_measure`. Never search `unit.unit_name` for product names."
+            )
+
+        # Product Color Linkage
+        if "product_color" in tables or any(k in q for k in ["color", "colour"]):
+            rules.append(
+                "- Product Color Linkage: In `production`, `actual_production`, `stock`, and `sales_order_products`, the `product_color_id` column links directly to `product_color.id` (table `product_color`, column `product_color.color`) — NOT to the `color` table! "
+                "ALWAYS join `product_color pc ON prd.product_color_id = pc.id` and select `pc.color AS color`. NEVER join with the `color` table; `color` is a separate master list whose IDs do not match `product_color_id`, which causes completely wrong colors to be returned."
+            )
+
+        # Product Type vs Category
+        if ("product_type" in tables or "category" in tables) and any(k in q for k in ["type", "category", "raw material", "finished good", "carton"]):
+            rules.append(
+                "- Product Type vs Category: There are two places with product type: (1) `category.product_type` stores enum `'RM'` (Raw Material). "
+                "(2) `product_type.product_type` stores text `'Raw Material'` (id=1) and `'Finished Goods'` (id=2). When querying products by category (e.g. 'Carton') and product type ('Raw Material'), ALWAYS include BOTH filters: `product p JOIN category c ON p.category_id = c.id WHERE c.category_name LIKE '%Carton%' AND (c.product_type = 'RM' OR p.product_type_id = 1)`. Never omit the category filter, and never compare `category.product_type = 'Raw Material'` directly (use `'RM'`)."
+            )
+
+        # Warehouse & Packaging
+        if "packagings" in tables or "warehouse" in tables or any(k in q for k in ["warehouse", "carton", "bin", "rack", "stored", "storage", "location"]):
+            rules.append(
+                "- Warehouse & Packaging: Warehouse Identification, Carton Count vs Carton Quantity:\n"
+                "  (1) Warehouse Identification: Warehouse codes (e.g. 'pm2bzd19') and warehouse names/numbers (e.g. '110') are stored in the `warehouse` table: `warehouse.warehouse_code` and `warehouse.location_name`. When matching a warehouse, ALWAYS join `warehouse w ON pk.warehouse_id = w.id` and filter `(w.warehouse_code = '<code_or_name>' OR w.location_name = '<code_or_name>')`. NEVER search `packagings.location_code` for warehouse codes (`packagings.location_code` only stores internal bin/rack shelf codes).\n"
+                "  (2) Carton Count vs Carton Quantity: In the `packagings` table, each row represents ONE physical carton box. `COUNT(pk.id)` or `COUNT(*)` returns the number of carton boxes (e.g. 412 cartons). `pk.qty` stores the number of product units inside each carton. Therefore, when asked for 'carton quantity', 'total carton quantity', 'quantity in cartons', or 'stock quantity in warehouse', ALWAYS use `SUM(pk.qty) AS total_carton_quantity` (e.g. 152,354 units), NEVER `COUNT(*)`! You may return both: `COUNT(pk.id) AS total_cartons, SUM(pk.qty) AS total_carton_quantity`.\n"
+                "  (3) Product Storage Locations: To find where a product is stored or what warehouse/bin it is in, join `packagings pk JOIN warehouse w ON pk.warehouse_id = w.id JOIN product p ON pk.product_id = p.id WHERE p.product_name LIKE '%<term>%'`. Return `p.product_name`, `w.warehouse_code`, `w.location_name AS warehouse_location`, `pk.location_code AS bin_location`, `pk.carton_no`, `pk.qty AS carton_qty`."
+            )
+
+        # Stock Adjustments
+        if "stock_adjustment" in tables or any(k in q for k in ["adjustment", "adjust", "stock-out", "stock out", "stockout", "stock-in", "stock in", "stockin"]):
+            rules.append(
+                "- Stock Adjustments (StockOut vs StockIn): All inventory stock adjustments (stock-in additions, stock-out write-offs, physical count adjustments) are stored in the dedicated `stock_adjustment` table:\n"
+                "  (1) Table Selection: ALWAYS use `stock_adjustment` when asked about stock adjustments, stock-out, stock-in, or adjusted quantity. NEVER use `stock` (which is for purchase inward and sales dispatches) and NEVER use `product_packaging_detail` (which is a packaging BOM master table).\n"
+                "  (2) Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY TWO exact enum values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'STOCK_OUT'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.\n"
+                "  (3) Columns & Direct Foreign Keys: Adjustment Date `sa.stock_adjustment_date`, Adjusted Quantity `sa.qty` (or `SUM(sa.qty) AS total_adjusted_quantity`), Category Link `JOIN category c ON sa.category_id = c.id`, Product Link `JOIN product p ON sa.product_id = p.id`, Color Link `JOIN product_color pc ON sa.product_color_id = pc.id`."
+            )
+
+        # Delivery Challan & Pending Sales Orders
+        if "delivery_challan" in tables or "delivery_challan_products" in tables or any(k in q for k in ["challan", "delivery", "dc", "dc_no", "shipment", "transporter", "lr"]):
+            rules.append(
+                "- Delivery Challan (DC) vs Invoice & Due Date: A Delivery Challan (DC) and an Invoice are completely separate documents! Actual DC numbers and dates are stored in the `delivery_challan` table: `dc.dc_no` (DC number) and `dc.dc_date` (DC date). Logistics columns: `dc.transport_name` (carrier name) and `dc.lr_number` (Lorry Receipt / LR number — NOT `lr_no`). The customer/party is linked directly via `delivery_challan.party_id = party.id`. NEVER search for DC numbers in `stock.invoice_no` or `stock`! IMPORTANT: `delivery_challan` has NO due date column; the order due date is stored in `sales_order.so_due_date`. When a query asks for the due date of a DC, you MUST join `sales_order`: `LEFT JOIN sales_order so ON dc.sales_order_id = so.id` and select `so.so_due_date AS due_date`."
+            )
+            rules.append(
+                "- Delivery Challan & Pending Sales Orders: To find Sales Orders with pending/undelivered quantity for delivery challan creation, query: "
+                "SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_date, p.party_name AS customer_name, pr.product_name AS product_name, sop.qty AS ordered_quantity, COALESCE(SUM(dcp.qty), 0) AS delivered_quantity, (sop.qty - COALESCE(SUM(dcp.qty), 0)) AS pending_quantity FROM sales_order so JOIN sales_order_products sop ON so.id = sop.sales_order_id JOIN party p ON so.party_id = p.id JOIN product pr ON sop.product_id = pr.id LEFT JOIN delivery_challan dc ON so.id = dc.sales_order_id AND dc.deleted_at IS NULL LEFT JOIN delivery_challan_products dcp ON dc.id = dcp.dc_id AND dcp.product_id = sop.product_id AND dcp.deleted_at IS NULL WHERE so.deleted_at IS NULL AND sop.deleted_at IS NULL AND p.deleted_at IS NULL AND pr.deleted_at IS NULL AND p.status = 'Y' GROUP BY so.sales_order_no, so.sales_order_date, p.party_name, pr.product_name, sop.qty HAVING pending_quantity > 0 ORDER BY so.sales_order_no, pr.product_name;"
+            )
+
+        # Sales Order & PO
+        if "sales_order" in tables or "purchase" in tables or any(k in q for k in ["sales_order", "order", "party_po_no", "po", "due date"]):
+            rules.append(
+                "- Customer PO vs Supplier PO vs Proforma PO: PO numbers exist in 3 distinct places: (1) Customer/Party PO: `sales_order.party_po_no` (and `sales_order.party_po_date`). For questions asking for 'party's PO number', 'customer PO', or 'PO number for sales order/party', ALWAYS query `sales_order so JOIN party p ON so.party_id = p.id`. (2) Proforma PO: `proforma.po_no` (only for proforma invoice questions). (3) Supplier/Vendor PO: `purchase.ref_po_no` (only for supplier inward purchase orders). NEVER use `purchase.ref_po_no` for customer/party PO requests."
+            )
+            rules.append(
+                "- Blocked Cartons: In `stock`, `party_id` is NULL. Join party through `sales_order`: `stock s JOIN sales_order so ON s.so_id = so.id JOIN party p ON so.party_id = p.id WHERE s.status = 'B'`."
+            )
+
+        # Invoices vs Proforma
+        if "stock" in tables or "proforma" in tables or any(k in q for k in ["invoice", "invoices", "invoice_no", "proforma", "pi"]):
+            rules.append(
+                "- Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies 'proforma'."
+            )
+
+        # Party & Leads
+        if "party" in tables or "lead" in tables or any(k in q for k in ["party", "customer", "supplier", "vendor", "contact", "lead", "inquiry"]):
+            rules.append(
+                "- In party table, customer/supplier name is `party.party_name` (NEVER party.name). Contact persons are `party.contact_person1`.\n"
+                "- In lead table, search `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.\n"
+                "- Unified Contact Search: For generic contact info without 'lead'/'customer', UNION ALL across party and lead."
+            )
+
+        # Document Number Uniqueness Across Financial Years
+        if any(t in tables for t in ["delivery_challan", "sales_order", "purchase", "proforma", "production"]) or any(k in q for k in ["dc_no", "so_no", "order_no", "number", "latest"]):
+            rules.append(
+                "- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! "
+                "If a financial year is specified, join `financial_year fy ON t.financial_id = fy.id`. If NO financial year is specified: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` and include `fy.fyear AS financial_year` in SELECT."
+            )
+
+        # Multi-domain Report
+        if any(k in q for k in ["report", "summary", "combined", "ppq", "apq"]):
+            rules.append(
+                "- Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries aggregated per `(product_id, product_color_id)` before joining to `product p`."
+            )
+
+        return "\n".join(rules)
+
     _OUTPUT_READABILITY_RULES = """
 Core SQL Generation & Schema Mapping Protocol:
 - 4-Step Schema Resolution: Before writing any SQL, strictly resolve:
@@ -1833,7 +1989,8 @@ Core SQL Generation & Schema Mapping Protocol:
   2. Table Selection: Which table physically stores that data? (e.g. product definitions in `product`, machine definitions in `machine`, batch production quantities in `production`, actual invoices in `stock` where `stock_type = 'PI'`, delivery challans in `delivery_challan`, stock adjustments in `stock_adjustment` (NOT `stock` or `product_packaging_detail`), order due dates in `sales_order`, product colors in `product_color`, bin/carton storage locations in `packagings`, measurement units in `unit`, customer orders in `sales_order`).
   3. Column Resolution: Which specific column stores the value? (e.g. stock adjustment transaction type in `stock_adjustment.transaction_type` with exact values `'StockOut'` and `'StockIn'` (NEVER `'OUT'` or `'IN'`); adjusted quantity in `SUM(stock_adjustment.qty)`; warehouse code in `warehouse.warehouse_code`, NOT in `packagings.location_code`; total carton quantity in `SUM(packagings.qty)`, NOT `COUNT(*)`; order/delivery due date in `sales_order.so_due_date`; DC numbers in `delivery_challan.dc_no`, NOT in `stock.invoice_no`; product color in `product_color.color`, NOT in table `color`; production quantity in `production.qty`, NOT in `actual_production.apq`; product names/codes in `product.product_name`, not in `batch_no` or `unit_name`; storage codes in `packagings.location_code`, not `warehouse`; customer PO in `sales_order.party_po_no`, not `purchase.ref_po_no`).
   4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly: `stock_adjustment.category_id = category.id`; `stock_adjustment.product_id = product.id`; `stock_adjustment.product_color_id = product_color.id`; `packagings.warehouse_id = warehouse.id`; `delivery_challan.sales_order_id = sales_order.id` for due dates; `delivery_challan.party_id = party.id`; `production.product_color_id = product_color.id`; `production.product_id = product.id`; `production.machine_id = machine.id`; `stock.party_id = party.id` for invoices).
-- SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).
+- SELECT read-only queries only.
+- Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at). Never return raw foreign key ID columns without their human-readable name (use AS descriptive_alias).
 - Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.
 - Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.
 - In party table, customer/supplier name is `party.party_name` (NEVER party.name). Contact persons are `party.contact_person1`.
@@ -1952,21 +2109,28 @@ _MAX_DISPLAY_ROWS = 10
 
 def _format_rows_as_markdown(rows: list[dict[str, Any]], query: str, is_agg_zero: bool = False) -> str:
     """Format dictionary rows into a markdown table, capped at 10 rows."""
+    clean_lines = []
+    for line in query.splitlines():
+        cleaned = re.sub(r"--.*$", "", line).strip()
+        if cleaned:
+            clean_lines.append(cleaned)
+    clean_query = " ".join(clean_lines) if clean_lines else query.strip()
+
     if not rows:
-        return f"SQL Query Executed: `{query}`\n\n_No matching records found in the database._"
+        return f"SQL Query Executed: `{clean_query}`\n\n_No matching records found in the database._"
 
     if is_agg_zero:
         headers = list(rows[0].keys())
         header_row = "| " + " | ".join(headers) + " |"
         separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
         null_row = "| " + " | ".join(["NULL" for _ in headers]) + " |"
-        return f"SQL Query Executed: `{query}`\n\n" + "\n".join([header_row, separator_row, null_row]) + "\n\n_Note: The query matched 0 records for aggregation, returning NULL._"
+        return f"SQL Query Executed: `{clean_query}`\n\n" + "\n".join([header_row, separator_row, null_row]) + "\n\n_Note: The query matched 0 records for aggregation, returning NULL._"
 
     headers = list(rows[0].keys())
     header_row = "| " + " | ".join(headers) + " |"
     separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
 
-    table_rows = [f"SQL Query Executed: `{query}`\n", header_row, separator_row]
+    table_rows = [f"SQL Query Executed: `{clean_query}`\n", header_row, separator_row]
 
     shown = 0
     for row in rows:

@@ -290,3 +290,252 @@
 .markdown-table tbody tr:nth-child(even) {
   background: color-mix(in srgb, var(--text-primary) 3%, transparent);
 }
+
+/* ── Database Evidence Card (Live SQL Results) ───────────────────── */
+.db-result-card {
+  margin: 16px 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--text-primary) 2%, transparent);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  font-family: var(--font-ui);
+}
+
+.db-result-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.db-result-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.db-result-card__icon {
+  color: var(--accent, #3b82f6);
+}
+
+.db-result-card__badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent, #3b82f6);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.db-result-card__badge--empty {
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--text-secondary);
+  border-color: var(--panel-border);
+}
+
+.db-result-card__empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.db-result-card__empty-icon {
+  opacity: 0.6;
+}
+
+.db-result-card__empty-text {
+  margin: 0;
+}
+
+.db-result-card__table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.db-result-card__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+
+.db-result-card__table th {
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-primary) 2%, transparent);
+  border-bottom: 1px solid var(--panel-border);
+  white-space: nowrap;
+}
+
+.db-result-card__table td {
+  padding: 8px 14px;
+  color: var(--text-primary);
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-border) 60%, transparent);
+  line-height: 1.4;
+}
+
+.db-result-card__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.db-result-card__table tbody tr:hover {
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+}
+
+.db-result-card__td--id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  width: 1%;
+  white-space: nowrap;
+}
+
+.db-result-card__id-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.db-result-card__td--null {
+  color: var(--text-tertiary, #888);
+  font-style: italic;
+}
+
+.db-result-card__pagination {
+  padding: 8px 14px;
+  border-top: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--text-primary) 2%, transparent);
+}
+
+.db-result-card__more-btn {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 150ms ease;
+}
+
+.db-result-card__more-btn:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+/* ── Collapsible SQL Accordion ───────────────────────────────────── */
+.db-result-card__sql-accordion {
+  border-top: 1px solid var(--panel-border);
+}
+
+.db-result-card__sql-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 14px;
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  text-align: left;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.db-result-card__sql-toggle:hover {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-primary);
+}
+
+.db-result-card__chevron {
+  transition: transform 150ms ease;
+}
+
+.db-result-card__toggle-label {
+  font-weight: 500;
+}
+
+.db-result-card__sql-body {
+  border-top: 1px solid var(--panel-border);
+  background: #0d1117;
+  padding: 0;
+}
+
+.db-result-card__sql-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.db-result-card__sql-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #8b949e;
+  letter-spacing: 0.05em;
+}
+
+.db-result-card__copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #c9d1d9;
+  font-size: 11px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.db-result-card__copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.db-result-card__copy-btn--copied {
+  color: #3fb950;
+  border-color: rgba(63, 185, 80, 0.3);
+  background: rgba(63, 185, 80, 0.1);
+}
+
+.db-result-card__code {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.db-result-card__code code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+

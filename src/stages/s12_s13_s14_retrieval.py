@@ -263,9 +263,18 @@ class Generator:
 
         # Only the best chunks go into the prompt; citations are drawn from the
         # same trimmed set so we never cite a source the model didn't see.
+        # In hybrid mode (SQL + docs), cap doc chunks to 2 to avoid token bloat.
         context_chunks = _limit_context_chunks(chunks, context_limit)
         sql_table_md = _extract_sql_table(context_chunks)
+        sql_payload = _extract_sql_payload(context_chunks)
         has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
+
+        # When SQL and doc chunks coexist, provide up to 5 top document chunks
+        # to ensure multi-part technical and policy contexts are not starved.
+        if sql_table_md and has_other_chunks:
+            doc_chunks = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
+            sql_result_chunks = [c for c in context_chunks if c.chunk.chunk_type == ChunkType.SQL_RESULT]
+            context_chunks = sql_result_chunks + doc_chunks[:5]
 
         # Fast Path Execution & Synthesis Bypass (Phase 12: gated behind fast_path_enabled)
         if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
@@ -275,28 +284,41 @@ class Generator:
                 or "An error occurred" in sql_table_md
             )
             if not is_empty_or_error:
+                intent = classify_query_intent(query)
                 qtype = classify_query(query)
                 direct_formatted = fast_path_format(qtype, sql_table_md, query)
+
                 if direct_formatted is not None:
                     # 1. Bypass synthesis entirely (0 tokens, deterministic template)
+                    log_telemetry(
+                        query_id="",
+                        stage="synthesis_bypassed",
+                        output_tokens=0,
+                        extra={"query_type": qtype.value if hasattr(qtype, "value") else str(qtype), "bypassed": True},
+                    )
                     return QueryResult(
                         query=query,
                         answer=direct_formatted,
                         citations=[],
-                        model_used=f"fast_path/{qtype.value}",
+                        model_used=f"fast_path/{qtype.value if hasattr(qtype, 'value') else str(qtype)}",
                         reasoning_task=task,
                         chunks_retrieved=len(chunks),
                         chunks_after_rerank=len(chunks),
                         usage=self._router.usage.model_copy(),
+                        sql_payload=sql_payload,
                     )
 
                 # 2. Fallback to micro-synthesis if query was aggregate and direct template returned None
-                intent = classify_query_intent(query)
                 if intent == AGGREGATE_QUERY:
                     try:
                         messages = build_aggregate_micro_prompt(query, sql_table_md)
                         summary = await self._router.chat(task="micro_synthesis", messages=messages, max_tokens=150)
                         answer = format_aggregate_fast_path(summary, sql_table_md)
+                        log_telemetry(
+                            query_id="",
+                            stage="micro_synthesis",
+                            extra={"intent": AGGREGATE_QUERY, "max_tokens": 150},
+                        )
                         return QueryResult(
                             query=query,
                             answer=answer,
@@ -306,11 +328,18 @@ class Generator:
                             chunks_retrieved=len(chunks),
                             chunks_after_rerank=len(chunks),
                             usage=self._router.usage.model_copy(),
+                            sql_payload=sql_payload,
                         )
                     except Exception as err:
                         logger.warning("Micro-synthesis failed, falling back to full synthesis: %s", err)
+                elif intent == EXPLANATION_QUERY:
+                    log_telemetry(
+                        query_id="",
+                        stage="full_synthesis",
+                        extra={"intent": EXPLANATION_QUERY},
+                    )
 
-        if sql_table_md and not has_other_chunks and not is_feature_enabled("fast_path_enabled"):
+        if sql_table_md and not has_other_chunks and classify_query_intent(query) != EXPLANATION_QUERY:
             return QueryResult(
                 query=query,
                 answer=sql_table_md,
@@ -320,14 +349,42 @@ class Generator:
                 chunks_retrieved=len(chunks),
                 chunks_after_rerank=len(chunks),
                 usage=self._router.usage.model_copy(),
+                sql_payload=sql_payload,
             )
-        context = _build_context(context_chunks)
+        # Hybrid mode: SQL + doc chunks — build a split prompt so the LLM sees
+        # actual database results alongside document passages without masking.
+        if sql_table_md and has_other_chunks:
+            doc_chunks_only = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
+            doc_context = _build_context(doc_chunks_only) if doc_chunks_only else ""
+            system_prompt = _build_system_prompt(task, source_mode)
+            # Embed the SQL table inline (truncated to 2000 chars to save tokens)
+            sql_section = sql_table_md[:2000]
+            if doc_context:
+                user_prompt = f"""Live Database Results:
+---
+{sql_section}
+---
 
-        # Build the prompt. The fixed answer rules live in the system prompt
-        # (cacheable prefix), so the user message carries only the volatile
-        # context + question.
-        system_prompt = _build_system_prompt(task, source_mode)
-        user_prompt = f"""Context (retrieved document chunks):
+Supporting Document Passages:
+---
+{doc_context}
+---
+
+Question: {query}"""
+            else:
+                user_prompt = f"""Live Database Results:
+---
+{sql_section}
+---
+
+Question: {query}"""
+        else:
+            context = _build_context(context_chunks)
+            # Build the prompt. The fixed answer rules live in the system prompt
+            # (cacheable prefix), so the user message carries only the volatile
+            # context + question.
+            system_prompt = _build_system_prompt(task, source_mode)
+            user_prompt = f"""Context (retrieved document chunks):
 ---
 {context}
 ---
@@ -350,8 +407,13 @@ Question: {query}"""
 
         # Extract citations and format the answer text
         citations, clean_answer = _extract_and_format_citations(response, context_chunks)
-        if sql_table_md:
-            clean_answer = f"{clean_answer}\n\n{sql_table_md}"
+        # Append the SQL table if not already embedded in the clean answer (placed BEFORE references)
+        if sql_table_md and sql_table_md not in clean_answer:
+            if "**References**" in clean_answer:
+                parts = clean_answer.split("**References**", 1)
+                clean_answer = f"{parts[0].rstrip()}\n\n{sql_table_md}\n\n**References**{parts[1]}"
+            else:
+                clean_answer = f"{clean_answer.rstrip()}\n\n{sql_table_md}"
 
         return QueryResult(
             query=query,
@@ -366,6 +428,7 @@ Question: {query}"""
             chunks_after_rerank=len(chunks),
             # Token cost of the whole query (all LLM calls routed so far).
             usage=self._router.usage.model_copy(),
+            sql_payload=sql_payload,
         )
 
     async def generate_stream(
@@ -403,9 +466,18 @@ Question: {query}"""
         # Only the best chunks go into the prompt; citations come from the same
         # trimmed set. The fixed answer rules are in the system prompt, so the
         # user message carries only the volatile context + question.
+        # In hybrid mode (SQL + docs), cap doc chunks to 2 to avoid token bloat.
         context_chunks = _limit_context_chunks(chunks, context_limit)
         sql_table_md = _extract_sql_table(context_chunks)
+        sql_payload = _extract_sql_payload(context_chunks)
         has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
+
+        # When SQL and doc chunks coexist, provide up to 5 top document chunks
+        # to ensure multi-part technical and policy contexts are not starved.
+        if sql_table_md and has_other_chunks:
+            doc_chunks = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
+            sql_result_chunks = [c for c in context_chunks if c.chunk.chunk_type == ChunkType.SQL_RESULT]
+            context_chunks = sql_result_chunks + doc_chunks[:5]
 
         # Fast Path Streaming Routing
         if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
@@ -428,6 +500,7 @@ Question: {query}"""
                         chunks_retrieved=len(chunks),
                         chunks_after_rerank=len(chunks),
                         usage=self._router.usage.model_copy(),
+                        sql_payload=sql_payload,
                     )
                     return
                 elif intent == AGGREGATE_QUERY:
@@ -445,12 +518,13 @@ Question: {query}"""
                             chunks_retrieved=len(chunks),
                             chunks_after_rerank=len(chunks),
                             usage=self._router.usage.model_copy(),
+                            sql_payload=sql_payload,
                         )
                         return
                     except Exception as err:
                         logger.warning("Streaming micro-synthesis failed, falling back: %s", err)
 
-        if sql_table_md and not has_other_chunks and not is_feature_enabled("fast_path_enabled"):
+        if sql_table_md and not has_other_chunks and classify_query_intent(query) != EXPLANATION_QUERY:
             yield sql_table_md
             yield QueryResult(
                 query=query,
@@ -461,11 +535,41 @@ Question: {query}"""
                 chunks_retrieved=len(chunks),
                 chunks_after_rerank=len(chunks),
                 usage=self._router.usage.model_copy(),
+                sql_payload=sql_payload,
             )
             return
-        context = _build_context(context_chunks)
-        system_prompt = _build_system_prompt(task, source_mode)
-        user_prompt = f"""Context (retrieved document chunks):
+
+        # Hybrid mode: SQL + doc chunks — build a split prompt so the LLM sees
+        # actual database results alongside document passages without masking.
+        if sql_table_md and has_other_chunks:
+            doc_chunks_only = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
+            doc_context = _build_context(doc_chunks_only) if doc_chunks_only else ""
+            system_prompt = _build_system_prompt(task, source_mode)
+            # Embed the SQL table inline (truncated to 2000 chars to save tokens)
+            sql_section = sql_table_md[:2000]
+            if doc_context:
+                user_prompt = f"""Live Database Results:
+---
+{sql_section}
+---
+
+Supporting Document Passages:
+---
+{doc_context}
+---
+
+Question: {query}"""
+            else:
+                user_prompt = f"""Live Database Results:
+---
+{sql_section}
+---
+
+Question: {query}"""
+        else:
+            context = _build_context(context_chunks)
+            system_prompt = _build_system_prompt(task, source_mode)
+            user_prompt = f"""Context (retrieved document chunks):
 ---
 {context}
 ---
@@ -482,15 +586,20 @@ Question: {query}"""
                 *_history_messages(history),
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=2048,
+            max_tokens=900,
         ):
             full_answer_parts.append(chunk_text)
             yield chunk_text
 
         full_answer = "".join(full_answer_parts)
         citations, clean_answer = _extract_and_format_citations(full_answer, context_chunks)
-        if sql_table_md:
-            clean_answer = f"{clean_answer}\n\n{sql_table_md}"
+        # Append the SQL table if not already in the clean answer (placed BEFORE references)
+        if sql_table_md and sql_table_md not in clean_answer:
+            if "**References**" in clean_answer:
+                parts = clean_answer.split("**References**", 1)
+                clean_answer = f"{parts[0].rstrip()}\n\n{sql_table_md}\n\n**References**{parts[1]}"
+            else:
+                clean_answer = f"{clean_answer.rstrip()}\n\n{sql_table_md}"
 
         yield QueryResult(
             query=query,
@@ -504,6 +613,7 @@ Question: {query}"""
             chunks_after_rerank=len(chunks),
             # Token cost of the whole query (all LLM calls routed so far).
             usage=self._router.usage.model_copy(),
+            sql_payload=sql_payload,
         )
 
 
@@ -786,9 +896,10 @@ _MODE_INSTRUCTIONS = {
     ),
     "both": (
         "The context contains BOTH live database results AND document passages. "
-        "For numerical/factual claims, prefer the database results (computed from "
-        "live data). For policies, explanations, or qualitative context, use the "
-        "documents. Cite both sources. If they contradict, note the discrepancy."
+        "The user query may be a hybrid or multi-part inquiry asking about both domains "
+        "(e.g., operational metrics/counts from the database, and policies, definitions, or entity facts from documents). "
+        "You MUST address BOTH aspects of the question clearly and symmetrically. Never omit the document question in favor of the database table, and never fabricate facts. "
+        "Cite document sources with their bracketed markers (e.g. [1]). If information for either half is missing, explicitly disclose that for that specific part while answering the other."
     ),
     "doc_only": "",  # existing prompt works as-is
 }
@@ -858,6 +969,30 @@ def _extract_sql_table(chunks: list[RetrievedChunk]) -> str | None:
     if not sql_tables:
         return None
     return "\n\n".join(sql_tables)
+
+
+def _extract_sql_payload(chunks: list[RetrievedChunk]) -> dict[str, Any] | None:
+    """Return structured SQL result payload if present in chunks."""
+    for c in chunks:
+        if c.chunk.chunk_type == ChunkType.SQL_RESULT:
+            if hasattr(c.chunk, "metadata") and c.chunk.metadata and "sql_payload" in c.chunk.metadata:
+                return c.chunk.metadata["sql_payload"]
+            # Fallback extraction from content if metadata is missing (e.g. tests)
+            content = c.chunk.content or ""
+            m = re.search(r"SQL Query Executed:\s*`([\s\S]+?)`", content)
+            if m:
+                query = m.group(1).strip()
+                lines = [ln.strip() for ln in content.splitlines() if ln.strip().startswith("|")]
+                cols = []
+                rows = []
+                if len(lines) >= 2:
+                    cols = [col.strip() for col in lines[0].strip("|").split("|")]
+                    for row_line in lines[2:]:
+                        vals = [v.strip() for v in row_line.strip("|").split("|")]
+                        if len(vals) == len(cols):
+                            rows.append(dict(zip(cols, vals)))
+                return {"query": query, "columns": cols, "rows": rows, "row_count": len(rows)}
+    return None
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:

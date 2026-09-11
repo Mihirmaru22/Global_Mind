@@ -57,12 +57,15 @@ Conversation:
 ---"""
 
 
-_TITLE_PROMPT = """You write short, clear titles for chat conversations.
+_TITLE_PROMPT = """You write very short, 2 to 3-word topic titles for chat conversations.
 
-Given the first exchange below, reply with a concise title of 3 to 6 words that
-captures the main topic. Use Title Case. Do NOT use quotes, a trailing period,
-or the word "chat". If there is no real topic (e.g. only a greeting), reply with
-exactly: New Chat
+Given the first exchange below, reply with strictly a 2 to 3-word title (maximum 4 words)
+that captures the core topic or entity (e.g., "Warehouse Details", "Unit Name", "Stock Adjustments",
+"Apple Tax Rate", "OCR Engines").
+Use Title Case.
+Do NOT formulate as a question or include words like "What", "How", "Why", "Can", "Give", "Chat",
+quotes, or trailing punctuation.
+If there is no clear topic (e.g. only a greeting), reply with exactly: New Chat
 
 Conversation:
 {conversation}
@@ -71,7 +74,7 @@ Title:"""
 
 
 def _clean_title(raw: str) -> str:
-    """Normalize an LLM title response into a clean, bounded title string."""
+    """Normalize an LLM title response into a clean, bounded 2-3 word title string."""
     text = (raw or "").strip()
     if not text:
         return ""
@@ -82,17 +85,58 @@ def _clean_title(raw: str) -> str:
     # Strip surrounding quotes and trailing sentence punctuation.
     text = text.strip().strip("\"'“”‘’").strip()
     text = text.rstrip(".!?,;:").strip()
-    if len(text) > 60:
-        text = text[:57].rstrip() + "..."
+    words = text.split()
+    if len(words) > 4:
+        words = words[:3]
+    stop_words = {"of", "for", "in", "on", "at", "to", "from", "by", "and", "the", "a", "an", "with"}
+    while len(words) > 1 and words[-1].lower() in stop_words:
+        words.pop()
+    text = " ".join(words)
+    if len(text) > 45:
+        text = text[:42].rstrip() + "..."
     return text
 
 
 def _fallback_title(prompt: str) -> str:
-    """Deterministic fallback when LLM titling is unavailable: trim the prompt."""
-    trimmed = (prompt or "").strip()
-    if len(trimmed) <= 48:
-        return trimmed or "New Chat"
-    return trimmed[:45].rstrip() + "..."
+    """Deterministic fallback when LLM titling is unavailable: extract a 2-3 word topic."""
+    text = (prompt or "").strip()
+    if not text:
+        return "New Chat"
+
+    prefix_pat = (
+        r"^(?:"
+        r"(?:what|which)\s+(?:is\s+(?:the\s+|a\s+)?|are\s+(?:the\s+)?|was\s+(?:the\s+|a\s+)?|were\s+|specific\s+|products?\s+does\s+|does\s+|do\s+|kind\s+of\s+|type\s+of\s+)"
+        r"|what\s+"
+        r"|which\s+"
+        r"|give\s+me(?:\s+(?:the|a|all))?\s+"
+        r"|show\s+me(?:\s+(?:the|a|all))?\s+"
+        r"|list(?:\s+(?:all\s+the|all|of|the|distinct))?\s+"
+        r"|how\s+(?:many|much|to|do\s+i|can\s+i)\s+"
+        r"|can\s+you(?:\s+(?:tell|give|show|list))?(?:\s+me)?(?:\s+about)?\s+"
+        r"|tell\s+me(?:\s+about)?\s+"
+        r"|find(?:\s+(?:all\s+the|all|the))?\s+"
+        r"|please\s+"
+        r")"
+    )
+    cleaned = re.sub(prefix_pat, "", text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"[\?\.!\'\"`]+$", "", cleaned).strip()
+    if not cleaned:
+        cleaned = re.sub(r"[\?\.!\'\"`]+$", "", text).strip()
+
+    words = cleaned.split()
+    if not words:
+        return "New Chat"
+
+    stop_words = {
+        "of", "for", "in", "on", "at", "to", "from", "by", "and", "the", "a", "an", "with",
+        "are", "is", "were", "was", "does", "do",
+    }
+    selected = words[:3]
+    while len(selected) > 1 and selected[-1].lower() in stop_words:
+        selected.pop()
+
+    title_words = [w if (w.isupper() and len(w) <= 5) else w.capitalize() for w in selected]
+    return " ".join(title_words)
 
 
 def _resolve_provider(requested: str | None) -> str | None:
@@ -122,6 +166,8 @@ class SendMessage(BaseModel):
     # Optional soft-pin provider ("auto", "openrouter", "gemini", ...). When
     # omitted, the saved setting or app default is used.
     provider: str | None = None
+    # Knowledge source mode: "auto", "sql", "rag", or "mix"
+    mode: str = "auto"
 
 class MessageFeedback(BaseModel):
     # "up", "down", or None to clear the rating.
@@ -217,7 +263,7 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
         # Fresh pipeline per request — avoids accumulated RateLimiter backoff
         # bleeding across unrelated queries and biasing provider selection.
         pipeline = QueryPipeline(preferred_provider=_resolve_provider(msg.provider))
-        result = await pipeline.query(msg.message, history=history)
+        result = await pipeline.query(msg.message, history=history, mode=msg.mode)
 
 
         # Save the assistant's message
@@ -230,6 +276,7 @@ async def send_message(chat_id: str, msg: SendMessage) -> dict[str, Any]:
             "citations": [c.model_dump() for c in result.citations],
             "modelUsed": result.model_used,
             "usage": result.usage.model_dump(),
+            "sqlPayload": result.sql_payload,
         }
         state_manager.add_message(chat_id, assistant_message)
 
@@ -271,7 +318,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
 
     async def event_generator():
         try:
-            async for chunk in pipeline.query_stream(msg.message, history=history):
+            async for chunk in pipeline.query_stream(msg.message, history=history, mode=msg.mode):
                 if isinstance(chunk, ThinkingStep):
                     # A reasoning step — stream it live for the "thinking" block.
                     yield f"data: {json.dumps({'type': 'thinking', 'step': chunk.model_dump()})}\n\n"
@@ -289,6 +336,7 @@ async def send_message_stream(chat_id: str, msg: SendMessage):
                         "modelUsed": chunk.model_used,
                         "thinking": [t.model_dump() for t in chunk.thinking],
                         "usage": chunk.usage.model_dump(),
+                        "sqlPayload": chunk.sql_payload,
                     }
                     state_manager.add_message(chat_id, assistant_message)
                     state_manager.update_chat(chat_id, {"updatedAt": datetime.datetime.now(datetime.UTC).isoformat()})

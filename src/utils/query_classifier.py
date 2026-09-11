@@ -47,8 +47,16 @@ def classify_query(question: str) -> QueryType:
     if any(t in q for t in ["total", "sum of", "sum total", "aggregate", "gross amount", "net amount", "total value"]):
         return QueryType.SUM
 
+    # Exclude meta/raw database queries from template fast path
+    if any(t in q for t in ["live database", "raw sql", "database result"]):
+        return QueryType.OTHER
+
     # 4. List Queries
-    if any(t in q for t in ["list all", "show all", "give me a table", "show me all", "display all", "fetch all", "get all", "list of", "list distinct"]):
+    if any(t in q for t in [
+        "list all", "show all", "give me a table", "show me all", "display all",
+        "fetch all", "get all", "list of", "list distinct", "show me the", "list the",
+        "list top", "show the last", "show the top", "list ", "show me "
+    ]):
         return QueryType.LIST
 
     # Fallback to OTHER

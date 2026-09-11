@@ -132,8 +132,7 @@ def _apply_template(query_type: QueryType, sql_result_table: str, question: str)
             formatted_val = _format_numeric_value(val)
             entity = _extract_entity_name(question)
             return f"There are {formatted_val} {entity}.\n\n{clean_table}"
-        # Fallback if table has more columns
-        return f"Here is the count matching your request:\n\n{clean_table}"
+        return None
 
     if query_type == QueryType.SUM:
         cell_info = _parse_single_markdown_cell(clean_table)
@@ -142,7 +141,7 @@ def _apply_template(query_type: QueryType, sql_result_table: str, question: str)
             formatted_val = _format_numeric_value(val)
             metric = _extract_metric_name(question)
             return f"The total {metric} is {formatted_val}.\n\n{clean_table}"
-        return f"Here is the total matching your request:\n\n{clean_table}"
+        return None
 
     if query_type == QueryType.LIST:
         # Sanitize headers and format list

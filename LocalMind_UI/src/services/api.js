@@ -15,18 +15,18 @@ export async function getMessages(chatId) {
   return response.data
 }
 
-export async function sendMessage(chatId, message, provider) {
-  const response = await http.post(`/chats/${chatId}/messages`, { message, provider })
+export async function sendMessage(chatId, message, provider, mode = 'auto') {
+  const response = await http.post(`/chats/${chatId}/messages`, { message, provider, mode })
   return response.data
 }
 
-export async function sendMessageStream(chatId, message, onChunk, signal, provider) {
+export async function sendMessageStream(chatId, message, onChunk, signal, provider, mode = 'auto') {
   const response = await fetch(`${http.defaults.baseURL}/chats/${chatId}/messages/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message, provider }),
+    body: JSON.stringify({ message, provider, mode }),
     signal,
   })
 
