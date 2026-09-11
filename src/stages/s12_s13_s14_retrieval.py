@@ -44,6 +44,37 @@ logger = logging.getLogger(__name__)
 
 _JINA_RERANK_URL = "https://api.jina.ai/v1/rerank"
 
+_ACRONYM_MAP_CACHE: dict[str, str] | None = None
+
+
+def _get_acronym_expansions() -> dict[str, str]:
+    global _ACRONYM_MAP_CACHE
+    if _ACRONYM_MAP_CACHE is None:
+        expansion_path = Path(__file__).resolve().parent.parent.parent / "config" / "acronym_expansions.json"
+        if expansion_path.exists():
+            try:
+                with open(expansion_path, "r", encoding="utf-8") as f:
+                    _ACRONYM_MAP_CACHE = json.load(f)
+            except Exception as e:
+                logger.warning("Failed to load acronym expansions from %s: %s", expansion_path, e)
+                _ACRONYM_MAP_CACHE = {}
+        else:
+            _ACRONYM_MAP_CACHE = {}
+    return _ACRONYM_MAP_CACHE
+
+
+def _expand_query_acronyms(query: str) -> str:
+    """Expand business/domain acronyms (e.g. FTE -> full-time equivalent) for retrieval."""
+    expansions = _get_acronym_expansions()
+    if not expansions:
+        return query
+    expanded = query
+    for term, replacement in expansions.items():
+        pattern = rf"\b{re.escape(term)}\b"
+        if re.search(pattern, expanded, flags=re.IGNORECASE):
+            expanded = re.sub(pattern, replacement, expanded, flags=re.IGNORECASE)
+    return expanded
+
 
 # ---------------------------------------------------------------------------
 # Stage 12 — Retrieval
@@ -84,16 +115,21 @@ class Retriever:
         Returns:
             List of RetrievedChunk sorted by descending relevance score.
         """
-        effective_top_k = min(top_k * 2, 120) if exhaustive else top_k
+        # Expand business/technical acronyms (e.g. FTE, HQ) to maximize lexical & semantic recall
+        retrieval_query = _expand_query_acronyms(query)
+        if settings.enable_deep_rerank:
+            effective_top_k = min(top_k * 2, 250) if exhaustive else top_k
+        else:
+            effective_top_k = min(top_k * 2, 100) if exhaustive else min(top_k, 50)
 
         # Get dense + sparse query embeddings in one API call
-        dense_vector, sparse_vector = await self._embeddings.embed_query(query)
+        dense_vector, sparse_vector = await self._embeddings.embed_query(retrieval_query)
 
         # Hybrid RRF search (degrades gracefully to dense-only if sparse is empty)
         results = await self._store.search_hybrid(
             query_vector=dense_vector,
             sparse_vector=sparse_vector,
-            query_text=query,
+            query_text=retrieval_query,
             top_k=effective_top_k,
             filters=filters,
         )
@@ -263,18 +299,19 @@ class Generator:
 
         # Only the best chunks go into the prompt; citations are drawn from the
         # same trimmed set so we never cite a source the model didn't see.
-        # In hybrid mode (SQL + docs), cap doc chunks to 2 to avoid token bloat.
-        context_chunks = _limit_context_chunks(chunks, context_limit)
-        sql_table_md = _extract_sql_table(context_chunks)
-        sql_payload = _extract_sql_payload(context_chunks)
-        has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
+        sql_table_md = _extract_sql_table(chunks)
+        sql_payload = _extract_sql_payload(chunks)
+        has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in chunks)
 
-        # When SQL and doc chunks coexist, provide up to 5 top document chunks
-        # to ensure multi-part technical and policy contexts are not starved.
+        # When SQL and doc chunks coexist, provide up to 10 top document chunks
+        # directly from the full candidate pool to ensure multi-part technical
+        # layers and policy contexts are not starved by pre-slicing.
         if sql_table_md and has_other_chunks:
-            doc_chunks = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
-            sql_result_chunks = [c for c in context_chunks if c.chunk.chunk_type == ChunkType.SQL_RESULT]
-            context_chunks = sql_result_chunks + doc_chunks[:5]
+            doc_chunks = [c for c in chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
+            sql_result_chunks = [c for c in chunks if c.chunk.chunk_type == ChunkType.SQL_RESULT]
+            context_chunks = sql_result_chunks + doc_chunks[:10]
+        else:
+            context_chunks = _limit_context_chunks(chunks, context_limit)
 
         # Fast Path Execution & Synthesis Bypass (Phase 12: gated behind fast_path_enabled)
         if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
@@ -866,18 +903,17 @@ Keep every data point on its own line and make sure the number of y-values match
 # instruction block forms a stable prompt *prefix*. Groq and Gemini 2.5
 # automatically cache repeated prefixes, so keeping these constant and up front
 # means they're billed/encoded once and reused, instead of being re-sent as
-# fresh tokens after the (variable) context on every turn.
 _ANSWER_RULES = (
-    " Answer using ONLY the information in the provided context. If the context "
-    "doesn't contain enough information to answer, say so explicitly. Each excerpt "
-    "is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims "
-    'inline by copying the exact marker(s) in brackets — e.g. "Opus scored 86.8% '
-    '[a1b2c3d4_0007]." These render as clean numbered references, so do NOT add a '
-    'separate column or heading for them and do NOT refer to them as "chunks" in '
-    "your prose. A chunk that merely shares a word with the question is not the same "
-    "as actually answering it â€” if the retrieved context is only tangentially or "
-    "coincidentally related, treat it as not containing the answer and say so rather "
-    "than stretching it into a response."
+    "\n\n### Grounding & Precision Rules\n"
+    "- Answer using ONLY the information in the provided context. If the context doesn't contain enough information to answer, say so explicitly.\n"
+    "- Faithfully preserve all source qualifiers, approximations, ranges, and hedges (e.g., 'approximately', 'majority', 'no exact percentage specified', 'more than'). Never perform independent arithmetic or calculate unhedged numbers that overstate precision beyond what the source document explicitly supports.\n"
+    "- A chunk that merely shares a word with the question is not the same as answering it — if the retrieved context is only tangentially or coincidentally related, treat it as not containing the answer and say so rather than stretching it into a response.\n\n"
+    "### Entity & Terminology Rules\n"
+    "- Preserve exact architectural, system, and component terminology (e.g., 'Document Chunker', 'Parser & Layout Analysis Layer', 'Data Source Layer') verbatim from the source context rather than paraphrasing.\n"
+    "- When mentioning ticker symbols, securities, or corporate entities, always include the full exchange or listing market name if specified in the context (e.g., 'AAPL, listed on The Nasdaq Stock Market LLC').\n\n"
+    "### Citation & Formatting Rules\n"
+    "- Each excerpt is tagged with a bracketed source marker like [a1b2c3d4_0007]. Cite your claims inline by copying the exact marker(s) in brackets — e.g. \"Opus scored 86.8% [a1b2c3d4_0007].\"\n"
+    "- These render as clean numbered references, so do NOT add a separate column or heading for them and do NOT refer to them as 'chunks' in your prose.\n"
 )
 
 

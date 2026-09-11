@@ -33,7 +33,7 @@ from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_curre
 
 logger = logging.getLogger(__name__)
 
-_MIN_RELEVANCE_SCORE = 0.15
+_MIN_RELEVANCE_SCORE = 0.01
 
 # Shown when the live-database path found nothing NOT because the data is
 # missing, but because the LLM providers needed to generate the SQL were all
@@ -351,12 +351,13 @@ class QueryPipeline:
             # re-attaches the SQL chunk to the front unconditionally afterward, so
             # it always survives to generation regardless of what the reranker did
             # with the documents.
+            rerank_k = settings.rerank_top_k if settings.enable_deep_rerank else min(settings.rerank_top_k, 25)
             if exhaustive or not vector_chunks:
-                reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
+                reranked = _enforce_document_diversity(vector_chunks, rerank_k)
             else:
                 logger.info("[Tokens: %d/%d] [Stage 13] Reranking", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=settings.rerank_top_k)
-                reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+                reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=rerank_k)
+                reranked = _enforce_document_diversity(reranked, rerank_k)
             reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
             reranked = _pin_sql_result_chunks(reranked, sql_chunks)
             logger.info("Final context: %d chunks", len(reranked))
@@ -588,11 +589,12 @@ class QueryPipeline:
             return
 
         # Stage 13 — Reranking. SQL chunks NEVER go here — solo or blended.
+        rerank_k = settings.rerank_top_k if settings.enable_deep_rerank else min(settings.rerank_top_k, 25)
         if exhaustive or not vector_chunks:
-            reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
+            reranked = _enforce_document_diversity(vector_chunks, rerank_k)
         else:
-            reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=settings.rerank_top_k)
-            reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+            reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=rerank_k)
+            reranked = _enforce_document_diversity(reranked, rerank_k)
         reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
 

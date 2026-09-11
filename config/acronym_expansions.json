@@ -1,0 +1,13 @@
+{
+  "fte": "FTE full-time equivalent employees headcount",
+  "hq": "HQ headquarters",
+  "ipo": "IPO initial public offering",
+  "yoy": "YoY year over year",
+  "qoq": "QoQ quarter over quarter",
+  "capex": "CapEx capital expenditures",
+  "opex": "OpEx operating expenses",
+  "cagr": "CAGR compound annual growth rate",
+  "rag": "RAG retrieval augmented generation",
+  "sec": "SEC Securities and Exchange Commission",
+  "ebitda": "EBITDA earnings before interest taxes depreciation and amortization"
+}

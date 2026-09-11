@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Module-level singletons — shared across all QdrantStore instances in the
 # same process so _ensure_collection() only runs once and never wipes data.
 _global_client: Any = None
+_global_client_loop: Any = None
 _global_has_sparse: bool = False
 
 
@@ -83,8 +84,10 @@ class QdrantStore:
         self._has_sparse: bool = False  # Set True once sparse collection is confirmed
 
     async def _get_client(self) -> Any:
-        global _global_client, _global_has_sparse
-        if _global_client is None:
+        global _global_client, _global_client_loop, _global_has_sparse
+        import asyncio
+        current_loop = asyncio.get_running_loop()
+        if _global_client is None or _global_client_loop is not current_loop or current_loop.is_closed():
             from qdrant_client import AsyncQdrantClient
 
             if settings.qdrant_url and settings.qdrant_api_key:
@@ -97,6 +100,7 @@ class QdrantStore:
                 _global_client = AsyncQdrantClient(location=":memory:")
                 logger.info("Using in-memory Qdrant (no QDRANT_URL configured)")
 
+            _global_client_loop = current_loop
             await self._ensure_collection(_global_client)
 
         self._has_sparse = _global_has_sparse

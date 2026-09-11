@@ -123,3 +123,86 @@ async def test_hdblow_quantity_adjusted_temporal_intent_sql_gen():
     if total_val is None:
         total_val = int(float(list(rows[0].values())[-1]))
     assert total_val == 158298, f"Expected 158,298, got {total_val} from rows: {rows}"
+
+
+def test_acronym_expansion_loading_and_expansion():
+    from src.stages.s12_s13_s14_retrieval import _expand_query_acronyms, _get_acronym_expansions
+    expansions = _get_acronym_expansions()
+    assert "fte" in expansions
+    assert "hq" in expansions
+
+    q = _expand_query_acronyms("Apple FTE employees")
+    assert "full-time equivalent" in q
+    assert "FTE" in q
+
+    q_hq = _expand_query_acronyms("Apple HQ location")
+    assert "headquarters" in q_hq
+
+
+def test_answer_rules_structured_prompt():
+    from src.stages.s12_s13_s14_retrieval import _ANSWER_RULES
+    assert "Grounding & Precision Rules" in _ANSWER_RULES
+    assert "Entity & Terminology Rules" in _ANSWER_RULES
+    assert "Citation & Formatting Rules" in _ANSWER_RULES
+    assert "approximately" in _ANSWER_RULES
+    assert "Document Chunker" in _ANSWER_RULES
+    assert "The Nasdaq Stock Market LLC" in _ANSWER_RULES
+
+
+@pytest.mark.asyncio
+async def test_q2_apple_fte_retrieval_and_reranking():
+    from src.stages.s11_vector_store import QdrantStore
+    from src.stages.s10_embeddings import EmbeddingService
+    from src.stages.s12_s13_s14_retrieval import Retriever, Reranker
+    from src.core.config import settings
+
+    store = QdrantStore()
+    embeddings = EmbeddingService()
+    retriever = Retriever(store, embeddings)
+    reranker = Reranker()
+
+    results = await retriever.retrieve("Apple FTE employees", top_k=settings.retrieval_top_k)
+    target = next((r for r in results if r.chunk.chunk_id == "8485b2df1a08f2fc_chunk_0018"), None)
+    assert target is not None, "Apple FTE chunk 0018 must be retrieved by Retriever"
+    assert "166,000" in target.chunk.content
+
+    rerank_k = settings.rerank_top_k if settings.enable_deep_rerank else 25
+    reranked = await reranker.rerank("Apple FTE employees", results[:rerank_k], top_k=10)
+    top_chunk_ids = [r.chunk.chunk_id for r in reranked[:3]]
+    assert "8485b2df1a08f2fc_chunk_0018" in top_chunk_ids, f"Target chunk should be in top 3, got: {top_chunk_ids}"
+
+
+@pytest.mark.asyncio
+async def test_q8_rag_architecture_5_layers_retrieval_and_reranking():
+    from src.stages.s11_vector_store import QdrantStore
+    from src.stages.s10_embeddings import EmbeddingService
+    from src.stages.s12_s13_s14_retrieval import Retriever, Reranker
+    from src.core.config import settings
+
+    store = QdrantStore()
+    embeddings = EmbeddingService()
+    retriever = Retriever(store, embeddings)
+    reranker = Reranker()
+
+    results = await retriever.retrieve("5 RAG layers", top_k=settings.retrieval_top_k)
+    rerank_k = settings.rerank_top_k if settings.enable_deep_rerank else 25
+    reranked = await reranker.rerank("5 RAG layers", results[:rerank_k], top_k=25)
+
+    all_content = " ".join(r.chunk.content for r in reranked[:10])
+    # Verify all 5 functional layers are present in top 10 reranked chunks
+    assert "Data Source" in all_content
+    assert "Parser" in all_content
+    assert "Embedding" in all_content
+    assert "Retrieval" in all_content
+    assert "Generation" in all_content
+
+
+def test_enable_deep_rerank_config_toggle():
+    from src.core.config import settings
+    assert hasattr(settings, "enable_deep_rerank")
+    assert settings.enable_deep_rerank is True
+    assert settings.retrieval_top_k == 150
+    assert settings.rerank_top_k == 75
+    assert settings.generation_context_k == 10
+
+
