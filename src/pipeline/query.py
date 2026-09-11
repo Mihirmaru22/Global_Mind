@@ -47,6 +47,44 @@ _SQL_UNAVAILABLE_MSG = (
 )
 
 
+_DB_KEYWORDS = {
+    "order", "orders", "sales", "purchase", "purchases", "supplier", "suppliers", "vendor", "vendors",
+    "stock", "inventory", "warehouse", "warehouses", "carton", "cartons", "on hand",
+    "production", "manufacture", "manufacturing", "batch", "batches", "machine", "machines",
+    "yield", "output", "plant", "apq", "ppq", "color", "colors", "colour", "colours",
+    "unit", "units", "uom", "measurement", "packaging", "packagings", "packing",
+    "challan", "delivery", "dispatch", "shipment", "transporter", "vehicle", "driver", "dc",
+    "invoice", "invoices", "proforma", "balance", "ledger", "credit", "debit", "party",
+    "parties", "customer", "customers", "client", "clients", "lead", "leads", "inquiry",
+    "inquiries", "adjustment", "stock-out", "stockout", "stock-in", "stockin", "product", "products",
+    "so_no", "dc_no", "po_no", "batch_no",
+}
+
+_DOC_KEYWORDS = {
+    "rag", "ocr", "parser", "parsers", "pipeline", "architecture", "embedding",
+    "embeddings", "rerank", "reranking", "chunk", "chunks", "chunking", "vector",
+    "policy", "policies", "procedure", "procedures", "sop", "sops", "guideline",
+    "guidelines", "manual", "handbook", "contract", "contracts", "agreement",
+    "apple", "iphone", "sec", "10-k", "10k", "filing", "filings", "annual report",
+    "shareholder", "shareholders", "tax rate", "effective tax", "pdf", "docx", "doc", "document", "documents",
+}
+
+
+def _classify_auto_mode(query: str) -> str:
+    """Classify user query in Auto mode into 'sql', 'rag', or 'hybrid'."""
+    q_lower = query.lower()
+    tokens = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", q_lower))
+    has_sql_signal = bool(tokens & _DB_KEYWORDS) or bool(re.search(r"\b[a-zA-Z]+[0-9]+[a-zA-Z0-9_-]*\b", query))
+    has_doc_signal = bool(tokens & _DOC_KEYWORDS) or any(k in q_lower for k in ["effective tax", "10-k", "10k", "tax rate"])
+
+    if has_sql_signal and not has_doc_signal:
+        return "sql"
+    elif has_doc_signal and not has_sql_signal:
+        return "rag"
+    else:
+        return "hybrid"
+
+
 def _pin_sql_result_chunks(
     chunks: list[RetrievedChunk],
     sql_chunks: list[RetrievedChunk],
@@ -98,8 +136,9 @@ class QueryPipeline:
         question: str,
         filters: dict | None = None,
         history: list[dict] | None = None,
+        mode: str = "auto",
     ) -> QueryResult:
-        """Run a full RAG query: retrieve Ã¢â€ â€™ rerank Ã¢â€ â€™ generate.
+        """Run a full RAG query: retrieve → rerank → generate.
 
         Args:
             question: The user's natural-language question.
@@ -108,12 +147,13 @@ class QueryPipeline:
             history: Prior conversation turns (dicts with role/content), used to
                      resolve follow-ups into standalone queries and to keep the
                      answer coherent with the conversation.
+            mode: Knowledge source mode: "auto", "sql", "rag", or "mix".
         """
         import uuid
         query_id = f"gm-q-{uuid.uuid4()}"
         set_current_query_id(query_id)
         budget_ctrl = get_or_create_budget_controller(query_id=query_id, force_new=True)
-        logger.info("=== Query [%s] [Budget Limit: %d]: %s ===", query_id, budget_ctrl.max_tokens, question[:100])
+        logger.info("=== Query [%s] [Budget Limit: %d] [Mode: %s]: %s ===", query_id, budget_ctrl.max_tokens, mode, question[:100])
 
         import os
         scope_key = (filters.get("scope_key") or filters.get("erp_instance_id")) if filters else None
@@ -137,7 +177,7 @@ class QueryPipeline:
 
         with timed_stage("final_response", query_id=query_id) as final_stage:
             # Short-circuit: "what files/documents do you have?" — answer from registry
-            if _is_document_listing_query(question):
+            if _is_document_listing_query(question) and mode != "sql":
                 # ARCH-9: registry reads block; run off the event loop.
                 answer = await asyncio.to_thread(_build_document_list_answer)
                 return QueryResult(
@@ -164,18 +204,46 @@ class QueryPipeline:
             if exhaustive:
                 logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
 
-            # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
-            logger.info("[Tokens: %d/%d] [Stage 12] Parallel SQL & Vector Retrieval", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-            sql_coro = self._sql_retriever.retrieve(search_query)
-            doc_coro = self._retriever.retrieve(
-                search_query,
-                top_k=settings.retrieval_top_k,
-                filters=filters,
-                exhaustive=exhaustive,
-            )
+            # Mode-aware retrieval execution:
+            effective_mode = mode
+            if mode == "auto":
+                effective_mode = _classify_auto_mode(search_query)
+                logger.info("Auto-classified query '%s' -> mode '%s'", search_query[:80], effective_mode)
 
-            # Coordinator merges isolated outputs after gather completes
-            sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
+            if effective_mode == "sql":
+                logger.info("[Tokens: %d/%d] [Mode: SQL] Querying live database only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+                sql_chunks = await self._sql_retriever.retrieve(search_query)
+                vector_chunks = []
+                if not sql_chunks and mode == "auto":
+                    logger.info("Auto mode SQL returned no rows; falling back to documents")
+                    vector_chunks = await self._retriever.retrieve(
+                        search_query,
+                        top_k=settings.retrieval_top_k,
+                        filters=filters,
+                        exhaustive=exhaustive,
+                    )
+            elif effective_mode == "rag":
+                logger.info("[Tokens: %d/%d] [Mode: RAG] Searching documents only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+                vector_chunks = await self._retriever.retrieve(
+                    search_query,
+                    top_k=settings.retrieval_top_k,
+                    filters=filters,
+                    exhaustive=exhaustive,
+                )
+                sql_chunks = []
+            else:
+                # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
+                logger.info("[Tokens: %d/%d] [Stage 12] Parallel SQL & Vector Retrieval", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+                sql_coro = self._sql_retriever.retrieve(search_query)
+                doc_coro = self._retriever.retrieve(
+                    search_query,
+                    top_k=settings.retrieval_top_k,
+                    filters=filters,
+                    exhaustive=exhaustive,
+                )
+                # Coordinator merges isolated outputs after gather completes
+                sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
+
             logger.info("Retrieved %d vector chunks and %d SQL chunks", len(vector_chunks), len(sql_chunks))
             sql_infra_error = self._sql_retriever.last_infra_error
             if sql_chunks:
@@ -191,11 +259,16 @@ class QueryPipeline:
                         model_used="none",
                         reasoning_task="sql_unavailable",
                     )
-                db_keywords = ["sales", "order", "delivery", "challan", "stock", "product", "lead", "party", "customer", "vendor", "invoice", "quotation", "production", "carton", "qty", "quantity", "price", "rate"]
-                if any(k in question.lower() for k in db_keywords):
+                if mode == "sql":
                     fallback_msg = "No matching database records found for this query."
-                else:
+                elif mode == "rag":
                     fallback_msg = "No relevant documents found. Please upload documents first."
+                else:
+                    db_keywords = ["sales", "order", "delivery", "challan", "stock", "product", "lead", "party", "customer", "vendor", "invoice", "quotation", "production", "carton", "qty", "quantity", "price", "rate", "warehouse"]
+                    if any(k in question.lower() for k in db_keywords):
+                        fallback_msg = "No matching database records found for this query."
+                    else:
+                        fallback_msg = "No relevant documents found. Please upload documents first."
 
                 return QueryResult(
                     query=question,
@@ -277,7 +350,7 @@ class QueryPipeline:
             return result
 
     async def query_stream(
-        self, question: str, filters: dict | None = None, history: list[dict] | None = None
+        self, question: str, filters: dict | None = None, history: list[dict] | None = None, mode: str = "auto"
     ):
         """Run a full RAG query and yield SSE stream chunks.
 
@@ -285,14 +358,15 @@ class QueryPipeline:
             question: The user's natural-language question.
             filters: Optional metadata filters (same keys as query()).
             history: Prior conversation turns for follow-up resolution.
+            mode: Knowledge source mode: "auto", "sql", "rag", or "mix".
         """
         from typing import AsyncGenerator
         from src.models.schemas import QueryResult
 
-        logger.info("=== Query Stream: %s ===", question[:100])
+        logger.info("=== Query Stream [%s]: %s ===", mode, question[:100])
 
-        # Short-circuit: document listing question Ã¢â‚¬â€  answer from registry
-        if _is_document_listing_query(question):
+        # Short-circuit: document listing question — answer from registry
+        if _is_document_listing_query(question) and mode != "sql":
             # ARCH-9: registry reads block; run off the event loop.
             answer = await asyncio.to_thread(_build_document_list_answer)
             yield answer
@@ -304,7 +378,7 @@ class QueryPipeline:
             )
             return
 
-        # Reasoning trace ("thinking") Ã¢â‚¬â€  each step is streamed live to the UI as
+        # Reasoning trace ("thinking") — each step is streamed live to the UI as
         # it happens and collected onto the final QueryResult so it persists.
         thinking: list[ThinkingStep] = []
 
@@ -314,7 +388,7 @@ class QueryPipeline:
             return step
 
         # Consult the conversation ONLY when the message looks like a follow-up
-        # (see query()) Ã¢â‚¬â€  a self-contained/new-topic question stays stateless so
+        # (see query()) — a self-contained/new-topic question stays stateless so
         # history can't bias it.
         needs_context = bool(history) and _looks_like_followup(question)
         search_query = question
@@ -327,44 +401,87 @@ class QueryPipeline:
 
         exhaustive = _is_exhaustive_query(search_query)
         if exhaustive:
-            logger.info("Exhaustive query detected Ã¢â‚¬â€  boosting top_k and skipping rerank")
+            logger.info("Exhaustive query detected — boosting top_k and skipping rerank")
 
-        yield _think("Understanding the question", "checking live database and documents in parallel")
+        effective_mode = mode
+        if mode == "auto":
+            effective_mode = _classify_auto_mode(search_query)
+            logger.info("Auto-classified query '%s' -> mode '%s'", search_query[:80], effective_mode)
 
-        sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
-
-        # Stage 12 Ã¢â‚¬â€  Vector Retrieval (always runs; see query() for rationale).
-        # Document context is never skipped so a document-only answer can't be
-        # hijacked by the gpu_sales table, and regenerating stays consistent.
-        vector_chunks = await self._retriever.retrieve(
-            search_query,
-            top_k=settings.retrieval_top_k,
-            filters=filters,
-            exhaustive=exhaustive,
-        )
-        # Name the actual source files this question matched against, so two
-        # different questions never show the same trace.
-        doc_names = list(dict.fromkeys(
-            Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
-        ))
-        if doc_names:
-            shown = ", ".join(doc_names[:3])
-            more = f" +{len(doc_names) - 3} more" if len(doc_names) > 3 else ""
-            doc_detail = f"{len(vector_chunks)} passage(s) in {shown}{more}"
+        if effective_mode == "sql":
+            yield _think("Understanding the question", "querying live database")
+            sql_chunks = await self._sql_retriever.retrieve(search_query)
+            vector_chunks = []
+            sql_infra_error = self._sql_retriever.last_infra_error
+            if sql_chunks:
+                sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
+                sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
+                yield _think("Queried the live database", sql_detail)
+            elif mode == "auto":
+                yield _think("Queried the live database", "no matching rows found in database -- checking documents")
+                vector_chunks = await self._retriever.retrieve(
+                    search_query,
+                    top_k=settings.retrieval_top_k,
+                    filters=filters,
+                    exhaustive=exhaustive,
+                )
+                doc_names = list(dict.fromkeys(
+                    Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
+                ))
+                doc_detail = f"{len(vector_chunks)} passage(s) in {', '.join(doc_names[:3])}" if doc_names else "no matches"
+                yield _think("Searched the documents", doc_detail)
+            else:
+                yield _think("Queried the live database", "no matching rows found in database")
+        elif effective_mode == "rag":
+            yield _think("Understanding the question", "searching documents")
+            sql_chunks = []
+            sql_infra_error = None
+            vector_chunks = await self._retriever.retrieve(
+                search_query,
+                top_k=settings.retrieval_top_k,
+                filters=filters,
+                exhaustive=exhaustive,
+            )
+            doc_names = list(dict.fromkeys(
+                Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
+            ))
+            if doc_names:
+                shown = ", ".join(doc_names[:3])
+                more = f" +{len(doc_names) - 3} more" if len(doc_names) > 3 else ""
+                doc_detail = f"{len(vector_chunks)} passage(s) in {shown}{more}"
+            else:
+                doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
+            yield _think("Searched the documents", doc_detail)
         else:
-            doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
-        yield _think("Searched the documents", doc_detail)
+            yield _think("Understanding the question", "checking live database and documents in parallel")
 
-        sql_chunks = await sql_task
-        sql_infra_error = self._sql_retriever.last_infra_error
-        if sql_chunks:
-            # Surface the actual generated SQL, not a canned phrase Ã¢â‚¬â€  every
-            # question produces a different query.
-            sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
-            sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
-            yield _think("Queried the live database", sql_detail)
-        else:
-            yield _think("Queried the live database", "no matching rows -- checking documents instead")
+            sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
+
+            vector_chunks = await self._retriever.retrieve(
+                search_query,
+                top_k=settings.retrieval_top_k,
+                filters=filters,
+                exhaustive=exhaustive,
+            )
+            doc_names = list(dict.fromkeys(
+                Path(c.chunk.source_file).name for c in vector_chunks if c.chunk.source_file
+            ))
+            if doc_names:
+                shown = ", ".join(doc_names[:3])
+                more = f" +{len(doc_names) - 3} more" if len(doc_names) > 3 else ""
+                doc_detail = f"{len(vector_chunks)} passage(s) in {shown}{more}"
+            else:
+                doc_detail = f"{len(vector_chunks)} passage(s)" if vector_chunks else "no matches"
+            yield _think("Searched the documents", doc_detail)
+
+            sql_chunks = await sql_task
+            sql_infra_error = self._sql_retriever.last_infra_error
+            if sql_chunks:
+                sql_match = re.search(r"SQL Query Executed: `(.+?)`", sql_chunks[0].chunk.content)
+                sql_detail = sql_match.group(1) if sql_match else "returned matching rows"
+                yield _think("Queried the live database", sql_detail)
+            else:
+                yield _think("Queried the live database", "no matching rows -- checking documents instead")
 
         if not vector_chunks and not sql_chunks:
             if sql_infra_error:
@@ -377,7 +494,17 @@ class QueryPipeline:
                     thinking=thinking,
                 )
                 return
-            fallback_msg = "No relevant documents found. Please upload documents first."
+
+            if mode == "sql":
+                fallback_msg = "No matching database records found for this query."
+            elif mode == "rag":
+                fallback_msg = "No relevant documents found. Please upload documents first."
+            else:
+                db_keywords = ["sales", "order", "delivery", "challan", "stock", "product", "lead", "party", "customer", "vendor", "invoice", "quotation", "production", "carton", "qty", "quantity", "price", "rate", "warehouse"]
+                if any(k in question.lower() for k in db_keywords):
+                    fallback_msg = "No matching database records found for this query."
+                else:
+                    fallback_msg = "No relevant documents found. Please upload documents first."
 
             yield fallback_msg
             yield QueryResult(

@@ -340,12 +340,13 @@ def check_dangerous_patterns(sql: str, dialect: str | None = None) -> list[str]:
         logger.debug("Failed to parse SQL in check_dangerous_patterns: %s", exc)
         return warnings
 
-    # 1. Flag SELECT * / exp.Star
-    stars = list(ast.find_all(exp.Star))
-    if stars:
-        warnings.append(
-            "Wildcard selection (SELECT *) is forbidden. Explicitly name the required columns."
-        )
+    # 1. Flag SELECT * / exp.Star (excluding aggregate COUNT(*))
+    for star in ast.find_all(exp.Star):
+        if not star.find_ancestor(exp.Count):
+            warnings.append(
+                "Wildcard selection (SELECT *) is forbidden. Explicitly name the required columns."
+            )
+            break
 
     # 2. Flag Cartesian explosion (explicit CROSS JOIN or comma-joins)
     is_cartesian, reason = check_cartesian_explosion(sql, dialect=dialect)

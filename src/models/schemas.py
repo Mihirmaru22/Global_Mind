@@ -162,6 +162,7 @@ class Chunk(BaseModel):
     document_type: DocumentType = DocumentType.GENERAL
     source_file: str = ""
     confidence: float = 1.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +254,4 @@ class QueryResult(BaseModel):
     chunks_after_rerank: int = 0
     thinking: list[ThinkingStep] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
+    sql_payload: dict[str, Any] | None = None

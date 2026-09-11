@@ -98,7 +98,31 @@ function writeStoredIdSet(key, set) {
 }
 
 function buildUntitledChatTitle(prompt) {
-  return prompt.trim()
+  const text = (prompt || '').trim()
+  if (!text) return 'New Chat'
+
+  const prefixRegex =
+    /^(?:(?:what|which)\s+(?:is\s+(?:the\s+|a\s+)?|are\s+(?:the\s+)?|was\s+(?:the\s+|a\s+)?|were\s+|specific\s+|products?\s+does\s+|does\s+|do\s+|kind\s+of\s+|type\s+of\s+)|what\s+|which\s+|give\s+me(?:\s+(?:the|a|all))?\s+|show\s+me(?:\s+(?:the|a|all))?\s+|list(?:\s+(?:all\s+the|all|of|the|distinct))?\s+|how\s+(?:many|much|to|do\s+i|can\s+i)\s+|can\s+you(?:\s+(?:tell|give|show|list))?(?:\s+me)?(?:\s+about)?\s+|tell\s+me(?:\s+about)?\s+|find(?:\s+(?:all\s+the|all|the))?\s+|please\s+)/i
+
+  let cleaned = text.replace(prefixRegex, '').replace(/[?.!'"`]+$/g, '').trim()
+  if (!cleaned) {
+    cleaned = text.replace(/[?.!'"`]+$/g, '').trim()
+  }
+
+  const words = cleaned.split(/\s+/).filter(Boolean)
+  if (!words.length) return 'New Chat'
+
+  const stopWords = new Set([
+    'of', 'for', 'in', 'on', 'at', 'to', 'from', 'by', 'and', 'the', 'a', 'an', 'with', 'are', 'is', 'were', 'was', 'does', 'do',
+  ])
+  let selected = words.slice(0, 3)
+  while (selected.length > 1 && stopWords.has(selected[selected.length - 1].toLowerCase())) {
+    selected.pop()
+  }
+
+  return selected
+    .map((w) => (w === w.toUpperCase() && w.length <= 5 ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(' ')
 }
 
 function touchChat(chats, chatId) {
@@ -123,6 +147,7 @@ function versionSnapshot(source) {
     citations: source.citations || [],
     modelUsed: source.modelUsed,
     usage: source.usage,
+    sqlPayload: source.sqlPayload || null,
   }
 }
 
@@ -155,6 +180,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
   // Soft-pin provider for this request — the backend falls back to the rest of
   // each task's chain when the pinned provider is exhausted or down.
   const provider = get().settings?.provider
+  const mode = get().searchMode || 'auto'
 
   try {
     await sendMessageStream(
@@ -191,6 +217,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
                       modelUsed: snapshot.modelUsed,
                       usage: chunkData.message.usage,
                       thinking: chunkData.message.thinking || [],
+                      sqlPayload: chunkData.message.sqlPayload || null,
                       versions,
                       activeVersion: versions.length - 1,
                       status: 'done',
@@ -216,6 +243,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
       },
       controller.signal,
       provider,
+      mode,
     )
 
     if (isStale()) return
@@ -256,7 +284,7 @@ async function streamAssistantResponse(set, get, chatId, requestId, prompt) {
     console.warn('Streaming request failed, falling back to a non-streaming request:', error)
 
     try {
-      const assistantMessage = await sendMessage(chatId, prompt, provider)
+      const assistantMessage = await sendMessage(chatId, prompt, provider, mode)
       if (isStale()) return
       set((state) => {
         const request = state.activeRequest
@@ -340,6 +368,8 @@ export const useAppStore = create((set, get) => ({
   // page. Not tied to a chat message — the whole point is that ingestion no
   // longer creates a chat. Cleared once the pipeline finishes.
   ingestionProgress: null,
+  searchMode: 'auto', // 'auto' | 'sql' | 'rag'
+  setSearchMode: (searchMode) => set({ searchMode }),
 
   initApp: async () => {
     set({ loading: true })
@@ -780,6 +810,7 @@ export const useAppStore = create((set, get) => ({
             citations: version.citations || [],
             modelUsed: version.modelUsed,
             usage: version.usage,
+            sqlPayload: version.sqlPayload || null,
           }
         }),
       },

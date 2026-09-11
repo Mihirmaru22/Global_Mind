@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   ChevronLeft,
@@ -23,6 +23,7 @@ import IngestionCard from './IngestionCard.jsx'
 import ThinkingTrace from './ThinkingTrace.jsx'
 import TokenUsage from './TokenUsage.jsx'
 import rehypeCitations from './rehypeCitations.js'
+import DatabaseResultCard from './DatabaseResultCard.jsx'
 
 /** Recursively flatten a react-markdown children tree back into plain text.
  * rehype-highlight can split code into nested <span> tokens, so a simple
@@ -76,7 +77,86 @@ function mermaidSource(children) {
 // the fence line into the code content. Move those citations to the next line
 // so the parser sees a valid closing fence.
 function normalizeClosingFences(text) {
-  return text.replace(/^(`{3,}|~{3,})[ \t]*(\[\d+(?:[,\s]*\d+)*\])/gm, '$1\n$2')
+  let normalized = text.replace(/^(`{3,}|~{3,})[ \t]*(\[\d+(?:[,\s]*\d+)*\])/gm, '$1\n$2')
+  // Ensure multiline SQL Query Executed inline-backticks don't break CommonMark into accidental indented blocks
+  normalized = normalized.replace(/SQL Query Executed:\s*`([\s\S]+?)`/g, (match, sql) => {
+    const cleanSql = sql
+      .split('\n')
+      .map((l) => l.replace(/--.*$/, '').trim())
+      .filter(Boolean)
+      .join(' ')
+    return `SQL Query Executed: \`${cleanSql}\``
+  })
+  return normalized
+}
+
+function splitMessageContent(rawText, sqlPayload) {
+  if (!rawText) {
+    return { mainText: '', dbPayload: sqlPayload || null, referencesText: '' }
+  }
+
+  let text = rawText
+  let dbPayload = sqlPayload || null
+  let referencesText = ''
+
+  // 1. Separate **References** if present
+  const refMatch = text.match(/\n\n(?:\*{2}|#{1,4}\s*)References(?:\*{2})?[\s\S]*$/i)
+  if (refMatch) {
+    referencesText = refMatch[0].trim()
+    text = text.slice(0, refMatch.index).trim()
+  }
+
+  // 2. Extract SQL Block if present: SQL Query Executed: `...`
+  const sqlMatch = text.match(/SQL Query Executed:\s*`([\s\S]+?)`([\s\S]*)$/)
+  if (sqlMatch) {
+    const rawSql = sqlMatch[1].trim()
+    const tableSection = sqlMatch[2].trim()
+
+    if (!dbPayload) {
+      // Parse markdown table rows into structured data as fallback
+      const lines = tableSection
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith('|'))
+
+      let columns = []
+      let rows = []
+      if (lines.length >= 2) {
+        columns = lines[0]
+          .slice(1, -1)
+          .split('|')
+          .map((c) => c.trim())
+        for (let i = 2; i < lines.length; i++) {
+          const vals = lines[i]
+            .slice(1, -1)
+            .split('|')
+            .map((v) => v.trim())
+          if (vals.length === columns.length) {
+            const row = {}
+            columns.forEach((col, idx) => {
+              row[col] = vals[idx] === 'NULL' ? null : vals[idx]
+            })
+            rows.push(row)
+          }
+        }
+      }
+
+      dbPayload = {
+        query: rawSql,
+        columns,
+        rows,
+        row_count: rows.length,
+      }
+    }
+
+    // Strip the raw SQL block from the main text so it doesn't render twice!
+    text = text.slice(0, sqlMatch.index).trim()
+  } else if (dbPayload) {
+    // If structured payload was attached, remove any trailing markdown table or SQL text from mainText
+    text = text.replace(/SQL Query Executed:\s*`[\s\S]+?`[\s\S]*$/, '').trim()
+  }
+
+  return { mainText: text, dbPayload, referencesText }
 }
 
 // Custom renderers for assistant markdown: mermaid code blocks become diagrams,
@@ -155,6 +235,9 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
     message.content || '',
     isAssistant && !isLoading && !!message.isNew,
   )
+  const { mainText, dbPayload, referencesText } = useMemo(() => {
+    return splitMessageContent(typedContent, message.sqlPayload)
+  }, [typedContent, message.sqlPayload])
   // Show the blinking cursor both while the typewriter fallback is actively
   // typing AND while real tokens are streaming in live from the backend —
   // the latter never touches useTypewriterText's animation path (isNew is
@@ -282,13 +365,39 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
             <ThinkingTrace steps={message.thinking} streaming={isStreaming} />
           ) : null}
           <div className="message__assistant markdown">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
-              components={markdownComponents}
-            >
-              {normalizeClosingFences(typedContent)}
-            </ReactMarkdown>
+            {dbPayload || referencesText ? (
+              <>
+                {mainText ? (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
+                    components={markdownComponents}
+                  >
+                    {normalizeClosingFences(mainText)}
+                  </ReactMarkdown>
+                ) : null}
+
+                {dbPayload ? <DatabaseResultCard payload={dbPayload} /> : null}
+
+                {referencesText ? (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
+                    components={markdownComponents}
+                  >
+                    {normalizeClosingFences(referencesText)}
+                  </ReactMarkdown>
+                ) : null}
+              </>
+            ) : (
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
+                components={markdownComponents}
+              >
+                {normalizeClosingFences(typedContent)}
+              </ReactMarkdown>
+            )}
             {isTyping ? <span className="typing-cursor" aria-hidden="true" /> : null}
           </div>
           {hasVersions ? (

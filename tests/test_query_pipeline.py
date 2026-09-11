@@ -350,3 +350,47 @@ async def test_sql_only_no_documents_returns_table_direct(
     assert _sql_table_md() in result.answer
     assert result.model_used == "sql/direct"
     assert mock_router.chat.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_mode_sql_bypasses_vector_retrieval(mock_router, mock_store, mock_embeddings):
+    """When mode='sql', vector search is completely bypassed even if docs exist in store."""
+    sql_retrieved = _sql_retrieved()
+    mock_store.search_hybrid = AsyncMock(return_value=[_doc_retrieved()])
+
+    pipeline = QueryPipeline(
+        router=mock_router,
+        vector_store=mock_store,
+        embedding_service=mock_embeddings,
+    )
+    pipeline._retriever.retrieve = AsyncMock()
+    pipeline._sql_retriever.retrieve = AsyncMock(return_value=[sql_retrieved])
+
+    result = await pipeline.query("List all warehouses", mode="sql")
+
+    assert _sql_table_md() in result.answer
+    assert result.model_used in ("sql/direct", "fast_path/list")
+    assert pipeline._sql_retriever.retrieve.await_count == 1
+    assert pipeline._retriever.retrieve.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_mode_rag_bypasses_sql_retrieval(mock_router, mock_store, mock_embeddings):
+    """When mode='rag', SQL retriever is completely bypassed."""
+    doc_retrieved = _doc_retrieved()
+    mock_router.chat = AsyncMock(return_value="According to document policy, returns are 30 days.")
+
+    pipeline = QueryPipeline(
+        router=mock_router,
+        vector_store=mock_store,
+        embedding_service=mock_embeddings,
+    )
+    pipeline._sql_retriever.retrieve = AsyncMock()
+    pipeline._retriever.retrieve = AsyncMock(return_value=[doc_retrieved])
+    pipeline._reranker.rerank = AsyncMock(return_value=[doc_retrieved])
+
+    result = await pipeline.query("What is the return policy?", mode="rag")
+
+    assert "30 days" in result.answer
+    assert pipeline._sql_retriever.retrieve.await_count == 0
+    assert pipeline._retriever.retrieve.await_count == 1

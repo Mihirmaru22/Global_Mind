@@ -5,6 +5,7 @@ import { useAppStore } from '../store/store.js'
 import InputBox from './InputBox.jsx'
 import Loader from './Loader.jsx'
 import Message from './Message.jsx'
+import ModeSelector from './ModeSelector.jsx'
 import ProviderStatus from './ProviderStatus.jsx'
 
 export default function Chat() {
@@ -138,7 +139,12 @@ export default function Chat() {
           loading={isGenerating}
           disabled={isGenerating}
           cooldown={cooldown}
-          footer={<ProviderStatus />}
+          footer={
+            <div className="composer__footer-tools">
+              <ModeSelector />
+              <ProviderStatus />
+            </div>
+          }
         />
       </div>
     </section>
