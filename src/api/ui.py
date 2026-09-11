@@ -649,15 +649,35 @@ async def get_providers() -> dict[str, Any]:
     return {"providers": options, "default": default}
 
 
+_PROVIDER_METADATA = {
+    "gemini": {
+        "model": "gemini-3.5-flash",
+        "role": "General RAG & Vision",
+    },
+    "groq": {
+        "model": "qwen3.8-27b",
+        "role": "Fast Reasoning & Repair",
+    },
+    "nvidia_nim": {
+        "model": "nemotron-3.5",
+        "role": "Heavy Reasoning",
+    },
+    "openrouter": {
+        "model": "multi-model",
+        "role": "Fallback Chain",
+    },
+}
+
+
 @router.get("/providers/usage")
 async def get_provider_usage() -> dict[str, Any]:
     """Live per-provider quota usage for the settings usage meter.
 
-    Reads the process-wide RateLimiter (shared across all requests), so the
-    RPM/RPD figures reflect real, cumulative traffic rather than a single
-    request. Only providers with a configured API key are reported; each entry
-    carries used/limit for both the per-minute and per-day windows plus any
-    remaining 429 backoff.
+    Reads the process-wide RateLimiter (shared across all requests), so both
+    RPM/RPD (requests) and TPM/TPD (tokens) figures reflect real, cumulative
+    traffic rather than a single request. Only providers with a configured API
+    key are reported; each entry carries used/limit for both request and token
+    windows plus any remaining 429 backoff and role/model tags.
     """
     from src.core.rate_limiter import get_shared_rate_limiter
 
@@ -673,14 +693,21 @@ async def get_provider_usage() -> dict[str, Any]:
     providers = []
     for name in ordered:
         s = snapshot.get(name, {})
+        meta = _PROVIDER_METADATA.get(name, {})
         providers.append(
             {
                 "id": name,
                 "label": _PROVIDER_LABELS.get(name, name),
+                "model": meta.get("model", "auto"),
+                "role": meta.get("role", "LLM Worker"),
                 "rpmUsed": s.get("rpm_used", 0),
                 "rpmLimit": s.get("rpm_limit", 0),
                 "rpdUsed": s.get("rpd_used", 0),
                 "rpdLimit": s.get("rpd_limit", 0),
+                "tpmUsed": s.get("tpm_used", 0),
+                "tpmLimit": s.get("tpm_limit", 0),
+                "tpdUsed": s.get("tpd_used", 0),
+                "tpdLimit": s.get("tpd_limit", 0),
                 "backoffSeconds": s.get("backoff_seconds", 0),
             }
         )

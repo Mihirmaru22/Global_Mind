@@ -2035,15 +2035,25 @@ Schema:
             self.last_cot_plan = cot_plan
             if not sql or _ABSTAIN_RE.match(sql):
                 return ""
+            if not any(sql.strip().upper().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+                return ""
+
+            # Safeguard 1: Syntactic AST Check (Validate true SQL syntax)
+            try:
+                ast_check = sqlglot.parse_one(sql, read=self._dialect.sqlglot_dialect)
+                if not isinstance(ast_check, (exp.Select, exp.Union)):
+                    return ""
+            except Exception as ast_err:
+                logger.warning("Extracted SQL failed syntax parse: %s", ast_err)
+                return ""
 
             # Safeguard 2: Join Complexity Heuristic Check (Quality Gate)
             try:
-                ast_check = sqlglot.parse_one(sql, read=self._dialect.sqlglot_dialect)
                 tables_in_sql = list(ast_check.find_all(exp.Table))
                 if len(tables_in_sql) >= 3:
                     for join_node in ast_check.find_all(exp.Join):
                         if not join_node.args.get("on") and not join_node.args.get("using"):
-                            logger.warning("Multi-table query missing ON condition in JOIN — routing to Delta Repair.")
+                            logger.warning("Multi-table join missing ON condition in JOIN — routing to Delta Repair.")
                             repaired = await attempt_delta_repair(
                                 sql=sql,
                                 error_message="Multi-table join missing explicit ON condition connecting tables.",
