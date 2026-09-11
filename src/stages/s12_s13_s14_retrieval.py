@@ -269,12 +269,12 @@ class Generator:
         sql_payload = _extract_sql_payload(context_chunks)
         has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
 
-        # When SQL and doc chunks coexist, limit doc chunks to 2 to keep
-        # token count lean and let SQL results take precedence.
+        # When SQL and doc chunks coexist, provide up to 5 top document chunks
+        # to ensure multi-part technical and policy contexts are not starved.
         if sql_table_md and has_other_chunks:
             doc_chunks = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
             sql_result_chunks = [c for c in context_chunks if c.chunk.chunk_type == ChunkType.SQL_RESULT]
-            context_chunks = sql_result_chunks + doc_chunks[:2]
+            context_chunks = sql_result_chunks + doc_chunks[:5]
 
         # Fast Path Execution & Synthesis Bypass (Phase 12: gated behind fast_path_enabled)
         if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
@@ -472,12 +472,12 @@ Question: {query}"""
         sql_payload = _extract_sql_payload(context_chunks)
         has_other_chunks = any(c.chunk.chunk_type != ChunkType.SQL_RESULT for c in context_chunks)
 
-        # When SQL and doc chunks coexist, limit doc chunks to 2 to keep
-        # token count lean and let SQL results take precedence.
+        # When SQL and doc chunks coexist, provide up to 5 top document chunks
+        # to ensure multi-part technical and policy contexts are not starved.
         if sql_table_md and has_other_chunks:
             doc_chunks = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
             sql_result_chunks = [c for c in context_chunks if c.chunk.chunk_type == ChunkType.SQL_RESULT]
-            context_chunks = sql_result_chunks + doc_chunks[:2]
+            context_chunks = sql_result_chunks + doc_chunks[:5]
 
         # Fast Path Streaming Routing
         if sql_table_md and not has_other_chunks and is_feature_enabled("fast_path_enabled"):
@@ -896,9 +896,10 @@ _MODE_INSTRUCTIONS = {
     ),
     "both": (
         "The context contains BOTH live database results AND document passages. "
-        "For numerical/factual claims, prefer the database results (computed from "
-        "live data). For policies, explanations, or qualitative context, use the "
-        "documents. Cite both sources. If they contradict, note the discrepancy."
+        "The user query may be a hybrid or multi-part inquiry asking about both domains "
+        "(e.g., operational metrics/counts from the database, and policies, definitions, or entity facts from documents). "
+        "You MUST address BOTH aspects of the question clearly and symmetrically. Never omit the document question in favor of the database table, and never fabricate facts. "
+        "Cite document sources with their bracketed markers (e.g. [1]). If information for either half is missing, explicitly disclose that for that specific part while answering the other."
     ),
     "doc_only": "",  # existing prompt works as-is
 }

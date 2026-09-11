@@ -53,29 +53,92 @@ _DB_KEYWORDS = {
     "production", "manufacture", "manufacturing", "batch", "batches", "machine", "machines",
     "yield", "output", "plant", "apq", "ppq", "color", "colors", "colour", "colours",
     "unit", "units", "uom", "measurement", "packaging", "packagings", "packing",
-    "challan", "delivery", "dispatch", "shipment", "transporter", "vehicle", "driver", "dc",
+    "challan", "challans", "delivery", "dispatch", "shipment", "transporter", "vehicle", "driver", "dc",
     "invoice", "invoices", "proforma", "balance", "ledger", "credit", "debit", "party",
     "parties", "customer", "customers", "client", "clients", "lead", "leads", "inquiry",
-    "inquiries", "adjustment", "stock-out", "stockout", "stock-in", "stockin", "product", "products",
-    "so_no", "dc_no", "po_no", "batch_no",
+    "inquiries", "adjustment", "adjustments", "stock-out", "stockout", "stock-in", "stockin", "product", "products",
+    "category", "categories", "po", "po_no", "so_no", "dc_no", "pi", "pi_no", "batch_no",
+    "qty", "quantity", "adjusted",
 }
 
 _DOC_KEYWORDS = {
     "rag", "ocr", "parser", "parsers", "pipeline", "architecture", "embedding",
-    "embeddings", "rerank", "reranking", "chunk", "chunks", "chunking", "vector",
+    "embeddings", "rerank", "reranking", "chunk", "chunks", "chunking", "chunker", "vector",
     "policy", "policies", "procedure", "procedures", "sop", "sops", "guideline",
     "guidelines", "manual", "handbook", "contract", "contracts", "agreement",
     "apple", "iphone", "sec", "10-k", "10k", "filing", "filings", "annual report",
     "shareholder", "shareholders", "tax rate", "effective tax", "pdf", "docx", "doc", "document", "documents",
+    "ticker", "hq", "headquarters", "fte", "headcount", "employee", "employees", "layers", "layer",
+    "distribution", "indirect",
 }
+
+
+def _has_sql_signal(text: str) -> bool:
+    t_lower = text.lower()
+    tokens = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", t_lower))
+    if bool(tokens & _DB_KEYWORDS):
+        return True
+    if any(phrase in t_lower for phrase in ["due date", "po number", "po numbers", "stock-out", "stock-in", "on hand", "net sales"]):
+        return True
+    if bool(re.search(r"\b[a-zA-Z]+[0-9]+[a-zA-Z0-9_-]*\b", text)):
+        return True
+    return False
+
+
+def _has_doc_signal(text: str) -> bool:
+    t_lower = text.lower()
+    tokens = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", t_lower))
+    if bool(tokens & _DOC_KEYWORDS):
+        return True
+    if any(phrase in t_lower for phrase in [
+        "effective tax", "10-k", "10k", "tax rate", "net sales", "ticker symbol",
+        "headquarters", "fte employees", "chunker purpose", "rag layers", "fiscal year end",
+        "embedding model", "indirect distribution",
+    ]):
+        return True
+    return False
+
+
+def _decompose_hybrid_query(query: str) -> tuple[str, str]:
+    """Decompose a compound hybrid query into distinct (sql_query, doc_query).
+
+    If the query cannot be cleanly split or both halves refer to the same intent,
+    returns (query, query).
+    """
+    delimiters = [r"\s+/\s+", r"\s+\|\s+", r"\s+;\s+", r"\s+--\s+"]
+    for delim in delimiters:
+        parts = re.split(delim, query, maxsplit=1)
+        if len(parts) == 2:
+            p1, p2 = parts[0].strip(), parts[1].strip()
+            p1_sql, p1_doc = _has_sql_signal(p1), _has_doc_signal(p1)
+            p2_sql, p2_doc = _has_sql_signal(p2), _has_doc_signal(p2)
+            if p1_sql and p2_doc and not p1_doc:
+                return p1, p2
+            if p2_sql and p1_doc and not p2_doc:
+                return p2, p1
+            if p1_sql and p2_doc:
+                return p1, p2
+            if p2_sql and p1_doc:
+                return p2, p1
+
+    and_parts = re.split(r"\s+(?:and|&)\s+", query, flags=re.IGNORECASE)
+    if len(and_parts) == 2:
+        p1, p2 = and_parts[0].strip(), and_parts[1].strip()
+        p1_sql, p1_doc = _has_sql_signal(p1), _has_doc_signal(p1)
+        p2_sql, p2_doc = _has_sql_signal(p2), _has_doc_signal(p2)
+        if p1_sql and p2_doc and not p1_doc:
+            return p1, p2
+        if p2_sql and p1_doc and not p2_doc:
+            return p2, p1
+
+    return query, query
 
 
 def _classify_auto_mode(query: str) -> str:
     """Classify user query in Auto mode into 'sql', 'rag', or 'hybrid'."""
     q_lower = query.lower()
-    tokens = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", q_lower))
-    has_sql_signal = bool(tokens & _DB_KEYWORDS) or bool(re.search(r"\b[a-zA-Z]+[0-9]+[a-zA-Z0-9_-]*\b", query))
-    has_doc_signal = bool(tokens & _DOC_KEYWORDS) or any(k in q_lower for k in ["effective tax", "10-k", "10k", "tax rate"])
+    has_sql_signal = _has_sql_signal(query)
+    has_doc_signal = _has_doc_signal(query)
 
     if has_sql_signal and not has_doc_signal:
         return "sql"
@@ -210,6 +273,7 @@ class QueryPipeline:
                 effective_mode = _classify_auto_mode(search_query)
                 logger.info("Auto-classified query '%s' -> mode '%s'", search_query[:80], effective_mode)
 
+            doc_subquery = search_query
             if effective_mode == "sql":
                 logger.info("[Tokens: %d/%d] [Mode: SQL] Querying live database only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
                 sql_chunks = await self._sql_retriever.retrieve(search_query)
@@ -234,9 +298,12 @@ class QueryPipeline:
             else:
                 # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
                 logger.info("[Tokens: %d/%d] [Stage 12] Parallel SQL & Vector Retrieval", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                sql_coro = self._sql_retriever.retrieve(search_query)
+                sql_subquery, doc_subquery = _decompose_hybrid_query(search_query)
+                if sql_subquery != search_query or doc_subquery != search_query:
+                    logger.info("Decomposed hybrid query into SQL: '%s' | DOC: '%s'", sql_subquery, doc_subquery)
+                sql_coro = self._sql_retriever.retrieve(sql_subquery)
                 doc_coro = self._retriever.retrieve(
-                    search_query,
+                    doc_subquery,
                     top_k=settings.retrieval_top_k,
                     filters=filters,
                     exhaustive=exhaustive,
@@ -288,7 +355,7 @@ class QueryPipeline:
                 reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
             else:
                 logger.info("[Tokens: %d/%d] [Stage 13] Reranking", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
+                reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=settings.rerank_top_k)
                 reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
             reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
             reranked = _pin_sql_result_chunks(reranked, sql_chunks)
@@ -408,6 +475,7 @@ class QueryPipeline:
             effective_mode = _classify_auto_mode(search_query)
             logger.info("Auto-classified query '%s' -> mode '%s'", search_query[:80], effective_mode)
 
+        doc_subquery = search_query
         if effective_mode == "sql":
             yield _think("Understanding the question", "querying live database")
             sql_chunks = await self._sql_retriever.retrieve(search_query)
@@ -454,11 +522,14 @@ class QueryPipeline:
             yield _think("Searched the documents", doc_detail)
         else:
             yield _think("Understanding the question", "checking live database and documents in parallel")
+            sql_subquery, doc_subquery = _decompose_hybrid_query(search_query)
+            if sql_subquery != search_query or doc_subquery != search_query:
+                logger.info("Decomposed hybrid query into SQL: '%s' | DOC: '%s'", sql_subquery, doc_subquery)
 
-            sql_task = asyncio.create_task(self._sql_retriever.retrieve(search_query))
+            sql_task = asyncio.create_task(self._sql_retriever.retrieve(sql_subquery))
 
             vector_chunks = await self._retriever.retrieve(
-                search_query,
+                doc_subquery,
                 top_k=settings.retrieval_top_k,
                 filters=filters,
                 exhaustive=exhaustive,
@@ -516,11 +587,11 @@ class QueryPipeline:
             )
             return
 
-        # Stage 13 Ã¢â‚¬â€  Reranking. SQL chunks NEVER go here Ã¢â‚¬â€  solo or blended.
+        # Stage 13 — Reranking. SQL chunks NEVER go here — solo or blended.
         if exhaustive or not vector_chunks:
             reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
         else:
-            reranked = await self._reranker.rerank(search_query, vector_chunks, top_k=settings.rerank_top_k)
+            reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=settings.rerank_top_k)
             reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
         reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)

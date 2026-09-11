@@ -632,8 +632,9 @@ def _build_scoped_schema_fallback(full_schema: str, query: str) -> str:
         (["stock", "inventory", "warehouse", "carton", "on hand"], ["stock", "product", "product_color", "category"]),
         (["production", "manufacture", "batch", "machine", "yield", "output", "plant", "floor", "apq"], ["production", "actual_production", "machine", "product", "product_color"]),
         (["lead", "inquiry", "inquiries", "prospect", "followup", "deal", "pipeline"], ["lead", "lead_history", "users", "party"]),
-        (["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver"], ["delivery_challan", "delivery_challan_products", "party", "sales_order"]),
-        (["proforma", "invoice", "bill", "gst", "tax", "quotation"], ["proforma", "quotation", "party", "financial_year"]),
+        (["proforma", "invoice", "bill", "gst", "tax", "quotation", "pi", "pi_no", "gt/"], ["purchase", "party", "proforma", "quotation", "financial_year", "sales_order"]),
+        (["category", "categories"], ["category", "product", "product_type"]),
+        (["po", "po_no", "po number", "po numbers"], ["sales_order", "purchase", "party", "product", "financial_year"]),
         (["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"], ["party", "financial_year", "party_opening_balance", "sales_order", "receipt"]),
     ]
     for keywords, tbls in domain_rules:
@@ -1512,8 +1513,12 @@ class SQLRetriever:
                 glossary_tables.update(["lead", "lead_history", "users", "party"])
             if any(k in query_lower for k in ["dispatch", "delivery", "challan", "shipment", "transporter", "vehicle", "driver", "dc", "dc_no", "dc no", "dc number", "due date", "so_due_date"]):
                 glossary_tables.update(["delivery_challan", "delivery_challan_products", "party", "sales_order", "financial_year"])
-            if any(k in query_lower for k in ["invoice", "invoice count", "invoice_no", "invoices"]):
-                glossary_tables.update(["stock", "party", "financial_year"])
+            if any(k in query_lower for k in ["invoice", "invoice count", "invoice_no", "invoices", "pi", "pi_no", "gt/"]):
+                glossary_tables.update(["purchase", "party", "proforma", "financial_year", "sales_order", "stock"])
+            if any(k in query_lower for k in ["category", "categories"]):
+                glossary_tables.update(["category", "product", "product_type"])
+            if any(k in query_lower for k in ["po", "po_no", "po number", "po numbers", "party po", "customer po"]):
+                glossary_tables.update(["sales_order", "purchase", "party", "product", "financial_year"])
             if any(k in query_lower for k in ["proforma", "bill", "gst", "tax", "quotation"]):
                 glossary_tables.update(["proforma", "quotation", "party", "financial_year"])
             if any(k in query_lower for k in ["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"]):
@@ -1858,6 +1863,7 @@ Schema:
         rules: list[str] = [
             "Core SQL Generation & Schema Mapping Protocol:",
             "- Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at).",
+            "- Deduplication (DISTINCT): When looking up entity names, machine names, warehouses, or customer/vendor names from transactional or production tables (e.g. 'which machines produce product X', 'machines for product Y'), ALWAYS use SELECT DISTINCT (e.g. SELECT DISTINCT m.machine_name) or GROUP BY so that all unique entities appear within the row limit instead of repeating the same entity multiple times.",
             "- SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).",
             "- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.",
             "- Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.",
@@ -1880,7 +1886,12 @@ Schema:
             )
             rules.append(
                 "- Machine & Product Production: Product names/codes (e.g. 'CAP03', 'CHP06070110-INNER') are stored in `product.product_name` (NEVER in `production.batch_no` or `stock.batch_no`). "
-                "To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `m.machine_name`."
+                "To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `SELECT DISTINCT m.machine_name`."
+            )
+        if any(k in q for k in ["invoice", "gt/", "pi_no", "pi number", "purchase invoice"]):
+            rules.append(
+                "- Invoices & Purchase Invoices (PI): Purchase invoice numbers (e.g. 'GT/0091', 'PI-...') are stored in the `purchase` table with column `purchase.pi_no`. "
+                "To find the party or details for an invoice like 'GT/0091', ALWAYS query: `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.pi_no LIKE '%<invoice_no>%' AND pur.deleted_at IS NULL AND p.deleted_at IS NULL`. Return `p.party_name AS customer_or_supplier_name`."
             )
 
         # Product Units of Measure
