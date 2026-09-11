@@ -492,6 +492,33 @@ def _get_raw_behavioral_atlas() -> dict[str, Any]:
     return _BEHAVIORAL_ATLAS_CACHE
 
 
+def detect_soft_delete_intent(query: str) -> str:
+    """Detect record status / archival intent from user query:
+    - 'DELETED_ONLY': Explicitly requests deleted / removed / dropped / gone items.
+    - 'INCLUDE_ARCHIVED': Explicitly requests archived / history / audit / past items (both active and deleted).
+    - 'ACTIVE_ONLY': Standard operational query (default) or explicitly asks for active / current / present / live / existing.
+    """
+    q = query.lower()
+    has_deleted = bool(re.search(r"\b(deleted|removed|dropped|gone)\b", q))
+    
+    # Exclude relative time windows like "past 30 days", "past 6 months", "past year"
+    q_no_time_window = re.sub(
+        r"\bpast\s+(?:few\s+)?(?:\d+\s+)?(?:days?|weeks?|months?|quarters?|years?)\b",
+        "",
+        q
+    )
+    has_archival = bool(re.search(r"\b(archived|history|audit|historical|past)\b", q_no_time_window))
+    has_active = bool(re.search(r"\b(active|current|present|live|existing)\b", q))
+
+    if has_deleted and has_active:
+        return "INCLUDE_ARCHIVED"
+    if has_deleted:
+        return "DELETED_ONLY"
+    if has_archival:
+        return "INCLUDE_ARCHIVED"
+    return "ACTIVE_ONLY"
+
+
 def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> str:
     """Extract dynamically filtered behavioral rules and formulas for active tables."""
     atlas_data = _get_raw_behavioral_atlas()
@@ -500,6 +527,8 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
     
     tables = atlas_data["tables"]
     lines: list[str] = []
+    
+    soft_intent = detect_soft_delete_intent(query)
     
     # Cap to at most 4 active tables to strictly avoid LLM payload/TPM limits (under 8000 TPM)
     active_tables = sorted(schema_tables)[:4]
@@ -510,6 +539,14 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
         t_data = tables[t_name]
         lines.append(f"### Table `{t_name}`: {t_data.get('table_meaning', '')}")
         for r in t_data.get("table_behavioral_rules", [])[:2]:
+            if "deleted_at" in r.lower():
+                if soft_intent == "DELETED_ONLY":
+                    r = re.sub(r"alias\.deleted_at\s+IS\s+NULL", f"{t_name}.deleted_at IS NOT NULL", r, flags=re.IGNORECASE)
+                    r = re.sub(r"\bdeleted_at\s+IS\s+NULL\b", "deleted_at IS NOT NULL", r, flags=re.IGNORECASE)
+                    r = re.sub(r"exclude soft-deleted", "include only soft-deleted", r, flags=re.IGNORECASE)
+                    r += " (OVERRIDE: User explicitly requested DELETED records; use IS NOT NULL)"
+                elif soft_intent == "INCLUDE_ARCHIVED":
+                    r = f"Omit `{t_name}.deleted_at` filter to return all records (both active and deleted/historical)."
             lines.append(f"  - Rule: {r}")
         for w in t_data.get("join_warnings", [])[:1]:
             lines.append(f"  - ⚠️ Warning: {w}")
@@ -517,9 +554,14 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
         # List columns with rules or formulas (max 4 per table)
         col_count = 0
         for c_name, c_data in t_data.get("columns", {}).items():
-            c_rules = c_data.get("behavioral_rules", [])
+            c_rules = list(c_data.get("behavioral_rules", []))
             formula = c_data.get("aggregation_formula")
             c_warns = c_data.get("join_warnings", [])
+            if c_name == "deleted_at":
+                if soft_intent == "DELETED_ONLY":
+                    c_rules = ["Filter WHERE deleted_at IS NOT NULL when targeting deleted records."]
+                elif soft_intent == "INCLUDE_ARCHIVED":
+                    c_rules = ["Omit deleted_at filter to return both active and historical/deleted records."]
             if c_rules or formula or c_warns:
                 parts = []
                 if c_rules:
@@ -655,6 +697,9 @@ def extract_analytical_intent(query: str) -> dict[str, Any]:
         intent["temporal_scope"] = "ALL_TIME"
     else:
         intent["temporal_scope"] = "SPECIFIC_PERIOD"
+
+    # Record Status & Dynamic Soft-Delete Intent
+    intent["soft_delete_intent"] = detect_soft_delete_intent(query)
 
     return intent
 
@@ -1738,6 +1783,20 @@ class SQLRetriever:
                 "- Temporal Scope: ALL-TIME / CUMULATIVE (DO NOT filter by `financial_year.current_year = 'Y'`. Sum/aggregate across ALL available years!)"
             )
 
+        soft_intent = intent.get("soft_delete_intent", "ACTIVE_ONLY")
+        if soft_intent == "DELETED_ONLY":
+            intent_summary_lines.append(
+                "- Record Status / Soft-Delete Scope: EXPLICIT DELETED RECORDS (User explicitly requested deleted/removed records. Filter specifically for deleted records using `WHERE alias.deleted_at IS NOT NULL` or omit `deleted_at IS NULL`. DO NOT exclude deleted records!)"
+            )
+        elif soft_intent == "INCLUDE_ARCHIVED":
+            intent_summary_lines.append(
+                "- Record Status / Soft-Delete Scope: AUDIT / HISTORY / ARCHIVED (User explicitly requested history, audit trail, or archived records. DO NOT add `deleted_at IS NULL` filter! Allow all records—both active and deleted—to be returned.)"
+            )
+        else:
+            intent_summary_lines.append(
+                "- Record Status / Soft-Delete Scope: ACTIVE OPERATIONAL (Default rule. Filter out soft-deleted records using `WHERE alias.deleted_at IS NULL` on all tables with a deleted_at column.)"
+            )
+
         intent_section = (
             "\nExtracted Business Intent:\n" + "\n".join(intent_summary_lines) + "\n"
             if intent_summary_lines
@@ -1756,7 +1815,10 @@ IMPORTANT: Output ONLY the final SQL query in a ```sql ... ``` code block. Stric
 Rules:
 - Read-Only: SELECT statements only.
 - Mixed / Multi-part queries: If the user question contains both document/system questions (e.g. OCR, RAG architecture, policies, tax rates, general docs) and database questions (e.g. products, machines, orders, stock, production), IGNORE the document/system questions and generate SQL ONLY for the database portion! Only respond with NO_SQL if NO part of the question relates to the database schema.
-- Soft Delete: Filter out soft-deleted records (WHERE alias.deleted_at IS NULL) on all tables with a deleted_at column.
+- Dynamic Soft-Delete & Record Status:
+  * Default Rule (Active Operational Data): For standard operational queries, or when asking for 'active', 'current', 'present', 'live', or 'existing' data, ALWAYS filter out soft-deleted records by adding `alias.deleted_at IS NULL` on all tables with a `deleted_at` column.
+  * Exception Rule (Explicit Deleted Records): If the user query explicitly mentions 'deleted', 'removed', 'dropped', or 'gone', DO NOT add the `deleted_at IS NULL` filter. Instead, filter specifically for deleted records using `WHERE alias.deleted_at IS NOT NULL` (or omit `deleted_at IS NULL` for joined lookup entities).
+  * Exception Rule (Audit / History / Archived Data): If the user query explicitly mentions 'archived', 'history', 'audit', or 'past records', DO NOT add the `deleted_at IS NULL` filter. Allow all records (both active and deleted) to be returned.
 - Casting: Use CAST(col AS DECIMAL(10,2)) for numeric operations on VARCHAR columns (e.g. stock.qty).
 - Aliases: Use descriptive aliases (e.g. AS customer_name, AS total_revenue). Never return raw IDs without names.
 - Status Flags: Active='Y', Inactive='N'. Stock booked='B', dispatched='D'.
@@ -1924,12 +1986,31 @@ Schema:
         q = query.lower()
         tables = set(t.lower() for t in schema_tables)
 
+        soft_intent = detect_soft_delete_intent(query)
+        if soft_intent == "DELETED_ONLY":
+            soft_delete_rule = (
+                "- Dynamic Soft-Delete Rule (EXPLICIT DELETED QUERY): The user is explicitly requesting DELETED or REMOVED records! "
+                "DO NOT add `alias.deleted_at IS NULL`. Instead, add `WHERE alias.deleted_at IS NOT NULL` on the target table(s) with deleted_at. "
+                "This strictly overrides any default `deleted_at IS NULL` rules or example templates below."
+            )
+        elif soft_intent == "INCLUDE_ARCHIVED":
+            soft_delete_rule = (
+                "- Dynamic Soft-Delete Rule (AUDIT / HISTORY QUERY): The user is querying audit history, past records, or archived data! "
+                "DO NOT add `alias.deleted_at IS NULL`. Return ALL records (both active and deleted) without soft-delete restriction. "
+                "This strictly overrides any default `deleted_at IS NULL` rules or example templates below."
+            )
+        else:
+            soft_delete_rule = (
+                "- Dynamic Soft-Delete Rule: For standard operational queries (active/current data), ALWAYS filter soft-deleted records: "
+                "WHERE alias.deleted_at IS NULL on all tables with deleted_at."
+            )
+
         rules: list[str] = [
             "Core SQL Generation & Schema Mapping Protocol:",
             "- Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at).",
             "- Deduplication (DISTINCT): When looking up entity names, machine names, warehouses, or customer/vendor names from transactional or production tables (e.g. 'which machines produce product X', 'machines for product Y'), ALWAYS use SELECT DISTINCT (e.g. SELECT DISTINCT m.machine_name) or GROUP BY so that all unique entities appear within the row limit instead of repeating the same entity multiple times.",
             "- SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).",
-            "- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.",
+            soft_delete_rule,
             "- Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.",
             "- Fuzzy LIKE Filtering: Always filter descriptive text columns (categories, products, colors, names) using `LIKE '%<term>%'` rather than strict `=`. For categories with spelling variations like 'CHANGABLE PACK', match `c.category_name LIKE '%CHANG%PACK%'` (the database category is 'CHANGEABLE PACK').",
             "- Temporal Scope & Financial Year Filtering: ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'. If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years. When the user DOES explicitly request the current financial year, NEVER filter using `YEAR(date) = YEAR(CURDATE())`; ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`."
@@ -1953,10 +2034,21 @@ Schema:
                 "To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `SELECT DISTINCT m.machine_name`."
             )
         if any(k in q for k in ["invoice", "gt/", "pi_no", "pi number", "purchase invoice"]):
-            rules.append(
-                "- Invoices & Purchase Invoices (PI): Purchase invoice numbers (e.g. 'GT/0091', 'PI-...') are stored in the `purchase` table with column `purchase.pi_no`. "
-                "To find the party or details for an invoice like 'GT/0091', ALWAYS query: `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.pi_no LIKE '%<invoice_no>%' AND pur.deleted_at IS NULL AND p.deleted_at IS NULL`. Return `p.party_name AS customer_or_supplier_name`."
-            )
+            if soft_intent == "DELETED_ONLY":
+                rules.append(
+                    "- Invoices & Purchase Invoices (PI) [DELETED RECORDS]: Purchase invoice numbers are stored in `purchase.pi_no` (and invoices in `stock` where `stock_type = 'PI'`). "
+                    "For DELETED invoices, query `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.deleted_at IS NOT NULL AND p.deleted_at IS NULL` (or `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NOT NULL AND p.deleted_at IS NULL`). "
+                    "DO NOT filter `pur.deleted_at IS NULL` or `s.deleted_at IS NULL`!"
+                )
+            elif soft_intent == "INCLUDE_ARCHIVED":
+                rules.append(
+                    "- Invoices & Purchase Invoices (PI) [HISTORY/AUDIT]: Query `purchase pur JOIN party p ON pur.party_id = p.id` (or `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI'`) without `deleted_at IS NULL` on invoice tables to include all historical records."
+                )
+            else:
+                rules.append(
+                    "- Invoices & Purchase Invoices (PI): Purchase invoice numbers (e.g. 'GT/0091', 'PI-...') are stored in the `purchase` table with column `purchase.pi_no`. "
+                    "To find the party or details for an invoice like 'GT/0091', ALWAYS query: `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.pi_no LIKE '%<invoice_no>%' AND pur.deleted_at IS NULL AND p.deleted_at IS NULL`. Return `p.party_name AS customer_or_supplier_name`."
+                )
 
         # Product Units of Measure
         if "unit" in tables or any(k in q for k in ["unit", "uom", "measurement"]):
@@ -2020,9 +2112,21 @@ Schema:
 
         # Invoices vs Proforma
         if "stock" in tables or "proforma" in tables or any(k in q for k in ["invoice", "invoices", "invoice_no", "proforma", "pi"]):
-            rules.append(
-                "- Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies 'proforma'."
-            )
+            if soft_intent == "DELETED_ONLY":
+                rules.append(
+                    "- Invoices vs Proforma [DELETED RECORDS]: Actual invoice details are stored in the `stock` table where `stock.stock_type = 'PI'`, or in `purchase` for purchase invoices. "
+                    "For questions asking about DELETED invoices: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NOT NULL AND p.deleted_at IS NULL` (or from `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.deleted_at IS NOT NULL AND p.deleted_at IS NULL`). "
+                    "(2) DO NOT add `deleted_at IS NULL` on the invoice table; use `deleted_at IS NOT NULL`!"
+                )
+            elif soft_intent == "INCLUDE_ARCHIVED":
+                rules.append(
+                    "- Invoices vs Proforma [HISTORY/AUDIT]: Actual invoice details are in `stock` (where `stock_type = 'PI'`) or `purchase`. "
+                    "For history/audit queries, omit `deleted_at IS NULL` on invoice tables to include all historical records."
+                )
+            else:
+                rules.append(
+                    "- Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies 'proforma'."
+                )
 
         # Party & Leads
         if "party" in tables or "lead" in tables or any(k in q for k in ["party", "customer", "supplier", "vendor", "contact", "lead", "inquiry"]):
@@ -2045,6 +2149,17 @@ Schema:
                 "- Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries aggregated per `(product_id, product_color_id)` before joining to `product p`."
             )
 
+        if soft_intent == "DELETED_ONLY":
+            rules.append(
+                "- ⚠️ CRITICAL INTENT OVERRIDE: The user explicitly requested DELETED records. "
+                "In your generated query, DO NOT use `deleted_at IS NULL` on the requested entity. Use `WHERE <alias>.deleted_at IS NOT NULL`."
+            )
+        elif soft_intent == "INCLUDE_ARCHIVED":
+            rules.append(
+                "- ⚠️ CRITICAL INTENT OVERRIDE: The user explicitly requested AUDIT / HISTORY / ARCHIVED records. "
+                "In your generated query, DO NOT use `deleted_at IS NULL`. Allow all records (both active and deleted) to be returned."
+            )
+
         return "\n".join(rules)
 
     _OUTPUT_READABILITY_RULES = """
@@ -2056,7 +2171,7 @@ Core SQL Generation & Schema Mapping Protocol:
   4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly: `stock_adjustment.category_id = category.id`; `stock_adjustment.product_id = product.id`; `stock_adjustment.product_color_id = product_color.id`; `packagings.warehouse_id = warehouse.id`; `delivery_challan.sales_order_id = sales_order.id` for due dates; `delivery_challan.party_id = party.id`; `production.product_color_id = product_color.id`; `production.product_id = product.id`; `production.machine_id = machine.id`; `stock.party_id = party.id` for invoices).
 - SELECT read-only queries only.
 - Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at). Never return raw foreign key ID columns without their human-readable name (use AS descriptive_alias).
-- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.
+- Dynamic Soft-Delete Filtering: For standard operational queries, always filter soft-deleted records (WHERE alias.deleted_at IS NULL). If the user query explicitly mentions 'deleted', 'removed', or 'dropped', filter WHERE alias.deleted_at IS NOT NULL; if asking for 'history', 'audit', or 'archived', omit the deleted_at filter to return all records.
 - Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.
 - In party table, customer/supplier name is `party.party_name` (NEVER party.name). Contact persons are `party.contact_person1`.
 - In lead table, search `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.

@@ -206,3 +206,89 @@ def test_enable_deep_rerank_config_toggle():
     assert settings.generation_context_k == 10
 
 
+def test_detect_soft_delete_intent():
+    from src.stages.s12b_sql_retrieval import detect_soft_delete_intent
+    assert detect_soft_delete_intent("What is the sales order due date for HM TOOLS?") == "ACTIVE_ONLY"
+    assert detect_soft_delete_intent("Show me active products") == "ACTIVE_ONLY"
+    assert detect_soft_delete_intent("Show me deleted invoices for party X.") == "DELETED_ONLY"
+    assert detect_soft_delete_intent("Show me removed products") == "DELETED_ONLY"
+    assert detect_soft_delete_intent("Give me the audit history of product Y.") == "INCLUDE_ARCHIVED"
+    assert detect_soft_delete_intent("Audit trail of removed products") == "DELETED_ONLY"
+    assert detect_soft_delete_intent("Show sales orders in the past 30 days") == "ACTIVE_ONLY"
+    assert detect_soft_delete_intent("Show past records of invoices") == "INCLUDE_ARCHIVED"
+    assert detect_soft_delete_intent("Show archived purchase orders") == "INCLUDE_ARCHIVED"
+
+
+def test_soft_delete_prompt_scoping():
+    from src.stages.s12b_sql_retrieval import SQLRetriever, _build_behavioral_atlas_for_query
+    
+    # Active query prompt rules
+    active_rules = SQLRetriever._get_scoped_readability_rules("What is the sales order due date for HM TOOLS?", ["sales_order", "party"])
+    assert "WHERE alias.deleted_at IS NULL" in active_rules
+    assert "EXPLICIT DELETED QUERY" not in active_rules
+    
+    # Deleted query prompt rules
+    deleted_rules = SQLRetriever._get_scoped_readability_rules("Show me deleted invoices for party X.", ["stock", "purchase", "party"])
+    assert "EXPLICIT DELETED QUERY" in deleted_rules
+    assert "WHERE alias.deleted_at IS NOT NULL" in deleted_rules
+    assert "DELETED RECORDS" in deleted_rules
+    
+    # History query prompt rules
+    history_rules = SQLRetriever._get_scoped_readability_rules("Give me the audit history of product Y.", ["product"])
+    assert "AUDIT / HISTORY QUERY" in history_rules
+    assert "Return ALL records (both active and deleted) without soft-delete restriction" in history_rules
+    
+    # Atlas rule adaptation
+    atlas_deleted = _build_behavioral_atlas_for_query({"product"}, "Show me deleted products")
+    assert "deleted_at IS NOT NULL" in atlas_deleted
+    
+    atlas_history = _build_behavioral_atlas_for_query({"product"}, "Give me the audit history of product Y.")
+    assert "Omit `product.deleted_at` filter" in atlas_history
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_active_sql_gen():
+    from src.core.provider_client import ProviderRouter
+    from src.stages.s12b_sql_retrieval import SQLRetriever
+    from src.utils.query_budget import get_or_create_budget_controller
+    get_or_create_budget_controller(query_id="test_active_sql", force_new=True)
+    router = ProviderRouter()
+    retriever = SQLRetriever(router=router)
+    q = "What is the sales order due date for HM TOOLS?"
+    schema = await retriever._get_schema(q)
+    sql = await retriever._generate_sql(q, schema)
+    if sql:
+        assert "deleted_at is null" in sql.lower(), f"Active query must filter deleted_at IS NULL: {sql}"
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_deleted_sql_gen():
+    from src.core.provider_client import ProviderRouter
+    from src.stages.s12b_sql_retrieval import SQLRetriever
+    from src.utils.query_budget import get_or_create_budget_controller
+    get_or_create_budget_controller(query_id="test_deleted_sql", force_new=True)
+    router = ProviderRouter()
+    retriever = SQLRetriever(router=router)
+    q = "Show me deleted invoices for party X."
+    schema = await retriever._get_schema(q)
+    sql = await retriever._generate_sql(q, schema)
+    if sql:
+        assert "deleted_at is not null" in sql.lower() or "s.deleted_at is null" not in sql.lower(), f"Deleted query should not filter s.deleted_at IS NULL: {sql}"
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_history_sql_gen():
+    from src.core.provider_client import ProviderRouter
+    from src.stages.s12b_sql_retrieval import SQLRetriever
+    from src.utils.query_budget import get_or_create_budget_controller
+    get_or_create_budget_controller(query_id="test_history_sql", force_new=True)
+    router = ProviderRouter()
+    retriever = SQLRetriever(router=router)
+    q = "Give me the audit history of product Y."
+    schema = await retriever._get_schema(q)
+    sql = await retriever._generate_sql(q, schema)
+    if sql:
+        assert "deleted_at is null" not in sql.lower(), f"History query should not filter deleted_at IS NULL: {sql}"
+
+
+

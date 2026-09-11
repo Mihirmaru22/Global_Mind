@@ -14,7 +14,7 @@
       "table_behavioral_rules": [
         "Color Foreign Key: In actual_production table, `actual_production.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON actual_production.product_color_id = pc.id` (NEVER join `color` table).",
         "Actual Output Metric: `apq` represents Actual Production Quantity. Always use `SUM(apq)` to compute total manufactured yield.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "In actual_production table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
@@ -265,7 +265,7 @@
       "table_behavioral_rules": [
         "Category Name: Stored in `category_name`.",
         "Active Status Enum: `status = 'Y'` means Active, `status = 'N'` means Inactive.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -358,7 +358,7 @@
       "domain": "Master Data",
       "table_meaning": "Color operational records in Master Data.",
       "table_behavioral_rules": [
-        "MUST always append `color.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `color.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -598,7 +598,7 @@
         "Direct Party Link: `delivery_challan.party_id` connects DIRECTLY to `party.id`. For queries asking for delivery challans or DC numbers for a customer/party, join `party p ON delivery_challan.party_id = p.id`.",
         "Logistics Details: Carrier is `transport_name`, driver is `driver_name`, vehicle is `vehicle_no`.",
         "Sales Order Linkage: Links to `sales_order` via `sales_order_id`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT use `transporter_name` or `so_id`; use `transport_name` and `sales_order_id`."
@@ -770,7 +770,7 @@
       "table_meaning": "Individual line items and quantities shipped on a delivery challan.",
       "table_behavioral_rules": [
         "Dispatched Quantity: Stored in `qty`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -914,7 +914,7 @@
       "domain": "Sales",
       "table_meaning": "Delivery Dispatch Attachment operational records in Sales.",
       "table_behavioral_rules": [
-        "MUST always append `delivery_dispatch_attachment.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `delivery_dispatch_attachment.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -995,7 +995,7 @@
       "domain": "Production",
       "table_meaning": "Denomination Production operational records in Production.",
       "table_behavioral_rules": [
-        "MUST always append `denomination_production.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `denomination_production.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -1228,7 +1228,7 @@
       "table_meaning": "Fiscal accounting year master records.",
       "table_behavioral_rules": [
         "Current Year Enum: `current_year = 'Y'` identifies the active current financial year.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -1348,7 +1348,7 @@
         "Follow-up Medium Typo: Column is named `followup_medimum` (with an extra 'm'). Allowed values: 'Email', 'Call', 'PersonalMeeting', 'WhatsappMessage'.",
         "Open Leads Follow-up Rule: For open leads waiting for follow-up, do NOT restrict to >= CURDATE() unless 'future' or 'upcoming' is explicitly requested; filter by `status IN ('Pending', 'In-Progress') AND next_followup_date IS NOT NULL`.",
         "Follow-up Inquiries by Year: When asked for follow-ups in a specific year (e.g. 2023), filter on `YEAR(lead.next_followup_date) = YYYY`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "To get the sales rep name, join `users ON lead.lead_assign_to = users.id` (do not join `party`).",
@@ -1684,7 +1684,7 @@
       "domain": "Party & CRM",
       "table_meaning": "Lead Attachment operational records in Party & CRM.",
       "table_behavioral_rules": [
-        "MUST always append `lead_attachment.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `lead_attachment.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -1759,7 +1759,7 @@
       "table_meaning": "CRM activity logs and interaction remarks for each lead.",
       "table_behavioral_rules": [
         "Links to `lead` via `lead_id = lead.id`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -1889,7 +1889,7 @@
       "domain": "Party & CRM",
       "table_meaning": "Lead Interested operational records in Party & CRM.",
       "table_behavioral_rules": [
-        "MUST always append `lead_interested.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `lead_interested.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -1977,7 +1977,7 @@
       "domain": "Party & CRM",
       "table_meaning": "Lead Product Sample Detail operational records in Party & CRM.",
       "table_behavioral_rules": [
-        "MUST always append `lead_product_sample_detail.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `lead_product_sample_detail.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -2267,7 +2267,7 @@
       "table_behavioral_rules": [
         "Machine Name: Stored in `machine_name`.",
         "Active Status Enum: `status = 'Y'` means Active/Operational, `status = 'N'` means Inactive.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -2438,7 +2438,7 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Packaging operational records in Packaging & Stock.",
       "table_behavioral_rules": [
-        "MUST always append `packaging.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `packaging.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -2528,7 +2528,7 @@
       "table_behavioral_rules": [
         "Carton Count vs Carton Quantity: Each row in `packagings` represents ONE physical carton box. `COUNT(pk.id)` or `COUNT(*)` returns the number of physical boxes (e.g. 412 cartons). `pk.qty` stores the product quantity inside that carton box. Therefore, `SUM(pk.qty)` returns the TOTAL CARTON QUANTITY (e.g. 152,354 units). When asked for 'carton quantity', 'total carton quantity', or 'quantity stored in warehouse', ALWAYS use `SUM(pk.qty)`, NEVER `COUNT(*)`!",
         "Warehouse Matching: Warehouse codes (e.g. 'pm2bzd19') belong to `warehouse.warehouse_code` and warehouse names (e.g. '110') belong to `warehouse.location_name`. ALWAYS join `warehouse w ON packagings.warehouse_id = w.id` and filter `w.warehouse_code = '<code_or_name>'` or `w.location_name = '<name>'`. Do NOT filter `packagings.location_code` for warehouse codes; `location_code` only stores internal bin/rack shelf identifiers.",
-        "MUST always append `packagings.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `packagings.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -2829,7 +2829,7 @@
       "domain": "Packaging & Stock",
       "table_meaning": "Packaging Products operational records in Packaging & Stock.",
       "table_behavioral_rules": [
-        "MUST always append `packaging_products.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `packaging_products.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -2985,7 +2985,7 @@
         "To find Suppliers/Vendors: Disambiguate by joining to `purchase` (`party.id = purchase.party_id`).",
         "Active Status Enum: `status = 'Y'` means Active, `status = 'N'` means Inactive.",
         "Customer/Supplier Name: Always select `party.party_name` (do NOT use `name` or `customer_name`).",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT join to the `cities` table; the `cities` table is empty (0 rows). Query `party.city` directly as a text string."
@@ -3297,7 +3297,7 @@
       "table_meaning": "Party Followup History operational records in Party & CRM.",
       "table_behavioral_rules": [
         "Tracks post-sales relationship follow-ups for registered customer parties. For sales leads and company inquiries with follow-ups, use the `lead` table (`lead.next_followup_date`).",
-        "MUST always append `party_followup_history.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `party_followup_history.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -3399,7 +3399,7 @@
       "domain": "Party & CRM",
       "table_meaning": "Party Opening Balance operational records in Party & CRM.",
       "table_behavioral_rules": [
-        "MUST always append `party_opening_balance.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `party_opening_balance.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -3661,7 +3661,7 @@
         "Minimum Stock Threshold: Stored in `minimum_stock`.",
         "Finished Goods Enum: `product_type_id = 2` designates Finished Goods.",
         "Active Status Enum: `status = 'Y'` means Active, `status = 'N'` means Inactive.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -3780,7 +3780,7 @@
         "Color Foreign Key: In production table, `production.product_color_id` links directly to `product_color.id` (table `product_color`, column `product_color.color`). ALWAYS join `product_color pc ON production.product_color_id = pc.id` (NEVER join `color` table).",
         "Production Quantity: `production.qty` is the primary production and batch quantity. For general queries asking for production quantity, batch quantity, or quantity produced for a batch or product, use `production.qty`. Do NOT use `actual_production.apq` unless the user explicitly asks for APQ / actual floor output vs target.",
         "Target vs Actual: If explicitly comparing planned vs actual, `production.qty` represents the batch target quantity, and `actual_production.apq` represents recorded APQ output. Never use `actual_production.apq` alone for general production quantity questions as many batches only have quantity in `production.qty`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "In production table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
@@ -3966,7 +3966,7 @@
         "Primary table for product color variants. Target of foreign key `product_color_id` in production, stock, and sales_order_products.",
         "Color Name: Stored in `product_color.color` (e.g. 'RED', 'WHITE').",
         "Product Linkage: `product_id` links to `product.id`.",
-        "MUST always append `product_color.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `product_color.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -4075,7 +4075,7 @@
       "domain": "Production",
       "table_meaning": "Product Opening Stock operational records in Production.",
       "table_behavioral_rules": [
-        "MUST always append `product_opening_stock.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `product_opening_stock.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -4213,7 +4213,7 @@
       "table_meaning": "Product Packaging Specification / BOM details (pieces per carton). NOT for stock adjustments.",
       "table_behavioral_rules": [
         "NOT A Stock Adjustment Table: Do NOT use this table for stock adjustments, stock write-offs, or adjusted quantity. Use `stock_adjustment` instead.",
-        "MUST always append `product_packaging_detail.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `product_packaging_detail.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT query this table for stock adjustments or stock-out / stock-in operations; use `stock_adjustment`."
@@ -4303,7 +4303,7 @@
       "domain": "Master Data",
       "table_meaning": "Product Type operational records in Master Data.",
       "table_behavioral_rules": [
-        "MUST always append `product_type.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `product_type.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -4380,7 +4380,7 @@
         "NON-EXISTENT STATUS: `proforma` has NO `status` column. Do not filter by status on `proforma`.",
         "Total Invoiced Revenue: Stored in `grand_total`.",
         "Total Tax Amount: Stored in `gst_amount`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT generate `WHERE proforma.status = ...`; no status column exists."
@@ -4586,7 +4586,7 @@
       "domain": "Sales",
       "table_meaning": "Proforma Products operational records in Sales.",
       "table_behavioral_rules": [
-        "MUST always append `proforma_products.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `proforma_products.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -4788,7 +4788,7 @@
       "table_behavioral_rules": [
         "NON-EXISTENT STATUS: `purchase` has NO `status` column. Do not filter by status on `purchase`.",
         "Supplier Linkage: Links to `party` via `party_id` where `party.profile_type = 'Party'`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT generate `WHERE purchase.status = ...`; no status column exists."
@@ -4913,7 +4913,7 @@
       "domain": "Purchase",
       "table_meaning": "Purchase Attachment operational records in Purchase.",
       "table_behavioral_rules": [
-        "MUST always append `purchase_attachment.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `purchase_attachment.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -4996,7 +4996,7 @@
       "table_behavioral_rules": [
         "Purchased Quantity: Stored in `qty`.",
         "Purchased Value Formula: Calculate as `SUM(pp.qty * p.rate)` by joining `product p ON pp.product_id = p.id`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -5108,7 +5108,7 @@
       "table_meaning": "Sales price quotes provided to prospective or existing buyers.",
       "table_behavioral_rules": [
         "NON-EXISTENT STATUS: `quotation` has NO `status` column. Do not filter by status on `quotation`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT generate `WHERE quotation.status = ...`; no status column exists."
@@ -5240,7 +5240,7 @@
       "domain": "Sales",
       "table_meaning": "Quotation Products operational records in Sales.",
       "table_behavioral_rules": [
-        "MUST always append `quotation_products.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `quotation_products.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -5489,7 +5489,7 @@
         "NON-EXISTENT COLUMN: `sales_order` has NO total amount column. You MUST calculate order totals by joining `sales_order_products` and `product` via SUM(sop.qty * p.rate).",
         "Financial Year Reset: `sales_order_no` is NOT globally unique; it repeats across different financial years (e.g. Sales Order 405 exists in 2022-2024, 2024-2025, and 2025-2026 for different customers). When queried for a specific order number without a year specified, ALWAYS order by `sales_order_date DESC LIMIT 1` to target the latest record, and join `financial_year fy ON sales_order.financial_id = fy.id` to include `fy.fyear`.",
         "Customer Linkage: `party_id` links to `party.id`. Always join `party` to get `party.party_name`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause.",
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records).",
         "ONLY when explicitly querying the current financial year ('current', 'this year', 'active'), join `financial_year` and filter `financial_year.current_year = 'Y'`. For all-time, cumulative, or unconstrained queries, DO NOT filter by current_year."
       ],
       "join_warnings": [
@@ -5656,7 +5656,7 @@
       "table_behavioral_rules": [
         "MUST use CAST(qty AS DECIMAL(10,2)) before ANY mathematical aggregation or comparison.",
         "Line Value Calculation: Calculate line total as `sop.qty * p.rate` by joining `product p ON sop.product_id = p.id`.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Always join `product` to retrieve item name and unit price (`product.rate`)."
@@ -5969,7 +5969,7 @@
         "Batch No vs Product Name: `stock.batch_no` contains numeric lot numbers (e.g. '739', '820'). Product SKU codes (e.g. 'CHP14065105-OUTER') are in `product.product_name`.",
         "SPARSE TABLE WARNING: This table is SPARSE. It only contains rows for items with >0 quantity. Absence of a row means zero stock.",
         "To find zero-stock or low-stock items, or all colors of a product, you MUST start from `product p LEFT JOIN stock s ON s.product_id = p.id LEFT JOIN product_color pc ON s.product_color_id = pc.id`.",
-        "MUST always append `alias.deleted_at IS NULL` to exclude soft-deleted inventory."
+        "MUST append `alias.deleted_at IS NULL` to exclude soft-deleted inventory for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "In stock table, `product_color_id` joins to `product_color.id` (table `product_color`), NOT `color.id`.",
@@ -6244,7 +6244,7 @@
         "Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY two valid values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'Stock_Out'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.",
         "Adjustment Date: `stock_adjustment.stock_adjustment_date` is the transaction date (e.g. `'2025-06-03'`).",
         "Direct Category & Product Links: Connects directly to `category` via `category_id = category.id`, `product` via `product_id = product.id`, `product_color` via `product_color_id = product_color.id`, and `financial_year` via `financial_id = financial_year.id`.",
-        "MUST always append `stock_adjustment.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `stock_adjustment.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [
         "Do NOT join `stock` or `product_packaging_detail` for stock adjustment queries; use `stock_adjustment` directly."
@@ -6483,7 +6483,7 @@
       "domain": "System / Views / Misc",
       "table_meaning": "Stock Temp operational records in System / Views / Misc.",
       "table_behavioral_rules": [
-        "MUST always append `stock_temp.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `stock_temp.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -7013,7 +7013,7 @@
       "domain": "Master Data",
       "table_meaning": "Unit operational records in Master Data.",
       "table_behavioral_rules": [
-        "MUST always append `unit.deleted_at IS NULL` in the WHERE clause.",
+        "MUST append `unit.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records).",
         "The unit table contains master units of measurement ('Pcs', 'Kg', 'Nos', 'Set', etc.), NOT product names.",
         "To find the unit for a product, query `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%'`."
       ],
@@ -7093,7 +7093,7 @@
       "table_behavioral_rules": [
         "Staff Name: Stored in `name`.",
         "Active Status Enum: `status = 'Y'` means Active, `status = 'N'` means Inactive.",
-        "MUST always append `alias.deleted_at IS NULL` in WHERE clause."
+        "MUST append `alias.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
@@ -7205,7 +7205,7 @@
         "Warehouse Identification: Warehouses are identified by `warehouse.warehouse_code` (e.g. 'pm2bzd19') and `warehouse.location_name` (e.g. '110'). When a query specifies a warehouse code or name, ALWAYS match against `warehouse.warehouse_code` or `warehouse.location_name` (e.g. `WHERE (w.warehouse_code = 'pm2bzd19' OR w.location_name = '110')`). NEVER search for warehouse codes in `packagings.location_code`.",
         "Link to Packagings: Connects to inventory cartons via `packagings.warehouse_id = warehouse.id`.",
         "Carton Count vs Carton Quantity: In `packagings`, each row is one carton box. To calculate TOTAL CARTON QUANTITY (total product units inside cartons in a warehouse), use `SUM(pk.qty)` (e.g. 152,354 units). To calculate TOTAL CARTONS (number of physical boxes), use `COUNT(pk.id)` (e.g. 412 cartons). When asked for 'carton quantity' or 'quantity in warehouse', ALWAYS use `SUM(pk.qty)`, NOT `COUNT(*)`!",
-        "MUST always append `warehouse.deleted_at IS NULL` in the WHERE clause."
+        "MUST append `warehouse.deleted_at IS NULL` in WHERE clause for standard operational queries (omit or invert if querying deleted/archived records)."
       ],
       "join_warnings": [],
       "columns": {
