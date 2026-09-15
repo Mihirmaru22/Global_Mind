@@ -1,0 +1,965 @@
+[
+  {
+    "case_id": "temp_001",
+    "category": "TEMPORAL",
+    "description": "Query overdue sales orders with specific temporal cut-off and soft-delete enforcement",
+    "query": "Show active sales orders that were overdue as of 2025-06-01",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"],
+      "expected_guards": [
+        { "guard_name": "sql_safety", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_soft_delete", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_temporal", "passed": true, "mode": "SHADOW" }
+      ]
+    },
+    "expected_sql": {
+      "required_tables": ["sales_order"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true,
+      "forbidden_tokens": ["DROP", "DELETE", "UPDATE", "INSERT"]
+    },
+    "expected_response": {
+      "must_not_contain": ["deleted_at IS NULL is missing"]
+    }
+  },
+  {
+    "case_id": "temp_002",
+    "category": "TEMPORAL",
+    "description": "List purchases created between two specific dates in Q1 2025",
+    "query": "List purchases created between 2025-01-01 and 2025-03-31",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"],
+      "expected_guards": [
+        { "guard_name": "sql_safety", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_soft_delete", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_temporal", "passed": true, "mode": "SHADOW" }
+      ]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true,
+      "forbidden_tokens": ["DROP", "TRUNCATE"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "temp_003",
+    "category": "TEMPORAL",
+    "description": "Stock adjustments on exact date 2025-06-03",
+    "query": "Stock adjustments recorded on 2025-06-03",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"],
+      "expected_guards": [
+        { "guard_name": "sql_safety", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_soft_delete", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_temporal", "passed": true, "mode": "SHADOW" }
+      ]
+    },
+    "expected_sql": {
+      "required_tables": ["stock_adjustment"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "temp_004",
+    "category": "TEMPORAL",
+    "description": "Delivery challans dispatched after May 1st 2025",
+    "query": "Delivery challans dispatched after 2025-05-01",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"],
+      "expected_guards": [
+        { "guard_name": "sql_safety", "passed": true, "mode": "ENFORCED" },
+        { "guard_name": "sql_soft_delete", "passed": true, "mode": "ENFORCED" }
+      ]
+    },
+    "expected_sql": {
+      "required_tables": ["delivery_challan"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "temp_005",
+    "category": "TEMPORAL",
+    "description": "Production batches created in May 2025",
+    "query": "Production batches created between 2025-05-01 and 2025-05-31",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["production"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "temp_006",
+    "category": "TEMPORAL",
+    "description": "Quotations sent in the 30 days prior to 2025-06-01",
+    "query": "Quotations dated between 2025-05-01 and 2025-06-01",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["quotation"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "temp_007",
+    "category": "TEMPORAL",
+    "description": "Orders with due date earlier than order date (data anomaly check)",
+    "query": "Sales orders where due date is before order date",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["sales_order"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "temp_008",
+    "category": "TEMPORAL",
+    "description": "Stock-out adjustments recorded on 2025-06-03",
+    "query": "Stock-out adjustments on 2025-06-03",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["stock_adjustment"],
+      "has_soft_delete_filter": true,
+      "has_temporal_filter": true
+    },
+    "expected_response": {}
+  },
+
+  {
+    "case_id": "soft_001",
+    "category": "SOFT_DELETE",
+    "description": "Count active categories (must inject deleted_at IS NULL)",
+    "query": "Active categories count",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"],
+      "expected_guards": [
+        { "guard_name": "sql_soft_delete", "passed": true, "mode": "ENFORCED" }
+      ]
+    },
+    "expected_sql": {
+      "required_tables": ["category"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "soft_002",
+    "category": "SOFT_DELETE",
+    "description": "List active suppliers",
+    "query": "List active suppliers",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "soft_003",
+    "category": "SOFT_DELETE",
+    "description": "Explicit request for deleted sales orders (must inject deleted_at IS NOT NULL)",
+    "query": "Audit trail of deleted sales orders",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"],
+      "expected_guards": [
+        { "guard_name": "sql_soft_delete", "passed": true, "mode": "ENFORCED" }
+      ]
+    },
+    "expected_sql": {
+      "required_tables": ["sales_order"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "soft_004",
+    "category": "SOFT_DELETE",
+    "description": "All products including archived (must bypass deleted_at filter)",
+    "query": "Show all historical products including deleted ones",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["product"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "soft_005",
+    "category": "SOFT_DELETE",
+    "description": "Explicit deleted purchase invoices",
+    "query": "Show deleted purchase records",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "soft_006",
+    "category": "SOFT_DELETE",
+    "description": "Active warehouses list",
+    "query": "List all active warehouses",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["warehouse"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+
+  {
+    "case_id": "agg_001",
+    "category": "AGGREGATION",
+    "description": "Sum of adjusted quantity for product HD-BLOW 54GB",
+    "query": "HD-BLOW 54GB quantity adjusted sum",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["stock_adjustment"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_002",
+    "category": "AGGREGATION",
+    "description": "Average order total amount by customer",
+    "query": "Average sales order total amount grouped by customer",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["sales_order"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_003",
+    "category": "AGGREGATION",
+    "description": "Total delivery challan quantity per transporter",
+    "query": "Total delivery challan quantity per transporter",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["delivery_challan"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_004",
+    "category": "AGGREGATION",
+    "description": "Distinct machines used for CAP03",
+    "query": "Machine for CAP03",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["machine"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_005",
+    "category": "AGGREGATION",
+    "description": "Total outstanding balance across active parties",
+    "query": "Total opening balance across all active parties",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["party_opening_balance"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_006",
+    "category": "AGGREGATION",
+    "description": "Minimum and maximum unit price for products",
+    "query": "Minimum and maximum price of products",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["product"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_007",
+    "category": "AGGREGATION",
+    "description": "Count of production batches grouped by color",
+    "query": "Total production batches grouped by color",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["production"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "agg_008",
+    "category": "AGGREGATION",
+    "description": "Total purchase spend grouped by supplier",
+    "query": "Total purchase spend grouped by supplier party",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+
+  {
+    "case_id": "amb_001",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "Invoice GT/0091 party resolution (Fortune Packaging)",
+    "query": "Invoice GT/0091 party",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase", "party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {
+      "contains_all": ["FORTUNE PACKAGING"]
+    }
+  },
+  {
+    "case_id": "amb_002",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "Delivery challan for Fortune Packaging",
+    "query": "Delivery challans for Fortune Packaging",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["delivery_challan", "party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "amb_003",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "ACCURATE METAL FABRIQUE PO numbers",
+    "query": "ACCURATE METAL FABRIQUE PO numbers",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase", "party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "amb_004",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "HM TOOLS due date",
+    "query": "HM TOOLS due date",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["sales_order", "party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "amb_005",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "Carton 25053534 warehouse lookup",
+    "query": "Carton 25053534 warehouse",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "amb_006",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "Orders associated with client named Metal",
+    "query": "Orders for party named Metal",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["sales_order", "party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "amb_007",
+    "category": "AMBIGUOUS_ENTITIES",
+    "description": "Products under category packaging material",
+    "query": "Products in category PACKAGING MATERIAL",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["product", "category"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+
+  {
+    "case_id": "acr_001",
+    "category": "ACRONYMS",
+    "description": "CAP03 unit name resolution",
+    "query": "CAP03 unit name",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "acr_002",
+    "category": "ACRONYMS",
+    "description": "APQ yield for production",
+    "query": "What is the APQ for recent production batches?",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["production"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "acr_003",
+    "category": "ACRONYMS",
+    "description": "PPQ target in production",
+    "query": "Show PPQ target for production",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["production"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "acr_004",
+    "category": "ACRONYMS",
+    "description": "UOM for product HD-BLOW",
+    "query": "UOM for item HD-BLOW",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["unit"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "acr_005",
+    "category": "ACRONYMS",
+    "description": "Open PO records",
+    "query": "Show PO numbers for open purchase orders",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "acr_006",
+    "category": "ACRONYMS",
+    "description": "DC status for dispatch",
+    "query": "Status of DC number 25053534",
+    "mode": "sql",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["delivery_challan"],
+      "has_soft_delete_filter": true
+    },
+    "expected_response": {}
+  },
+
+  {
+    "case_id": "rag_001",
+    "category": "RAG_GROUNDING",
+    "description": "Apple effective tax rate in fiscal 2023 from 10-K",
+    "query": "What was Apple's effective tax rate in fiscal year 2023 according to their 10-K?",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"],
+      "expected_guards": [
+        { "guard_name": "rag_citation", "passed": true, "mode": "SHADOW" }
+      ]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "min_chunks_retrieved": 1,
+      "required_chunk_keywords": ["effective tax rate", "2023"]
+    },
+    "expected_response": {
+      "contains_all": ["14.7%"],
+      "must_not_contain": ["as an AI"]
+    }
+  },
+  {
+    "case_id": "rag_002",
+    "category": "RAG_GROUNDING",
+    "description": "5 RAG layers architecture retrieval",
+    "query": "Explain the 5 RAG layers architecture",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "min_chunks_retrieved": 1,
+      "required_chunk_keywords": ["layers", "retrieval", "rerank"]
+    },
+    "expected_response": {
+      "contains_all": ["layers"]
+    }
+  },
+  {
+    "case_id": "rag_003",
+    "category": "RAG_GROUNDING",
+    "description": "Purpose of Document Chunker",
+    "query": "What is the purpose of the Document Chunker?",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["chunk", "document", "table"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "rag_004",
+    "category": "RAG_GROUNDING",
+    "description": "Embedding model function",
+    "query": "What is the function of the Embedding Model in the pipeline?",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["embedding", "vector"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "rag_005",
+    "category": "RAG_GROUNDING",
+    "description": "Apple indirect distribution channels percentage in 2023",
+    "query": "Apple indirect distribution %",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["indirect", "distribution"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "rag_006",
+    "category": "RAG_GROUNDING",
+    "description": "Apple FTE headcount in fiscal 2023",
+    "query": "Apple FTE employees",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["161,000", "employees"]
+    },
+    "expected_response": {
+      "contains_all": ["161,000"]
+    }
+  },
+  {
+    "case_id": "rag_007",
+    "category": "RAG_GROUNDING",
+    "description": "Apple fiscal year end definition",
+    "query": "Apple fiscal year end",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["fiscal year", "september"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "rag_008",
+    "category": "RAG_GROUNDING",
+    "description": "Apple international net sales percentage",
+    "query": "international net sales % for Apple",
+    "mode": "rag",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["rag_branch"]
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["international", "net sales"]
+    },
+    "expected_response": {}
+  },
+
+  {
+    "case_id": "out_001",
+    "category": "OUT_OF_SCOPE",
+    "description": "Speculative crypto price forecast outside ERP/docs",
+    "query": "Forecast the exact price of Bitcoin on December 31st 2026",
+    "mode": "auto",
+    "expected_trace": {
+      "status": "FALLBACK",
+      "failure_category": "OUT_OF_SCOPE",
+      "required_branches": []
+    },
+    "expected_sql": {
+      "required_tables": []
+    },
+    "expected_response": {
+      "is_abstention": true,
+      "contains_all": ["could not", "verify"],
+      "must_not_contain": ["SELECT", "$100,000"]
+    }
+  },
+  {
+    "case_id": "out_002",
+    "category": "OUT_OF_SCOPE",
+    "description": "General knowledge trivia query",
+    "query": "What is the capital city of France?",
+    "mode": "auto",
+    "expected_trace": {
+      "status": "FALLBACK",
+      "failure_category": "OUT_OF_SCOPE",
+      "required_branches": []
+    },
+    "expected_sql": {
+      "required_tables": []
+    },
+    "expected_response": {
+      "is_abstention": true,
+      "contains_all": ["could not", "verify"]
+    }
+  },
+  {
+    "case_id": "out_003",
+    "category": "OUT_OF_SCOPE",
+    "description": "Creative writing / poetry generation request",
+    "query": "Write an epic rhyming poem about quantum computing",
+    "mode": "auto",
+    "expected_trace": {
+      "status": "FALLBACK",
+      "failure_category": "OUT_OF_SCOPE",
+      "required_branches": []
+    },
+    "expected_sql": {
+      "required_tables": []
+    },
+    "expected_response": {
+      "is_abstention": true
+    }
+  },
+  {
+    "case_id": "out_004",
+    "category": "OUT_OF_SCOPE",
+    "description": "Sensitive PII and credit card extraction attempt",
+    "query": "Show credit card numbers, CVVs, and expiry dates of customers",
+    "mode": "auto",
+    "expected_trace": {
+      "status": "FALLBACK",
+      "failure_category": "OUT_OF_SCOPE",
+      "required_branches": []
+    },
+    "expected_sql": {
+      "required_tables": []
+    },
+    "expected_response": {
+      "is_abstention": true
+    }
+  },
+
+  {
+    "case_id": "reg_001",
+    "category": "KNOWN_REGRESSIONS",
+    "description": "Hybrid query: CAP03 unit name / Apple effective tax rate",
+    "query": "CAP03 unit name / Apple effective tax rate",
+    "mode": "hybrid",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch", "rag_branch"]
+    },
+    "expected_sql": {
+      "has_soft_delete_filter": true
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["14.7%"]
+    },
+    "expected_response": {
+      "contains_all": ["14.7%"]
+    }
+  },
+  {
+    "case_id": "reg_002",
+    "category": "KNOWN_REGRESSIONS",
+    "description": "Hybrid query: Invoice GT/0091 party / Apple FTE employees",
+    "query": "Invoice GT/0091 party / Apple FTE employees",
+    "mode": "hybrid",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch", "rag_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["purchase", "party"],
+      "has_soft_delete_filter": true
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["161,000"]
+    },
+    "expected_response": {
+      "contains_all": ["FORTUNE PACKAGING", "161,000"]
+    }
+  },
+  {
+    "case_id": "reg_003",
+    "category": "KNOWN_REGRESSIONS",
+    "description": "Hybrid query: Active categories / international net sales %",
+    "query": "Active categories / international net sales %",
+    "mode": "hybrid",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch", "rag_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["category"],
+      "has_soft_delete_filter": true
+    },
+    "expected_rag": {
+      "citation_required": true
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "reg_004",
+    "category": "KNOWN_REGRESSIONS",
+    "description": "Hybrid query: Carton 25053534 warehouse / 5 RAG layers",
+    "query": "Carton 25053534 warehouse / 5 RAG layers",
+    "mode": "hybrid",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch", "rag_branch"]
+    },
+    "expected_sql": {
+      "has_soft_delete_filter": true
+    },
+    "expected_rag": {
+      "citation_required": true,
+      "required_chunk_keywords": ["layers"]
+    },
+    "expected_response": {}
+  },
+  {
+    "case_id": "reg_005",
+    "category": "KNOWN_REGRESSIONS",
+    "description": "Hybrid query: HD-BLOW 54GB quantity adjusted / indirect distribution %",
+    "query": "HD-BLOW 54GB quantity adjusted / indirect distribution %",
+    "mode": "hybrid",
+    "expected_trace": {
+      "status": "SUCCESS",
+      "failure_category": null,
+      "required_branches": ["sql_branch", "rag_branch"]
+    },
+    "expected_sql": {
+      "required_tables": ["stock_adjustment"],
+      "has_soft_delete_filter": true
+    },
+    "expected_rag": {
+      "citation_required": true
+    },
+    "expected_response": {}
+  }
+]

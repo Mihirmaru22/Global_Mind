@@ -1,0 +1,59 @@
+{
+  "case_id": "temp_003",
+  "category": "TEMPORAL",
+  "result": {
+    "answer": "Results for: Stock adjustments recorded on 2025-06-03.",
+    "sql": "SELECT * FROM stock_adjustment WHERE stock_adjustment.deleted_at IS NULL AND stock_adjustment.created_at >= '2025-01-01' LIMIT 100;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-temp_003",
+    "request_id": "req-temp_003",
+    "query": "Stock adjustments recorded on 2025-06-03",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-temp_003",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Guard validated successfully",
+            "latency_ms": 1.2
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Guard validated successfully",
+            "latency_ms": 1.2
+          },
+          {
+            "guard_name": "sql_temporal",
+            "passed": true,
+            "mode": "SHADOW",
+            "message": "Guard validated successfully",
+            "latency_ms": 1.2
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "stock_adjustment"
+          ]
+        }
+      }
+    ]
+  }
+}

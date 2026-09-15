@@ -1,0 +1,79 @@
+{
+  "case_id": "reg_004",
+  "category": "KNOWN_REGRESSIONS",
+  "result": {
+    "answer": "According to available documents [Chunk-chunk-reg_004-1], layers ",
+    "sql": "SELECT * FROM sales_order WHERE sales_order.deleted_at IS NULL LIMIT 50;",
+    "citations": [
+      "chunk-reg_004-1"
+    ],
+    "chunks": [
+      {
+        "id": "chunk-reg_004-1",
+        "chunk_id": "chunk-reg_004-1",
+        "text": "Documentation excerpt covering layers. Apple effective tax rate was 14.7% with 161,000 employees across 5 RAG layers."
+      }
+    ]
+  },
+  "trace": {
+    "trace_id": "tr-reg_004",
+    "request_id": "req-reg_004",
+    "query": "Carton 25053534 warehouse / 5 RAG layers",
+    "mode": "hybrid",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-reg_004",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": []
+        }
+      },
+      {
+        "span_id": "sp-rag-reg_004",
+        "name": "rag_retrieval",
+        "branch": "rag_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 220.0,
+        "latency_ms": 120.0,
+        "guard_results": [
+          {
+            "guard_name": "rag_citation",
+            "passed": true,
+            "mode": "SHADOW",
+            "message": "Citations grounded"
+          }
+        ],
+        "metadata": {
+          "retrieved_chunk_ids": [
+            "chunk-reg_004-1",
+            "chunk-reg_004-2"
+          ]
+        }
+      }
+    ]
+  }
+}

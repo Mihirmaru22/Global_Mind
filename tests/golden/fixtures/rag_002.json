@@ -1,0 +1,53 @@
+{
+  "case_id": "rag_002",
+  "category": "RAG_GROUNDING",
+  "result": {
+    "answer": "According to available documents [Chunk-chunk-rag_002-1], layers layers retrieval rerank ",
+    "sql": "",
+    "citations": [
+      "chunk-rag_002-1"
+    ],
+    "chunks": [
+      {
+        "id": "chunk-rag_002-1",
+        "chunk_id": "chunk-rag_002-1",
+        "text": "Documentation excerpt covering layers retrieval rerank. Apple effective tax rate was 14.7% with 161,000 employees across 5 RAG layers."
+      }
+    ]
+  },
+  "trace": {
+    "trace_id": "tr-rag_002",
+    "request_id": "req-rag_002",
+    "query": "Explain the 5 RAG layers architecture",
+    "mode": "rag",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-rag-rag_002",
+        "name": "rag_retrieval",
+        "branch": "rag_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 220.0,
+        "latency_ms": 120.0,
+        "guard_results": [
+          {
+            "guard_name": "rag_citation",
+            "passed": true,
+            "mode": "SHADOW",
+            "message": "Citations grounded"
+          }
+        ],
+        "metadata": {
+          "retrieved_chunk_ids": [
+            "chunk-rag_002-1",
+            "chunk-rag_002-2"
+          ]
+        }
+      }
+    ]
+  }
+}

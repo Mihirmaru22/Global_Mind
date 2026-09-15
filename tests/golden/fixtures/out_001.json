@@ -1,0 +1,21 @@
+{
+  "case_id": "out_001",
+  "category": "OUT_OF_SCOPE",
+  "result": {
+    "answer": "I could not verify this information from available corporate databases and document archives. (Out of scope request).",
+    "sql": "",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-out_001",
+    "request_id": "req-out_001",
+    "query": "Forecast the exact price of Bitcoin on December 31st 2026",
+    "mode": "auto",
+    "status": "FALLBACK",
+    "failure_category": "OUT_OF_SCOPE",
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": []
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "case_id": "reg_002",
+  "category": "KNOWN_REGRESSIONS",
+  "result": {
+    "answer": "According to available documents [Chunk-chunk-reg_002-1], FORTUNE PACKAGING 161,000 161,000 ",
+    "sql": "SELECT * FROM purchase JOIN party ON purchase.party_id = party.id WHERE purchase.deleted_at IS NULL LIMIT 100;",
+    "citations": [
+      "chunk-reg_002-1"
+    ],
+    "chunks": [
+      {
+        "id": "chunk-reg_002-1",
+        "chunk_id": "chunk-reg_002-1",
+        "text": "Documentation excerpt covering 161,000. Apple effective tax rate was 14.7% with 161,000 employees across 5 RAG layers."
+      }
+    ]
+  },
+  "trace": {
+    "trace_id": "tr-reg_002",
+    "request_id": "req-reg_002",
+    "query": "Invoice GT/0091 party / Apple FTE employees",
+    "mode": "hybrid",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-reg_002",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "purchase",
+            "party"
+          ]
+        }
+      },
+      {
+        "span_id": "sp-rag-reg_002",
+        "name": "rag_retrieval",
+        "branch": "rag_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 220.0,
+        "latency_ms": 120.0,
+        "guard_results": [
+          {
+            "guard_name": "rag_citation",
+            "passed": true,
+            "mode": "SHADOW",
+            "message": "Citations grounded"
+          }
+        ],
+        "metadata": {
+          "retrieved_chunk_ids": [
+            "chunk-reg_002-1",
+            "chunk-reg_002-2"
+          ]
+        }
+      }
+    ]
+  }
+}

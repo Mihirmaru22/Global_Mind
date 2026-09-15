@@ -39,6 +39,7 @@ class FailureCategory(str, Enum):
     DB_EXECUTION_ERROR = "DB_EXECUTION_ERROR"
     EMPTY_RESULT = "EMPTY_RESULT"
     LLM_ERROR = "LLM_ERROR"
+    OUT_OF_SCOPE = "OUT_OF_SCOPE"
     UNKNOWN = "UNKNOWN"
 
 
@@ -131,6 +132,8 @@ def classify_failure_category(
         return FailureCategory.DB_EXECUTION_ERROR
     if any(k in error_text for k in ["llm", "provider", "model", "connection error", "api connection", "bad request"]):
         return FailureCategory.LLM_ERROR
+    if any(k in error_text for k in ["out of scope", "out_of_scope", "unanswerable", "abstain", "speculative"]):
+        return FailureCategory.OUT_OF_SCOPE
 
     # Stage-based inference fallback
     if stage == "schema_retrieval":
