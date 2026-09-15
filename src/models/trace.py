@@ -79,9 +79,9 @@ class Span:
     def add_guard(self, guard: GuardResult) -> None:
         self.guard_results.append(guard)
         if not guard.passed and guard.failure_category:
-            if self.failure_category is None:
-                self.failure_category = guard.failure_category
             if guard.mode == "ENFORCED":
+                if self.failure_category is None:
+                    self.failure_category = guard.failure_category
                 self.status = "ERROR"
             elif guard.mode == "SHADOW" and self.status == "OK":
                 self.status = "SHADOW_BLOCKED"

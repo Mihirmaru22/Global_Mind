@@ -157,28 +157,58 @@ def timed_stage(
         "extra": extra or {},
     }
     start = time.perf_counter()
-    try:
-        yield result_holder
-    except Exception as exc:
-        result_holder["success"] = False
-        if not result_holder.get("failure_type"):
-            result_holder["failure_type"] = classify_error(exc)
-        raise
-    finally:
-        latency_ms = round((time.perf_counter() - start) * 1000.0, 2)
-        result_holder["latency_ms"] = latency_ms
-        log_telemetry(
-            query_id=result_holder.get("query_id", qid),
-            stage=stage_name,
-            input_tokens=result_holder.get("input_tokens", 0),
-            output_tokens=result_holder.get("output_tokens", 0),
-            latency_ms=latency_ms,
-            success=result_holder.get("success", True),
-            failure_type=result_holder.get("failure_type"),
-            provider=result_holder.get("provider"),
-            model=result_holder.get("model"),
-            extra=result_holder.get("extra"),
-        )
+    from src.utils.trace_context import get_current_trace, trace_span
+    active_trace = get_current_trace()
+
+    if active_trace is not None:
+        with trace_span(stage_name, metadata=extra) as span:
+            try:
+                yield result_holder
+            except Exception as exc:
+                result_holder["success"] = False
+                if not result_holder.get("failure_type"):
+                    result_holder["failure_type"] = classify_error(exc)
+                raise
+            finally:
+                latency_ms = round((time.perf_counter() - start) * 1000.0, 2)
+                result_holder["latency_ms"] = latency_ms
+                span.input_tokens = result_holder.get("input_tokens", 0)
+                span.output_tokens = result_holder.get("output_tokens", 0)
+                log_telemetry(
+                    query_id=result_holder.get("query_id", qid),
+                    stage=stage_name,
+                    input_tokens=result_holder.get("input_tokens", 0),
+                    output_tokens=result_holder.get("output_tokens", 0),
+                    latency_ms=latency_ms,
+                    success=result_holder.get("success", True),
+                    failure_type=result_holder.get("failure_type"),
+                    provider=result_holder.get("provider"),
+                    model=result_holder.get("model"),
+                    extra=result_holder.get("extra"),
+                )
+    else:
+        try:
+            yield result_holder
+        except Exception as exc:
+            result_holder["success"] = False
+            if not result_holder.get("failure_type"):
+                result_holder["failure_type"] = classify_error(exc)
+            raise
+        finally:
+            latency_ms = round((time.perf_counter() - start) * 1000.0, 2)
+            result_holder["latency_ms"] = latency_ms
+            log_telemetry(
+                query_id=result_holder.get("query_id", qid),
+                stage=stage_name,
+                input_tokens=result_holder.get("input_tokens", 0),
+                output_tokens=result_holder.get("output_tokens", 0),
+                latency_ms=latency_ms,
+                success=result_holder.get("success", True),
+                failure_type=result_holder.get("failure_type"),
+                provider=result_holder.get("provider"),
+                model=result_holder.get("model"),
+                extra=result_holder.get("extra"),
+            )
 
 
 def capture_telemetry(stage_name: str) -> Callable[[F], F]:

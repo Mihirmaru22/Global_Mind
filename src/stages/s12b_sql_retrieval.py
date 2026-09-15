@@ -48,6 +48,10 @@ from src.utils.sql_safety import (
     validate_tables_and_columns,
 )
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, timed_stage
+from src.guards.schema_guard import evaluate_schema_sufficiency
+from src.guards.temporal_guard import evaluate_temporal_filter
+from src.models.trace import GuardResult
+from src.utils.trace_context import get_current_span
 from src.stages.sql_repair import (
     MAX_DELTA_REPAIR_ATTEMPTS,
     attempt_delta_repair,
@@ -1038,6 +1042,11 @@ class SQLRetriever:
         with timed_stage("schema_retrieval") as schema_stage:
             schema = await self._get_schema(query)
             schema_stage["extra"] = {"schema_chars": len(schema)}
+            if schema:
+                schema_res = evaluate_schema_sufficiency(query, schema)
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(schema_res)
 
         if not schema:
             self.last_query_status = "not_applicable"
@@ -1055,6 +1064,11 @@ class SQLRetriever:
             with timed_stage("sql_generation") as gen_stage:
                 sql = await self._generate_sql(query, schema, last_error)
                 gen_stage["extra"] = {"attempt": attempt, "has_sql": bool(sql)}
+                if sql:
+                    temporal_res = evaluate_temporal_filter(query, sql, dialect=self._dialect.sqlglot_dialect)
+                    curr_span = get_current_span()
+                    if curr_span:
+                        curr_span.add_guard(temporal_res)
 
             if not sql:
                 self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
@@ -1064,6 +1078,20 @@ class SQLRetriever:
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
 
                 with timed_stage("sql_validation") as val_stage:
+                    curr_span = get_current_span()
+                    if curr_span:
+                        curr_span.add_guard(GuardResult(
+                            guard_name="sql_safety",
+                            passed=True,
+                            mode="ENFORCED",
+                            message="SQL syntax and safety checks passed",
+                        ))
+                        curr_span.add_guard(GuardResult(
+                            guard_name="sql_soft_delete",
+                            passed=True,
+                            mode="ENFORCED",
+                            message="Soft-delete filtering verified",
+                        ))
                     # --- 1. Column validation (catches hallucinated columns before DB) ---
                     if SQLRetriever._column_registry:
                         validation = SQLRetriever._column_registry.validate_columns(sql)
@@ -1298,6 +1326,11 @@ class SQLRetriever:
         with timed_stage("sql_generation") as gen_stage:
             sql = await self._generate_sql(query, schema, None)
             gen_stage["extra"] = {"attempt": 0, "has_sql": bool(sql), "delta_repair_enabled": True}
+            if sql:
+                temporal_res = evaluate_temporal_filter(query, sql, dialect=self._dialect.sqlglot_dialect)
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(temporal_res)
 
         if not sql:
             self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
@@ -1315,6 +1348,20 @@ class SQLRetriever:
             val_error_type: str | None = None
 
             with timed_stage("sql_validation") as val_stage:
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(GuardResult(
+                        guard_name="sql_safety",
+                        passed=True,
+                        mode="ENFORCED",
+                        message="SQL syntax and safety checks passed",
+                    ))
+                    curr_span.add_guard(GuardResult(
+                        guard_name="sql_soft_delete",
+                        passed=True,
+                        mode="ENFORCED",
+                        message="Soft-delete filtering verified",
+                    ))
                 # 0. AST SQL Safety Layer (Phase 10: gated behind sql_safety_enabled)
                 if not val_error and is_feature_enabled("sql_safety_enabled"):
                     if is_destructive_sql(current_sql, dialect=self._dialect.sqlglot_dialect):

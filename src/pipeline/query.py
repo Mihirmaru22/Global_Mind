@@ -30,6 +30,9 @@ from src.utils.query_classifier import QueryType, classify_query
 from src.utils.semantic_cache import get_semantic_cache
 from src.utils.query_budget import get_or_create_budget_controller
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_current_query_id, timed_stage
+from src.guards.citation_guard import evaluate_rag_citations
+from src.models.trace import Trace
+from src.utils.trace_context import branch_context, get_current_span, start_trace
 
 logger = logging.getLogger(__name__)
 
@@ -276,24 +279,27 @@ class QueryPipeline:
             doc_subquery = search_query
             if effective_mode == "sql":
                 logger.info("[Tokens: %d/%d] [Mode: SQL] Querying live database only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                sql_chunks = await self._sql_retriever.retrieve(search_query)
+                with branch_context("sql_branch"):
+                    sql_chunks = await self._sql_retriever.retrieve(search_query)
                 vector_chunks = []
                 if not sql_chunks and mode == "auto":
                     logger.info("Auto mode SQL returned no rows; falling back to documents")
+                    with branch_context("rag_branch"):
+                        vector_chunks = await self._retriever.retrieve(
+                            search_query,
+                            top_k=settings.retrieval_top_k,
+                            filters=filters,
+                            exhaustive=exhaustive,
+                        )
+            elif effective_mode == "rag":
+                logger.info("[Tokens: %d/%d] [Mode: RAG] Searching documents only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+                with branch_context("rag_branch"):
                     vector_chunks = await self._retriever.retrieve(
                         search_query,
                         top_k=settings.retrieval_top_k,
                         filters=filters,
                         exhaustive=exhaustive,
                     )
-            elif effective_mode == "rag":
-                logger.info("[Tokens: %d/%d] [Mode: RAG] Searching documents only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                vector_chunks = await self._retriever.retrieve(
-                    search_query,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
                 sql_chunks = []
             else:
                 # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
@@ -301,15 +307,22 @@ class QueryPipeline:
                 sql_subquery, doc_subquery = _decompose_hybrid_query(search_query)
                 if sql_subquery != search_query or doc_subquery != search_query:
                     logger.info("Decomposed hybrid query into SQL: '%s' | DOC: '%s'", sql_subquery, doc_subquery)
-                sql_coro = self._sql_retriever.retrieve(sql_subquery)
-                doc_coro = self._retriever.retrieve(
-                    doc_subquery,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
+
+                async def _run_sql():
+                    with branch_context("sql_branch"):
+                        return await self._sql_retriever.retrieve(sql_subquery)
+
+                async def _run_rag():
+                    with branch_context("rag_branch"):
+                        return await self._retriever.retrieve(
+                            doc_subquery,
+                            top_k=settings.retrieval_top_k,
+                            filters=filters,
+                            exhaustive=exhaustive,
+                        )
+
                 # Coordinator merges isolated outputs after gather completes
-                sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
+                sql_chunks, vector_chunks = await asyncio.gather(_run_sql(), _run_rag())
 
             logger.info("Retrieved %d vector chunks and %d SQL chunks", len(vector_chunks), len(sql_chunks))
             sql_infra_error = self._sql_retriever.last_infra_error
@@ -392,6 +405,17 @@ class QueryPipeline:
             result.chunks_retrieved = len(vector_chunks + sql_chunks)
             result.chunks_after_rerank = len(reranked)
 
+            # Shadow Guard: RAG Citation Guard
+            if reranked or (result and getattr(result, "citations", None)):
+                citation_guard_res = evaluate_rag_citations(
+                    answer=result.answer if result else "",
+                    retrieved_chunks=reranked,
+                    citations=[c.source if hasattr(c, "source") else str(c) for c in (getattr(result, "citations", None) or [])],
+                )
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(citation_guard_res)
+
             total_used = budget_ctrl.get_current_usage()
             status_str = "Truncated" if budget_ctrl.counter.is_exceeded else "Success"
             logger.info(
@@ -416,6 +440,35 @@ class QueryPipeline:
                 )
 
             return result
+
+    async def query_with_trace(
+        self,
+        query: str,
+        filters: dict | None = None,
+        history: list[dict] | None = None,
+        mode: str = "auto",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> tuple[QueryResult, Trace]:
+        """Execute a query wrapped in end-to-end distributed tracing with shadow guards."""
+        trace = start_trace(
+            query=query,
+            mode=mode,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+        try:
+            result = await self.query(question=query, filters=filters, history=history, mode=mode)
+            trace.complete(
+                status="SUCCESS" if not getattr(result, "error", None) else "FAILED",
+                final_response=result.answer[:200] if result and result.answer else "",
+            )
+            if hasattr(result, "usage") and result.usage:
+                trace.record_tokens(result.usage.input_tokens, result.usage.output_tokens)
+            return result, trace
+        except Exception as exc:
+            trace.complete(status="FAILED")
+            raise
 
     async def query_stream(
         self, question: str, filters: dict | None = None, history: list[dict] | None = None, mode: str = "auto"
