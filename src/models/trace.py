@@ -1,7 +1,9 @@
 """Trace and Span data models for pipeline observability.
 
-Supports hierarchical parent-child execution branches (e.g. sql_branch and rag_branch)
-with thread-safe and coroutine-safe mutations during concurrent execution (asyncio.gather).
+Supports hierarchical parent-child execution branches (e.g. sql_branch and rag_branch).
+Designed to be completely async-safe and lock-free: child spans are collected by their
+respective branches and merged synchronously into the root Trace after `await asyncio.gather()`
+completes, avoiding event-loop blocking or deadlock risks.
 """
 
 from __future__ import annotations
@@ -9,7 +11,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -132,40 +133,34 @@ class Trace:
     final_response_preview: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
-
     def add_span(self, span: Span) -> None:
-        """Thread-safely append a span and update cumulative metrics."""
-        with self._lock:
-            self.spans.append(span)
-            self.total_tokens += (span.input_tokens + span.output_tokens)
-            if span.failure_category and self.failure_category is None:
-                self.failure_category = span.failure_category
+        """Append a span and update cumulative metrics."""
+        self.spans.append(span)
+        self.total_tokens += (span.input_tokens + span.output_tokens)
+        if span.failure_category and self.failure_category is None:
+            self.failure_category = span.failure_category
 
     def merge_branch(self, branch_name: str, branch_spans: list[Span], tokens: int = 0) -> None:
-        """Safely merge a collection of spans produced by a concurrent execution branch."""
-        with self._lock:
-            for span in branch_spans:
-                if span.branch is None:
-                    span.branch = branch_name
-                self.spans.append(span)
-            self.total_tokens += tokens
+        """Merge a collection of spans produced by a concurrent execution branch (e.g. after gather)."""
+        for span in branch_spans:
+            if span.branch is None:
+                span.branch = branch_name
+            self.spans.append(span)
+        self.total_tokens += tokens
 
     def record_tokens(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
-        """Thread-safely increment token count."""
-        with self._lock:
-            self.total_tokens += (input_tokens + output_tokens)
+        """Increment token count."""
+        self.total_tokens += (input_tokens + output_tokens)
 
     def record_retry(self, stage: str, improved: bool) -> None:
-        """Thread-safely record a retry attempt and whether it resolved the issue."""
-        with self._lock:
-            self.retry_count += 1
-            self.retry_improved = improved
-            self.metadata.setdefault("retries", []).append({
-                "stage": stage,
-                "improved": improved,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            })
+        """Record a retry attempt and whether it resolved the issue."""
+        self.retry_count += 1
+        self.retry_improved = improved
+        self.metadata.setdefault("retries", []).append({
+            "stage": stage,
+            "improved": improved,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
 
     def complete(
         self,
@@ -174,41 +169,39 @@ class Trace:
         failure_category: str | None = None,
     ) -> None:
         """Finalize the trace with status, latency calculation, and response preview."""
-        with self._lock:
-            self.status = status
-            if failure_category:
-                self.failure_category = failure_category
-            if final_response:
-                self.final_response_preview = final_response[:200]
-            if self.spans:
-                earliest_start = min((s.start_time_ms for s in self.spans if s.start_time_ms > 0), default=0.0)
-                latest_end = max((s.end_time_ms for s in self.spans), default=0.0)
-                if earliest_start > 0 and latest_end >= earliest_start:
-                    self.total_latency_ms = round(latest_end - earliest_start, 2)
+        self.status = status
+        if failure_category:
+            self.failure_category = failure_category
+        if final_response:
+            self.final_response_preview = final_response[:200]
+        if self.spans:
+            earliest_start = min((s.start_time_ms for s in self.spans if s.start_time_ms > 0), default=0.0)
+            latest_end = max((s.end_time_ms for s in self.spans), default=0.0)
+            if earliest_start > 0 and latest_end >= earliest_start:
+                self.total_latency_ms = round(latest_end - earliest_start, 2)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert trace to a serializable dictionary."""
-        with self._lock:
-            return {
-                "trace_id": self.trace_id,
-                "request_id": self.request_id,
-                "query": self.query[:500],
-                "mode": self.mode,
-                "timestamp": self.timestamp,
-                "pipeline_version": self.pipeline_version,
-                "prompt_version": self.prompt_version,
-                "model_version": self.model_version,
-                "root_span": self.root_span.to_dict() if self.root_span else None,
-                "spans": [s.to_dict() for s in self.spans],
-                "status": self.status,
-                "failure_category": self.failure_category,
-                "total_tokens": self.total_tokens,
-                "total_latency_ms": round(self.total_latency_ms, 2),
-                "retry_count": self.retry_count,
-                "retry_improved": self.retry_improved,
-                "final_response_preview": self.final_response_preview,
-                "metadata": self.metadata,
-            }
+        return {
+            "trace_id": self.trace_id,
+            "request_id": self.request_id,
+            "query": self.query[:500],
+            "mode": self.mode,
+            "timestamp": self.timestamp,
+            "pipeline_version": self.pipeline_version,
+            "prompt_version": self.prompt_version,
+            "model_version": self.model_version,
+            "root_span": self.root_span.to_dict() if self.root_span else None,
+            "spans": [s.to_dict() for s in self.spans],
+            "status": self.status,
+            "failure_category": self.failure_category,
+            "total_tokens": self.total_tokens,
+            "total_latency_ms": round(self.total_latency_ms, 2),
+            "retry_count": self.retry_count,
+            "retry_improved": self.retry_improved,
+            "final_response_preview": self.final_response_preview,
+            "metadata": self.metadata,
+        }
 
     def to_json(self) -> str:
         """Serialize trace to JSON string."""

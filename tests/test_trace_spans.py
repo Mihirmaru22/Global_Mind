@@ -61,43 +61,58 @@ def test_trace_and_span_basic_lifecycle():
 
 @pytest.mark.asyncio
 async def test_trace_concurrency_safe_gathering():
-    """Guardrail 1: Verify asyncio.gather on sql_branch and rag_branch is concurrency-safe."""
+    """Guardrail 1: Verify lock-free gather-and-merge pattern for async safety."""
     trace = Trace(query="Hybrid query CAP03 / Apple tax rate", mode="hybrid")
 
-    async def run_sql_branch():
+    async def run_sql_branch() -> tuple[list[Span], int]:
+        local_spans: list[Span] = []
+        tokens = 0
         for i in range(10):
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0.001)  # Simulate async DB/LLM calls
             span = Span(
                 name=f"sql_step_{i}",
                 branch="sql_branch",
                 input_tokens=10,
                 output_tokens=5,
             )
-            trace.add_span(span)
+            local_spans.append(span)
+            tokens += 15
+        return local_spans, tokens
 
-    async def run_rag_branch():
+    async def run_rag_branch() -> tuple[list[Span], int]:
+        local_spans: list[Span] = []
+        tokens = 0
         for i in range(10):
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0.001)  # Simulate async vector search/rerank
             span = Span(
                 name=f"rag_step_{i}",
                 branch="rag_branch",
                 input_tokens=20,
                 output_tokens=10,
             )
-            trace.add_span(span)
+            local_spans.append(span)
+            tokens += 30
+        return local_spans, tokens
 
-    # Concurrently execute branches
-    await asyncio.gather(run_sql_branch(), run_rag_branch())
+    # Concurrently execute branches without holding locks across await points
+    (sql_spans, sql_tokens), (rag_spans, rag_tokens) = await asyncio.gather(
+        run_sql_branch(),
+        run_rag_branch(),
+    )
+
+    # Synchronously merge into the root trace after gather completes
+    trace.merge_branch("sql_branch", sql_spans, tokens=sql_tokens)
+    trace.merge_branch("rag_branch", rag_spans, tokens=rag_tokens)
 
     trace.complete(status="SUCCESS")
 
     assert len(trace.spans) == 20
     # SQL: 10 * 15 = 150 tokens; RAG: 10 * 30 = 300 tokens; Total = 450
     assert trace.total_tokens == 450
-    sql_spans = [s for s in trace.spans if s.branch == "sql_branch"]
-    rag_spans = [s for s in trace.spans if s.branch == "rag_branch"]
-    assert len(sql_spans) == 10
-    assert len(rag_spans) == 10
+    collected_sql = [s for s in trace.spans if s.branch == "sql_branch"]
+    collected_rag = [s for s in trace.spans if s.branch == "rag_branch"]
+    assert len(collected_sql) == 10
+    assert len(collected_rag) == 10
 
 
 def test_trace_context_hierarchy_and_branching():
