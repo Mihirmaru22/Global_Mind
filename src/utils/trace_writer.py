@@ -27,6 +27,11 @@ TRACES_FILE = DATA_DIR / "traces.jsonl"
 class InMemoryTelemetryAggregator:
     """Rolling in-memory cache and statistical aggregator for pipeline telemetry."""
 
+    @classmethod
+    def get_instance(cls) -> InMemoryTelemetryAggregator:
+        """Return process-wide singleton instance of the aggregator."""
+        return _GLOBAL_AGGREGATOR
+
     def __init__(self, max_traces: int = 1000) -> None:
         self._lock = threading.RLock()
         self._max_traces = max_traces
@@ -83,6 +88,19 @@ class InMemoryTelemetryAggregator:
                             stats["enforced_blocks"] += 1
                         else:
                             stats["shadow_blocks"] += 1
+
+    def clear(self) -> None:
+        """Reset all aggregations and traces (useful for tests and restarts)."""
+        with self._lock:
+            self._recent_traces.clear()
+            self._total_requests = 0
+            self._status_counts.clear()
+            self._failure_counts.clear()
+            self._stage_failure_counts.clear()
+            self._guard_stats.clear()
+            self._latencies.clear()
+            self._retries_total = 0
+            self._retries_improved = 0
 
     def get_overview(self) -> dict[str, Any]:
         """Return high-level summary metrics in < 1ms."""

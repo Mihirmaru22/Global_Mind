@@ -126,3 +126,23 @@ def evaluate_rag_citations(
         latency_ms=round(latency_ms, 3),
         metadata={"cited_count": len(declared_citations), "chunk_count": len(chunk_map)},
     )
+
+
+def sanitize_hallucinated_citations(
+    answer: str,
+    hallucinated_chunk_ids: list[str],
+    disclaimer: str = "(Note: Some specific source citations could not be verified and have been omitted for accuracy.)",
+) -> str:
+    """Gracefully sanitize hallucinated citation markers from an answer and append a transparent disclaimer."""
+    cleaned = answer
+    for cid in hallucinated_chunk_ids:
+        cleaned = re.sub(rf"\[(?:Chunk|Doc)-{re.escape(cid)}\]", "", cleaned, flags=re.IGNORECASE)
+
+    # Clean up duplicate spaces or punctuation gaps left by removed citations
+    cleaned = re.sub(r" +", " ", cleaned).strip()
+    cleaned = re.sub(r" \.", ".", cleaned)
+    cleaned = re.sub(r" ,", ",", cleaned)
+
+    if disclaimer:
+        cleaned = f"{cleaned}\n\n*{disclaimer}*"
+    return cleaned

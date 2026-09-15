@@ -95,6 +95,11 @@ def evaluate_schema_sufficiency(
     latency_ms = (time.perf_counter() - t0) * 1000
 
     if missing_tables:
+        # TODO(V1.1): Fix "Implicit Foreign Key" trap (20.45% FPR).
+        # Inject Foreign Key relationship metadata into guard evaluation. If an entity like "customer"
+        # maps to "party", but the retrieved schema contains `sales_order.party_id`, satisfy the entity
+        # via the Foreign Key rather than failing for missing the full `party` table.
+        # See docs/V1_1_GUARD_CALIBRATION_PLAN.md for the full specification.
         return GuardResult(
             guard_name="schema_sufficiency",
             passed=False,

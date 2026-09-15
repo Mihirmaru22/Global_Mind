@@ -127,6 +127,10 @@ def evaluate_temporal_filter(
     latency_ms = (time.perf_counter() - t0) * 1000
 
     if not has_temporal_pred:
+        # TODO(V1.1): Fix "Date Projection vs. Date Filtering" trap (10.11% FPR).
+        # When a query requests a date column as a projected scalar attribute (e.g. `SELECT due_date`)
+        # rather than a filtering predicate in WHERE, inspect AST SELECT expressions and yield PASS.
+        # See docs/V1_1_GUARD_CALIBRATION_PLAN.md for the full specification.
         return GuardResult(
             guard_name="sql_temporal",
             passed=False,

@@ -10,3 +10,13 @@ features:
   zero_row_handling_enabled: true
   fast_path_enabled: true
   provider_routing_v2_enabled: true
+  enable_branching_traces: true
+  guard_sql_safety_enforce: true
+  guard_sql_soft_delete_enforce: true
+  guard_sql_temporal_shadow: true
+  guard_sql_temporal_enforce: false
+  guard_schema_sufficiency_shadow: true
+  guard_schema_sufficiency_enforce: false
+  guard_rag_citation_shadow: true
+  guard_rag_citation_enforce: true
+  enable_fallback_on_guard_failure: true

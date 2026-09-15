@@ -748,3 +748,55 @@ async def sync_schema() -> dict[str, Any]:
     except Exception as e:
         logger.error("Schema sync failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Schema sync failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Local Telemetry Dashboard API (Phase 4)
+# Guardrail #4: Zero disk I/O / JSONL parsing on request thread.
+# Strictly queries InMemoryTelemetryAggregator (< 5ms response latency).
+# ---------------------------------------------------------------------------
+
+@router.get("/ui/telemetry/overview")
+@router.get("/telemetry/overview", include_in_schema=False)
+async def get_telemetry_overview() -> dict[str, Any]:
+    """Return high-level summary telemetry (p50/p95 latency, success rate, fallback rate)."""
+    from src.utils.trace_writer import get_telemetry_aggregator
+
+    return get_telemetry_aggregator().get_overview()
+
+
+@router.get("/ui/telemetry/failures")
+@router.get("/telemetry/failures", include_in_schema=False)
+async def get_telemetry_failures() -> dict[str, Any]:
+    """Return failure distribution by semantic category and stage."""
+    from src.utils.trace_writer import get_telemetry_aggregator
+
+    return get_telemetry_aggregator().get_failures()
+
+
+@router.get("/ui/telemetry/guards")
+@router.get("/telemetry/guards", include_in_schema=False)
+async def get_telemetry_guards() -> dict[str, Any]:
+    """Return guard evaluation metrics (checks, shadow blocks, enforced blocks, block rates)."""
+    from src.utils.trace_writer import get_telemetry_aggregator
+
+    return get_telemetry_aggregator().get_guards()
+
+
+@router.get("/ui/telemetry/traces")
+@router.get("/telemetry/traces", include_in_schema=False)
+async def get_telemetry_traces(
+    limit: int = 50,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """Return recent trace snapshots filtered by status."""
+    from src.utils.trace_writer import get_telemetry_aggregator
+
+    traces = get_telemetry_aggregator().get_traces(limit=limit, status=status)
+    return {
+        "traces": traces,
+        "count": len(traces),
+        "limit": limit,
+        "status_filter": status,
+    }
+

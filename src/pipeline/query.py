@@ -30,9 +30,11 @@ from src.utils.query_classifier import QueryType, classify_query
 from src.utils.semantic_cache import get_semantic_cache
 from src.utils.query_budget import get_or_create_budget_controller
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_current_query_id, timed_stage
-from src.guards.citation_guard import evaluate_rag_citations
+from src.utils.feature_flags import is_feature_enabled
+from src.guards.citation_guard import evaluate_rag_citations, sanitize_hallucinated_citations
 from src.models.trace import Trace
 from src.utils.trace_context import branch_context, get_current_span, start_trace
+from src.utils.trace_writer import emit_trace
 
 logger = logging.getLogger(__name__)
 
@@ -405,16 +407,36 @@ class QueryPipeline:
             result.chunks_retrieved = len(vector_chunks + sql_chunks)
             result.chunks_after_rerank = len(reranked)
 
-            # Shadow Guard: RAG Citation Guard
+            # RAG Citation Guard Evaluation (Hard Enforced or Shadow)
             if reranked or (result and getattr(result, "citations", None)):
                 citation_guard_res = evaluate_rag_citations(
                     answer=result.answer if result else "",
                     retrieved_chunks=reranked,
-                    citations=[c.source if hasattr(c, "source") else str(c) for c in (getattr(result, "citations", None) or [])],
+                    citations=[getattr(c, "chunk_id", None) or getattr(c, "source", None) or str(c) for c in (getattr(result, "citations", None) or [])],
                 )
                 curr_span = get_current_span()
                 if curr_span:
                     curr_span.add_guard(citation_guard_res)
+
+                # Hard Enforcement Graceful Degradation / Fallback
+                if not citation_guard_res.passed and citation_guard_res.mode == "ENFORCED":
+                    if is_feature_enabled("enable_fallback_on_guard_failure"):
+                        if citation_guard_res.failure_category == "CITATION_MISMATCH":
+                            hallucinated = citation_guard_res.metadata.get("hallucinated_citations", [])
+                            result.answer = sanitize_hallucinated_citations(result.answer, hallucinated)
+                            if hasattr(result, "citations") and result.citations:
+                                result.citations = [c for c in result.citations if (getattr(c, "chunk_id", None) or getattr(c, "source", None) or str(c)) not in hallucinated]
+                            if curr_span:
+                                curr_span.status = "FALLBACK"
+                                curr_span.metadata["citation_fallback_applied"] = True
+                        elif citation_guard_res.failure_category == "UNSUPPORTED_ANSWER_CLAIM":
+                            result.answer = (
+                                "I could not verify sufficient factual grounding in the retrieved documents to answer this accurately.\n\n"
+                                "*(Note: Some specific source citations could not be verified and have been omitted for accuracy.)*"
+                            )
+                            if curr_span:
+                                curr_span.status = "FALLBACK"
+                                curr_span.metadata["citation_fallback_applied"] = True
 
             total_used = budget_ctrl.get_current_usage()
             status_str = "Truncated" if budget_ctrl.counter.is_exceeded else "Success"
@@ -450,7 +472,7 @@ class QueryPipeline:
         request_id: str | None = None,
         trace_id: str | None = None,
     ) -> tuple[QueryResult, Trace]:
-        """Execute a query wrapped in end-to-end distributed tracing with shadow guards."""
+        """Execute a query wrapped in end-to-end distributed tracing with shadow and enforced guards."""
         trace = start_trace(
             query=query,
             mode=mode,
@@ -465,9 +487,11 @@ class QueryPipeline:
             )
             if hasattr(result, "usage") and result.usage:
                 trace.record_tokens(result.usage.input_tokens, result.usage.output_tokens)
+            emit_trace(trace)
             return result, trace
         except Exception as exc:
             trace.complete(status="FAILED")
+            emit_trace(trace)
             raise
 
     async def query_stream(
