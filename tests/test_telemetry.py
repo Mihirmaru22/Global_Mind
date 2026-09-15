@@ -39,8 +39,9 @@ def test_error_classification():
     assert classify_error("Random unknown error occurred") == "unknown_error"
 
 
-def test_log_telemetry_safe_execution(caplog):
+def test_log_telemetry_safe_execution(caplog, monkeypatch):
     import logging
+    monkeypatch.setattr("src.utils.telemetry._load_flags_from_yaml", lambda: {})
     with caplog.at_level(logging.INFO, logger="telemetry"):
         log_telemetry(
             query_id="test-q-123",
@@ -98,7 +99,8 @@ async def test_capture_telemetry_decorator():
     assert res == 42
 
 
-def test_feature_flags_all_default_false():
+def test_feature_flags_all_default_false(monkeypatch):
+    monkeypatch.setattr("src.utils.feature_flags._load_flags_from_yaml", lambda: {})
     flags = [
         "delta_repair_enabled",
         "token_budget_enabled",

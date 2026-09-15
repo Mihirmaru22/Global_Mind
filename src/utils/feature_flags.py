@@ -21,6 +21,18 @@ DEFAULT_FLAGS: dict[str, bool] = {
     "zero_row_handling_enabled": False,
     "fast_path_enabled": False,
     "provider_routing_v2_enabled": False,
+    # V1 Measurement & Safety Flags
+    "enable_branching_traces": True,
+    "guard_sql_safety_enforce": True,
+    "guard_sql_soft_delete_enforce": True,
+    "guard_sql_temporal_shadow": True,
+    "guard_sql_temporal_enforce": False,
+    "guard_schema_sufficiency_shadow": True,
+    "guard_schema_sufficiency_enforce": False,
+    "guard_rag_citation_shadow": True,
+    "guard_rag_citation_enforce": False,
+    "guard_decomposition_shadow": True,
+    "enable_fallback_on_guard_failure": True,
 }
 
 
