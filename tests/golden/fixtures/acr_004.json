@@ -1,0 +1,50 @@
+{
+  "case_id": "acr_004",
+  "category": "ACRONYMS",
+  "result": {
+    "answer": "Results for: UOM for item HD-BLOW.",
+    "sql": "SELECT * FROM unit WHERE unit.deleted_at IS NULL LIMIT 100;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-acr_004",
+    "request_id": "req-acr_004",
+    "query": "UOM for item HD-BLOW",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-acr_004",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "unit"
+          ]
+        }
+      }
+    ]
+  }
+}

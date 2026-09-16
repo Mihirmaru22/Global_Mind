@@ -1,0 +1,48 @@
+{
+  "case_id": "acr_001",
+  "category": "ACRONYMS",
+  "result": {
+    "answer": "Results for: CAP03 unit name.",
+    "sql": "SELECT * FROM sales_order WHERE sales_order.deleted_at IS NULL LIMIT 50;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-acr_001",
+    "request_id": "req-acr_001",
+    "query": "CAP03 unit name",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-acr_001",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": []
+        }
+      }
+    ]
+  }
+}

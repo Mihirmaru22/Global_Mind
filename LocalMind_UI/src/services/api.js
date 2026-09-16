@@ -23,6 +23,7 @@ export async function sendMessage(chatId, message, provider, mode = 'auto') {
 export async function sendMessageStream(chatId, message, onChunk, signal, provider, mode = 'auto') {
   const response = await fetch(`${http.defaults.baseURL}/chats/${chatId}/messages/stream`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -138,6 +139,7 @@ export async function uploadDocumentStream(file, onEvent, signal) {
 
   const response = await fetch(`${http.defaults.baseURL}/upload/stream`, {
     method: 'POST',
+    credentials: 'include',
     body: formData,
     signal,
   })
@@ -195,7 +197,7 @@ export async function replaceDocumentStream(oldDocumentId, file, onEvent, signal
 
   const response = await fetch(
     `${http.defaults.baseURL}/documents/${oldDocumentId}/replace/stream`,
-    { method: 'POST', body: formData, signal },
+    { method: 'POST', credentials: 'include', body: formData, signal },
   )
 
   if (!response.ok || !response.body) {
@@ -260,5 +262,24 @@ export async function scanIngestFolder() {
 
 export async function syncSchema() {
   const response = await http.post('/settings/sync-schema')
+  return response.data
+}
+
+// ---------------------------------------------------------------------------
+// Alpha Authentication API
+// ---------------------------------------------------------------------------
+
+export async function loginApi(username, password) {
+  const response = await http.post('/auth/login', { username, password })
+  return response.data
+}
+
+export async function logoutApi() {
+  const response = await http.post('/auth/logout')
+  return response.data
+}
+
+export async function getMeApi() {
+  const response = await http.get('/auth/me')
   return response.data
 }

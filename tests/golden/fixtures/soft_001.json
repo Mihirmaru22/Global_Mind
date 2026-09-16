@@ -1,0 +1,45 @@
+{
+  "case_id": "soft_001",
+  "category": "SOFT_DELETE",
+  "result": {
+    "answer": "Results for: Active categories count.",
+    "sql": "SELECT * FROM category WHERE category.deleted_at IS NULL LIMIT 100;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-soft_001",
+    "request_id": "req-soft_001",
+    "query": "Active categories count",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-soft_001",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Guard validated successfully",
+            "latency_ms": 1.2
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "category"
+          ]
+        }
+      }
+    ]
+  }
+}

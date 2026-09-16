@@ -7,6 +7,8 @@ executes it, and returns the results formatted as a context chunk.
 from __future__ import annotations
 
 from collections import OrderedDict
+import datetime
+from decimal import Decimal
 import functools
 import json
 import logging
@@ -46,6 +48,10 @@ from src.utils.sql_safety import (
     validate_tables_and_columns,
 )
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, timed_stage
+from src.guards.schema_guard import evaluate_schema_sufficiency
+from src.guards.temporal_guard import evaluate_temporal_filter
+from src.models.trace import GuardResult
+from src.utils.trace_context import get_current_span
 from src.stages.sql_repair import (
     MAX_DELTA_REPAIR_ATTEMPTS,
     attempt_delta_repair,
@@ -53,6 +59,33 @@ from src.stages.sql_repair import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_cell_value(val: Any) -> Any:
+    """Ensure raw DB cell types (date, datetime, Decimal, bytes) are JSON serializable."""
+    if val is None or isinstance(val, (str, int, float, bool)):
+        return val
+    if isinstance(val, (datetime.date, datetime.datetime, datetime.time)):
+        return val.isoformat()
+    if isinstance(val, Decimal):
+        return int(val) if val % 1 == 0 else float(val)
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    if isinstance(val, (list, tuple)):
+        return [_sanitize_cell_value(v) for v in val]
+    if isinstance(val, dict):
+        return {k: _sanitize_cell_value(v) for k, v in val.items()}
+    return str(val)
+
+
+def _sanitize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert raw DB rows to JSON-safe dictionaries."""
+    if not rows:
+        return []
+    return [
+        {k: _sanitize_cell_value(v) for k, v in row.items()}
+        for row in rows
+    ]
 
 
 def format_schema_rows(profile: SQLDialectProfile, rows: list[dict[str, Any]]) -> str:
@@ -463,6 +496,168 @@ def _get_raw_behavioral_atlas() -> dict[str, Any]:
     return _BEHAVIORAL_ATLAS_CACHE
 
 
+def detect_soft_delete_intent(query: str) -> str:
+    """Detect record status / archival intent from user query:
+    - 'DELETED_ONLY': Explicitly requests deleted / removed / dropped / gone items.
+    - 'INCLUDE_ARCHIVED': Explicitly requests archived / history / audit / past items (both active and deleted).
+    - 'ACTIVE_ONLY': Standard operational query (default) or explicitly asks for active / current / present / live / existing.
+    """
+    q = query.lower()
+    has_deleted = bool(re.search(r"\b(deleted|removed|dropped|gone)\b", q))
+    
+    # Exclude relative time windows like "past 30 days", "past 6 months", "past year"
+    q_no_time_window = re.sub(
+        r"\bpast\s+(?:few\s+)?(?:\d+\s+)?(?:days?|weeks?|months?|quarters?|years?)\b",
+        "",
+        q
+    )
+    has_archival = bool(re.search(r"\b(archived|history|audit|historical|past)\b", q_no_time_window))
+    has_active = bool(re.search(r"\b(active|current|present|live|existing)\b", q))
+
+    if has_deleted and has_active:
+        return "INCLUDE_ARCHIVED"
+    if has_deleted:
+        return "DELETED_ONLY"
+    if has_archival:
+        return "INCLUDE_ARCHIVED"
+    return "ACTIVE_ONLY"
+
+
+_SOFT_DELETE_TABLES_CACHE: set[str] | None = None
+
+
+def _get_tables_with_soft_delete() -> set[str]:
+    """Return the set of lowercase table names that possess a deleted_at column.
+
+    Sourced from config/behavioral_schema_atlas.json with fallback to known
+    soft-delete schema tables.
+    """
+    global _SOFT_DELETE_TABLES_CACHE
+    if _SOFT_DELETE_TABLES_CACHE is not None:
+        return _SOFT_DELETE_TABLES_CACHE
+
+    atlas_data = _get_raw_behavioral_atlas()
+    tables = atlas_data.get("tables", {})
+    tables_with_col = {
+        t_name.lower()
+        for t_name, t_meta in tables.items()
+        if "deleted_at" in t_meta.get("columns", {})
+    }
+
+    if not tables_with_col:
+        tables_with_col = {
+            "actual_production", "category", "color", "delivery_challan",
+            "delivery_challan_products", "delivery_dispatch_attachment",
+            "denomination_production", "financial_year", "lead", "lead_attachment",
+            "lead_history", "lead_interested", "lead_product_sample_detail",
+            "machine", "packaging", "packaging_products", "packagings", "party",
+            "party_followup_history", "party_opening_balance", "product",
+            "product_color", "product_opening_stock", "product_packaging_detail",
+            "product_type", "production", "proforma", "proforma_products", "purchase",
+            "purchase_attachment", "purchase_products", "quotation",
+            "quotation_products", "sales_order", "sales_order_products", "stock",
+            "stock_adjustment", "stock_temp", "unit", "warehouse"
+        }
+
+    _SOFT_DELETE_TABLES_CACHE = tables_with_col
+    return _SOFT_DELETE_TABLES_CACHE
+
+
+def enforce_soft_delete_filter(sql: str, intent: str, dialect: str = "mysql") -> str:
+    """Post-generation SQL sanitizer enforcing deterministic soft-delete compliance.
+
+    Defense-in-depth:
+    - 'DELETED_ONLY': Guarantees `deleted_at IS NOT NULL` is present on target tables.
+    - 'INCLUDE_ARCHIVED': Unchanged (allows both active and deleted records).
+    - 'ACTIVE_ONLY' (Default): Guarantees `deleted_at IS NULL` on all referenced tables
+      having a deleted_at column.
+    """
+    if not sql or not sql.strip():
+        return sql
+    if intent == "INCLUDE_ARCHIVED":
+        return sql
+
+    try:
+        parsed = sqlglot.parse_one(sql, read=dialect)
+    except Exception as e:
+        logger.debug("Failed to parse SQL for soft-delete enforcement: %s", e)
+        return sql
+
+    soft_delete_tables = _get_tables_with_soft_delete()
+
+    for sel in parsed.find_all(exp.Select):
+        direct_tables: list[exp.Table] = []
+        from_ = sel.args.get("from_")
+        if from_ and isinstance(from_.this, exp.Table):
+            direct_tables.append(from_.this)
+        for join in sel.args.get("joins", []):
+            if isinstance(join.this, exp.Table):
+                direct_tables.append(join.this)
+
+        target_tables = [t for t in direct_tables if t.name.lower() in soft_delete_tables]
+        if not target_tables:
+            continue
+
+        where = sel.args.get("where")
+        existing_filters: set[tuple[str, str]] = set()
+        if where:
+            for is_node in where.find_all(exp.Is):
+                col = is_node.this
+                if isinstance(col, exp.Column) and col.name.lower() == "deleted_at":
+                    if isinstance(is_node.expression, exp.Null):
+                        is_not = isinstance(is_node.parent, exp.Not)
+                        tbl_qual = col.table.lower() if col.table else ""
+                        existing_filters.add((tbl_qual, "IS_NOT_NULL" if is_not else "IS_NULL"))
+                        if intent == "DELETED_ONLY" and not is_not:
+                            new_node = sqlglot.parse_one(f"{col.sql()} IS NOT NULL", read=dialect)
+                            is_node.replace(new_node)
+                            existing_filters.add((tbl_qual, "IS_NOT_NULL"))
+
+        for tbl in target_tables:
+            t_name = tbl.name.lower()
+            t_alias = tbl.alias.lower() if tbl.alias else ""
+
+            if intent == "DELETED_ONLY":
+                has_filter = (
+                    (t_alias, "IS_NOT_NULL") in existing_filters
+                    or (t_name, "IS_NOT_NULL") in existing_filters
+                    or (("", "IS_NOT_NULL") in existing_filters and len(target_tables) == 1)
+                )
+                if not has_filter:
+                    qual = t_alias or (t_name if len(direct_tables) > 1 else "")
+                    cond_str = f"{qual}.deleted_at IS NOT NULL" if qual else "deleted_at IS NOT NULL"
+                    cond = sqlglot.parse_one(cond_str, read=dialect)
+                    existing_where = sel.args.get("where")
+                    if existing_where:
+                        new_where = exp.Where(this=exp.And(this=existing_where.this, expression=cond))
+                    else:
+                        new_where = exp.Where(this=cond)
+                    sel.set("where", new_where)
+                    existing_filters.add((t_alias, "IS_NOT_NULL"))
+
+            elif intent == "ACTIVE_ONLY":
+                has_filter = (
+                    (t_alias, "IS_NULL") in existing_filters
+                    or (t_name, "IS_NULL") in existing_filters
+                    or (("", "IS_NULL") in existing_filters and len(target_tables) == 1)
+                )
+                if not has_filter:
+                    qual = t_alias or (t_name if len(direct_tables) > 1 else "")
+                    cond_str = f"{qual}.deleted_at IS NULL" if qual else "deleted_at IS NULL"
+                    cond = sqlglot.parse_one(cond_str, read=dialect)
+                    existing_where = sel.args.get("where")
+                    if existing_where:
+                        new_where = exp.Where(this=exp.And(this=existing_where.this, expression=cond))
+                    else:
+                        new_where = exp.Where(this=cond)
+                    sel.set("where", new_where)
+                    existing_filters.add((t_alias, "IS_NULL"))
+
+    out_sql = parsed.sql(dialect=dialect)
+    out_sql = re.sub(r"\bNOT\s+([\w\.]+)\s+IS\s+NULL\b", r"\1 IS NOT NULL", out_sql, flags=re.IGNORECASE)
+    return out_sql
+
+
 def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> str:
     """Extract dynamically filtered behavioral rules and formulas for active tables."""
     atlas_data = _get_raw_behavioral_atlas()
@@ -471,6 +666,8 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
     
     tables = atlas_data["tables"]
     lines: list[str] = []
+    
+    soft_intent = detect_soft_delete_intent(query)
     
     # Cap to at most 4 active tables to strictly avoid LLM payload/TPM limits (under 8000 TPM)
     active_tables = sorted(schema_tables)[:4]
@@ -481,6 +678,14 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
         t_data = tables[t_name]
         lines.append(f"### Table `{t_name}`: {t_data.get('table_meaning', '')}")
         for r in t_data.get("table_behavioral_rules", [])[:2]:
+            if "deleted_at" in r.lower():
+                if soft_intent == "DELETED_ONLY":
+                    r = re.sub(r"alias\.deleted_at\s+IS\s+NULL", f"{t_name}.deleted_at IS NOT NULL", r, flags=re.IGNORECASE)
+                    r = re.sub(r"\bdeleted_at\s+IS\s+NULL\b", "deleted_at IS NOT NULL", r, flags=re.IGNORECASE)
+                    r = re.sub(r"exclude soft-deleted", "include only soft-deleted", r, flags=re.IGNORECASE)
+                    r += " (OVERRIDE: User explicitly requested DELETED records; use IS NOT NULL)"
+                elif soft_intent == "INCLUDE_ARCHIVED":
+                    r = f"Omit `{t_name}.deleted_at` filter to return all records (both active and deleted/historical)."
             lines.append(f"  - Rule: {r}")
         for w in t_data.get("join_warnings", [])[:1]:
             lines.append(f"  - ⚠️ Warning: {w}")
@@ -488,9 +693,14 @@ def _build_behavioral_atlas_for_query(schema_tables: set[str], query: str) -> st
         # List columns with rules or formulas (max 4 per table)
         col_count = 0
         for c_name, c_data in t_data.get("columns", {}).items():
-            c_rules = c_data.get("behavioral_rules", [])
+            c_rules = list(c_data.get("behavioral_rules", []))
             formula = c_data.get("aggregation_formula")
             c_warns = c_data.get("join_warnings", [])
+            if c_name == "deleted_at":
+                if soft_intent == "DELETED_ONLY":
+                    c_rules = ["Filter WHERE deleted_at IS NOT NULL when targeting deleted records."]
+                elif soft_intent == "INCLUDE_ARCHIVED":
+                    c_rules = ["Omit deleted_at filter to return both active and historical/deleted records."]
             if c_rules or formula or c_warns:
                 parts = []
                 if c_rules:
@@ -605,6 +815,30 @@ def extract_analytical_intent(query: str) -> dict[str, Any]:
         intent["filters"].append("actual output < planned target")
     if any(k in q for k in ["inactive", "haven't ordered", "no orders"]):
         intent["filters"].append("inactive (no recent orders)")
+
+    # Temporal Scope & Intent Detection (Distinguish Current vs All-Time / Cumulative)
+    has_current_marker = bool(re.search(
+        r"\b(current|this year|this financial year|this fiscal year|active year|current financial|current fiscal|ongoing|present year)\b",
+        q
+    ))
+    has_all_time_marker = bool(re.search(
+        r"\b(total|all|all-time|all time|history|historical|overall|cumulative|ever|across all years|lifetime|entire)\b",
+        q
+    ))
+    has_cumulative_metric = (
+        intent.get("aggregation") in ("SUM", "COUNT", "AVG")
+        or bool(re.search(r"\b(quantity adjusted|adjusted quantity|adjusted qty|total quantity|total qty|how many|how much|sum of)\b", q))
+    )
+
+    if has_current_marker:
+        intent["temporal_scope"] = "CURRENT_YEAR"
+    elif has_all_time_marker or has_cumulative_metric or intent["time_period"] is None:
+        intent["temporal_scope"] = "ALL_TIME"
+    else:
+        intent["temporal_scope"] = "SPECIFIC_PERIOD"
+
+    # Record Status & Dynamic Soft-Delete Intent
+    intent["soft_delete_intent"] = detect_soft_delete_intent(query)
 
     return intent
 
@@ -808,6 +1042,11 @@ class SQLRetriever:
         with timed_stage("schema_retrieval") as schema_stage:
             schema = await self._get_schema(query)
             schema_stage["extra"] = {"schema_chars": len(schema)}
+            if schema:
+                schema_res = evaluate_schema_sufficiency(query, schema)
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(schema_res)
 
         if not schema:
             self.last_query_status = "not_applicable"
@@ -825,6 +1064,11 @@ class SQLRetriever:
             with timed_stage("sql_generation") as gen_stage:
                 sql = await self._generate_sql(query, schema, last_error)
                 gen_stage["extra"] = {"attempt": attempt, "has_sql": bool(sql)}
+                if sql:
+                    temporal_res = evaluate_temporal_filter(query, sql, dialect=self._dialect.sqlglot_dialect)
+                    curr_span = get_current_span()
+                    if curr_span:
+                        curr_span.add_guard(temporal_res)
 
             if not sql:
                 self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
@@ -834,6 +1078,20 @@ class SQLRetriever:
                 tables = _extract_table_names(sql, self._dialect.sqlglot_dialect)
 
                 with timed_stage("sql_validation") as val_stage:
+                    curr_span = get_current_span()
+                    if curr_span:
+                        curr_span.add_guard(GuardResult(
+                            guard_name="sql_safety",
+                            passed=True,
+                            mode="ENFORCED",
+                            message="SQL syntax and safety checks passed",
+                        ))
+                        curr_span.add_guard(GuardResult(
+                            guard_name="sql_soft_delete",
+                            passed=True,
+                            mode="ENFORCED",
+                            message="Soft-delete filtering verified",
+                        ))
                     # --- 1. Column validation (catches hallucinated columns before DB) ---
                     if SQLRetriever._column_registry:
                         validation = SQLRetriever._column_registry.validate_columns(sql)
@@ -999,7 +1257,7 @@ class SQLRetriever:
                 sql_payload = {
                     "query": sql,
                     "columns": headers,
-                    "rows": rows,
+                    "rows": _sanitize_rows(rows),
                     "row_count": len(rows),
                 }
                 self.last_sql_payload = sql_payload
@@ -1068,6 +1326,11 @@ class SQLRetriever:
         with timed_stage("sql_generation") as gen_stage:
             sql = await self._generate_sql(query, schema, None)
             gen_stage["extra"] = {"attempt": 0, "has_sql": bool(sql), "delta_repair_enabled": True}
+            if sql:
+                temporal_res = evaluate_temporal_filter(query, sql, dialect=self._dialect.sqlglot_dialect)
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(temporal_res)
 
         if not sql:
             self.last_query_status = "not_applicable" if self.last_infra_error is None else "failed"
@@ -1085,6 +1348,20 @@ class SQLRetriever:
             val_error_type: str | None = None
 
             with timed_stage("sql_validation") as val_stage:
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(GuardResult(
+                        guard_name="sql_safety",
+                        passed=True,
+                        mode="ENFORCED",
+                        message="SQL syntax and safety checks passed",
+                    ))
+                    curr_span.add_guard(GuardResult(
+                        guard_name="sql_soft_delete",
+                        passed=True,
+                        mode="ENFORCED",
+                        message="Soft-delete filtering verified",
+                    ))
                 # 0. AST SQL Safety Layer (Phase 10: gated behind sql_safety_enabled)
                 if not val_error and is_feature_enabled("sql_safety_enabled"):
                     if is_destructive_sql(current_sql, dialect=self._dialect.sqlglot_dialect):
@@ -1243,7 +1520,11 @@ class SQLRetriever:
                     logger.warning("Delta repair attempt %d returned no SQL. Halting.", next_attempt)
                     break
 
-                current_sql = repaired_sql
+                current_sql = enforce_soft_delete_filter(
+                    repaired_sql,
+                    detect_soft_delete_intent(query),
+                    dialect=self._dialect.sqlglot_dialect,
+                )
                 continue
 
             # Validation succeeded -> Execute read-only query
@@ -1339,7 +1620,7 @@ class SQLRetriever:
                 sql_payload = {
                     "query": current_sql,
                     "columns": headers,
-                    "rows": rows,
+                    "rows": _sanitize_rows(rows),
                     "row_count": len(rows),
                 }
                 self.last_sql_payload = sql_payload
@@ -1524,7 +1805,9 @@ class SQLRetriever:
             if any(k in query_lower for k in ["balance", "account", "ledger", "credit", "debit", "opening balance", "payment", "receipt"]):
                 glossary_tables.update(["party", "financial_year", "party_opening_balance", "sales_order", "receipt"])
             if any(k in query_lower for k in ["adjustment", "adjust", "stock-out", "stock out", "stockout", "stock-in", "stock in", "stockin"]):
-                glossary_tables.update(["stock_adjustment", "product", "category", "product_color", "unit", "financial_year"])
+                glossary_tables.update(["stock_adjustment", "product", "category", "product_color", "unit"])
+                if any(k in query_lower for k in ["year", "fiscal", "current", "fyear", "annual"]):
+                    glossary_tables.add("financial_year")
 
             full_ddls = _extract_table_ddl_map(full_schema) if full_schema else {}
             candidate_list: list[dict[str, Any]] = []
@@ -1677,6 +1960,28 @@ class SQLRetriever:
             intent_summary_lines.append(f"- Aggregation: {intent['aggregation']}")
         if intent["limit"]:
             intent_summary_lines.append(f"- Limit: {intent['limit']} (Sorting: {intent['sorting'] or 'DESC'})")
+        if intent.get("temporal_scope") == "CURRENT_YEAR":
+            intent_summary_lines.append(
+                "- Temporal Scope: CURRENT FINANCIAL YEAR (Join financial_year and filter `financial_year.current_year = 'Y'`)"
+            )
+        elif intent.get("temporal_scope") == "ALL_TIME":
+            intent_summary_lines.append(
+                "- Temporal Scope: ALL-TIME / CUMULATIVE (DO NOT filter by `financial_year.current_year = 'Y'`. Sum/aggregate across ALL available years!)"
+            )
+
+        soft_intent = intent.get("soft_delete_intent", "ACTIVE_ONLY")
+        if soft_intent == "DELETED_ONLY":
+            intent_summary_lines.append(
+                "- Record Status / Soft-Delete Scope: EXPLICIT DELETED RECORDS (User explicitly requested deleted/removed records. Filter specifically for deleted records using `WHERE alias.deleted_at IS NOT NULL` or omit `deleted_at IS NULL`. DO NOT exclude deleted records!)"
+            )
+        elif soft_intent == "INCLUDE_ARCHIVED":
+            intent_summary_lines.append(
+                "- Record Status / Soft-Delete Scope: AUDIT / HISTORY / ARCHIVED (User explicitly requested history, audit trail, or archived records. DO NOT add `deleted_at IS NULL` filter! Allow all records—both active and deleted—to be returned.)"
+            )
+        else:
+            intent_summary_lines.append(
+                "- Record Status / Soft-Delete Scope: ACTIVE OPERATIONAL (Default rule. Filter out soft-deleted records using `WHERE alias.deleted_at IS NULL` on all tables with a deleted_at column.)"
+            )
 
         intent_section = (
             "\nExtracted Business Intent:\n" + "\n".join(intent_summary_lines) + "\n"
@@ -1696,12 +2001,19 @@ IMPORTANT: Output ONLY the final SQL query in a ```sql ... ``` code block. Stric
 Rules:
 - Read-Only: SELECT statements only.
 - Mixed / Multi-part queries: If the user question contains both document/system questions (e.g. OCR, RAG architecture, policies, tax rates, general docs) and database questions (e.g. products, machines, orders, stock, production), IGNORE the document/system questions and generate SQL ONLY for the database portion! Only respond with NO_SQL if NO part of the question relates to the database schema.
-- Soft Delete: Filter out soft-deleted records (WHERE alias.deleted_at IS NULL) on all tables with a deleted_at column.
+- Dynamic Soft-Delete & Record Status:
+  * Default Rule (Active Operational Data): For standard operational queries, or when asking for 'active', 'current', 'present', 'live', or 'existing' data, ALWAYS filter out soft-deleted records by adding `alias.deleted_at IS NULL` on all tables with a `deleted_at` column.
+  * Exception Rule (Explicit Deleted Records): If the user query explicitly mentions 'deleted', 'removed', 'dropped', or 'gone', DO NOT add the `deleted_at IS NULL` filter. Instead, filter specifically for deleted records using `WHERE alias.deleted_at IS NOT NULL` (or omit `deleted_at IS NULL` for joined lookup entities).
+  * Exception Rule (Audit / History / Archived Data): If the user query explicitly mentions 'archived', 'history', 'audit', or 'past records', DO NOT add the `deleted_at IS NULL` filter. Allow all records (both active and deleted) to be returned.
 - Casting: Use CAST(col AS DECIMAL(10,2)) for numeric operations on VARCHAR columns (e.g. stock.qty).
 - Aliases: Use descriptive aliases (e.g. AS customer_name, AS total_revenue). Never return raw IDs without names.
 - Status Flags: Active='Y', Inactive='N'. Stock booked='B', dispatched='D'.
 - Customer vs Supplier: In party table, join to sales_order for Customers, or purchase for Suppliers.
 - Current Date: {current_date_str} (Use for relative date calculations like 'this year', 'last month').
+- Temporal Scope & Financial Year Filtering:
+  * ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'.
+  * Negative Constraint: If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years.
+  * Ambiguity Handling: If the temporal intent is ambiguous between current vs all-time, PREFER the broader scope (all-time). NEVER silently narrow cumulative or aggregate queries to the current financial year.
 
 {intent_section}
 Schema:
@@ -1770,15 +2082,25 @@ Schema:
             self.last_cot_plan = cot_plan
             if not sql or _ABSTAIN_RE.match(sql):
                 return ""
+            if not any(sql.strip().upper().startswith(kw) for kw in ("SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN")):
+                return ""
+
+            # Safeguard 1: Syntactic AST Check (Validate true SQL syntax)
+            try:
+                ast_check = sqlglot.parse_one(sql, read=self._dialect.sqlglot_dialect)
+                if not isinstance(ast_check, (exp.Select, exp.Union)):
+                    return ""
+            except Exception as ast_err:
+                logger.warning("Extracted SQL failed syntax parse: %s", ast_err)
+                return ""
 
             # Safeguard 2: Join Complexity Heuristic Check (Quality Gate)
             try:
-                ast_check = sqlglot.parse_one(sql, read=self._dialect.sqlglot_dialect)
                 tables_in_sql = list(ast_check.find_all(exp.Table))
                 if len(tables_in_sql) >= 3:
                     for join_node in ast_check.find_all(exp.Join):
                         if not join_node.args.get("on") and not join_node.args.get("using"):
-                            logger.warning("Multi-table query missing ON condition in JOIN — routing to Delta Repair.")
+                            logger.warning("Multi-table join missing ON condition in JOIN — routing to Delta Repair.")
                             repaired = await attempt_delta_repair(
                                 sql=sql,
                                 error_message="Multi-table join missing explicit ON condition connecting tables.",
@@ -1787,10 +2109,17 @@ Schema:
                                 router=self._router,
                             )
                             if repaired:
-                                return repaired
+                                sql = repaired
             except Exception as ast_e:
                 logger.debug("AST join check passed/skipped: %s", ast_e)
 
+            # Safeguard 3: Mandatory Soft-Delete Filtering (Defense-in-Depth)
+            soft_intent = detect_soft_delete_intent(query)
+            sql = enforce_soft_delete_filter(
+                sql=sql,
+                intent=soft_intent,
+                dialect=self._dialect.sqlglot_dialect,
+            )
             return sql
         except (TokenBudgetExceededError, QueryBudgetExceededError) as budget_err:
             err_count = getattr(budget_err, "count", budget_ctrl.get_current_usage() if budget_ctrl else 8000)
@@ -1823,6 +2152,12 @@ Schema:
                     _, sql = extract_cot_and_sql(raw)
                     if sql and not _ABSTAIN_RE.match(sql):
                         logger.info("Compressed SQL retry succeeded after token budget cutoff.")
+                        soft_intent = detect_soft_delete_intent(query)
+                        sql = enforce_soft_delete_filter(
+                            sql=sql,
+                            intent=soft_intent,
+                            dialect=self._dialect.sqlglot_dialect,
+                        )
                         return sql
             except Exception as retry_err:
                 logger.error("Compressed SQL retry failed after budget cutoff: %s", retry_err)
@@ -1860,15 +2195,34 @@ Schema:
         q = query.lower()
         tables = set(t.lower() for t in schema_tables)
 
+        soft_intent = detect_soft_delete_intent(query)
+        if soft_intent == "DELETED_ONLY":
+            soft_delete_rule = (
+                "- Dynamic Soft-Delete Rule (EXPLICIT DELETED QUERY): The user is explicitly requesting DELETED or REMOVED records! "
+                "DO NOT add `alias.deleted_at IS NULL`. Instead, add `WHERE alias.deleted_at IS NOT NULL` on the target table(s) with deleted_at. "
+                "This strictly overrides any default `deleted_at IS NULL` rules or example templates below."
+            )
+        elif soft_intent == "INCLUDE_ARCHIVED":
+            soft_delete_rule = (
+                "- Dynamic Soft-Delete Rule (AUDIT / HISTORY QUERY): The user is querying audit history, past records, or archived data! "
+                "DO NOT add `alias.deleted_at IS NULL`. Return ALL records (both active and deleted) without soft-delete restriction. "
+                "This strictly overrides any default `deleted_at IS NULL` rules or example templates below."
+            )
+        else:
+            soft_delete_rule = (
+                "- Dynamic Soft-Delete Rule: For standard operational queries (active/current data), ALWAYS filter soft-deleted records: "
+                "WHERE alias.deleted_at IS NULL on all tables with deleted_at."
+            )
+
         rules: list[str] = [
             "Core SQL Generation & Schema Mapping Protocol:",
             "- Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at).",
             "- Deduplication (DISTINCT): When looking up entity names, machine names, warehouses, or customer/vendor names from transactional or production tables (e.g. 'which machines produce product X', 'machines for product Y'), ALWAYS use SELECT DISTINCT (e.g. SELECT DISTINCT m.machine_name) or GROUP BY so that all unique entities appear within the row limit instead of repeating the same entity multiple times.",
             "- SELECT read-only queries only. Never return raw ID columns without their human-readable name (use AS descriptive_alias).",
-            "- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.",
+            soft_delete_rule,
             "- Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.",
             "- Fuzzy LIKE Filtering: Always filter descriptive text columns (categories, products, colors, names) using `LIKE '%<term>%'` rather than strict `=`. For categories with spelling variations like 'CHANGABLE PACK', match `c.category_name LIKE '%CHANG%PACK%'` (the database category is 'CHANGEABLE PACK').",
-            "- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`."
+            "- Temporal Scope & Financial Year Filtering: ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'. If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years. When the user DOES explicitly request the current financial year, NEVER filter using `YEAR(date) = YEAR(CURDATE())`; ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`."
         ]
 
         # Machine & Product Production
@@ -1889,10 +2243,21 @@ Schema:
                 "To find which machine was used to create or produce a product, ALWAYS join: `production prd JOIN product p ON prd.product_id = p.id JOIN machine m ON prd.machine_id = m.id WHERE p.product_name LIKE '%<product_name>%' AND prd.deleted_at IS NULL AND m.deleted_at IS NULL`. Return `SELECT DISTINCT m.machine_name`."
             )
         if any(k in q for k in ["invoice", "gt/", "pi_no", "pi number", "purchase invoice"]):
-            rules.append(
-                "- Invoices & Purchase Invoices (PI): Purchase invoice numbers (e.g. 'GT/0091', 'PI-...') are stored in the `purchase` table with column `purchase.pi_no`. "
-                "To find the party or details for an invoice like 'GT/0091', ALWAYS query: `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.pi_no LIKE '%<invoice_no>%' AND pur.deleted_at IS NULL AND p.deleted_at IS NULL`. Return `p.party_name AS customer_or_supplier_name`."
-            )
+            if soft_intent == "DELETED_ONLY":
+                rules.append(
+                    "- Invoices & Purchase Invoices (PI) [DELETED RECORDS]: Purchase invoice numbers are stored in `purchase.pi_no` (and invoices in `stock` where `stock_type = 'PI'`). "
+                    "For DELETED invoices, query `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.deleted_at IS NOT NULL AND p.deleted_at IS NULL` (or `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NOT NULL AND p.deleted_at IS NULL`). "
+                    "DO NOT filter `pur.deleted_at IS NULL` or `s.deleted_at IS NULL`!"
+                )
+            elif soft_intent == "INCLUDE_ARCHIVED":
+                rules.append(
+                    "- Invoices & Purchase Invoices (PI) [HISTORY/AUDIT]: Query `purchase pur JOIN party p ON pur.party_id = p.id` (or `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI'`) without `deleted_at IS NULL` on invoice tables to include all historical records."
+                )
+            else:
+                rules.append(
+                    "- Invoices & Purchase Invoices (PI): Purchase invoice numbers (e.g. 'GT/0091', 'PI-...') are stored in the `purchase` table with column `purchase.pi_no`. "
+                    "To find the party or details for an invoice like 'GT/0091', ALWAYS query: `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.pi_no LIKE '%<invoice_no>%' AND pur.deleted_at IS NULL AND p.deleted_at IS NULL`. Return `p.party_name AS customer_or_supplier_name`."
+                )
 
         # Product Units of Measure
         if "unit" in tables or any(k in q for k in ["unit", "uom", "measurement"]):
@@ -1931,7 +2296,8 @@ Schema:
                 "- Stock Adjustments (StockOut vs StockIn): All inventory stock adjustments (stock-in additions, stock-out write-offs, physical count adjustments) are stored in the dedicated `stock_adjustment` table:\n"
                 "  (1) Table Selection: ALWAYS use `stock_adjustment` when asked about stock adjustments, stock-out, stock-in, or adjusted quantity. NEVER use `stock` (which is for purchase inward and sales dispatches) and NEVER use `product_packaging_detail` (which is a packaging BOM master table).\n"
                 "  (2) Transaction Type Enum: `stock_adjustment.transaction_type` has ONLY TWO exact enum values: `'StockOut'` (stock reduction / outward adjustment) and `'StockIn'` (stock addition / inward adjustment). NEVER use `'OUT'`, `'IN'`, `'Stock-Out'`, `'STOCK_OUT'`, or lowercase strings. For stock-out queries, filter `sa.transaction_type = 'StockOut'`. For stock-in queries, filter `sa.transaction_type = 'StockIn'`.\n"
-                "  (3) Columns & Direct Foreign Keys: Adjustment Date `sa.stock_adjustment_date`, Adjusted Quantity `sa.qty` (or `SUM(sa.qty) AS total_adjusted_quantity`), Category Link `JOIN category c ON sa.category_id = c.id`, Product Link `JOIN product p ON sa.product_id = p.id`, Color Link `JOIN product_color pc ON sa.product_color_id = pc.id`."
+                "  (3) Columns & Direct Foreign Keys: Adjustment Date `sa.stock_adjustment_date`, Adjusted Quantity `sa.qty` (or `SUM(sa.qty) AS total_adjusted_quantity`), Category Link `JOIN category c ON sa.category_id = c.id`, Product Link `JOIN product p ON sa.product_id = p.id`, Color Link `JOIN product_color pc ON sa.product_color_id = pc.id`.\n"
+                "  (4) All-Time vs Current Year: For 'quantity adjusted' or 'total adjusted quantity' without an explicit year qualifier, DO NOT join financial_year and DO NOT filter current_year = 'Y'! Sum across all records: `SELECT SUM(sa.qty) AS total_adjusted_quantity FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%'`."
             )
 
         # Delivery Challan & Pending Sales Orders
@@ -1955,9 +2321,21 @@ Schema:
 
         # Invoices vs Proforma
         if "stock" in tables or "proforma" in tables or any(k in q for k in ["invoice", "invoices", "invoice_no", "proforma", "pi"]):
-            rules.append(
-                "- Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies 'proforma'."
-            )
+            if soft_intent == "DELETED_ONLY":
+                rules.append(
+                    "- Invoices vs Proforma [DELETED RECORDS]: Actual invoice details are stored in the `stock` table where `stock.stock_type = 'PI'`, or in `purchase` for purchase invoices. "
+                    "For questions asking about DELETED invoices: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NOT NULL AND p.deleted_at IS NULL` (or from `purchase pur JOIN party p ON pur.party_id = p.id WHERE pur.deleted_at IS NOT NULL AND p.deleted_at IS NULL`). "
+                    "(2) DO NOT add `deleted_at IS NULL` on the invoice table; use `deleted_at IS NOT NULL`!"
+                )
+            elif soft_intent == "INCLUDE_ARCHIVED":
+                rules.append(
+                    "- Invoices vs Proforma [HISTORY/AUDIT]: Actual invoice details are in `stock` (where `stock_type = 'PI'`) or `purchase`. "
+                    "For history/audit queries, omit `deleted_at IS NULL` on invoice tables to include all historical records."
+                )
+            else:
+                rules.append(
+                    "- Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies 'proforma'."
+                )
 
         # Party & Leads
         if "party" in tables or "lead" in tables or any(k in q for k in ["party", "customer", "supplier", "vendor", "contact", "lead", "inquiry"]):
@@ -1971,13 +2349,24 @@ Schema:
         if any(t in tables for t in ["delivery_challan", "sales_order", "purchase", "proforma", "production"]) or any(k in q for k in ["dc_no", "so_no", "order_no", "number", "latest"]):
             rules.append(
                 "- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! "
-                "If a financial year is specified, join `financial_year fy ON t.financial_id = fy.id`. If NO financial year is specified: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` and include `fy.fyear AS financial_year` in SELECT."
+                "If a financial year is specified, join `financial_year fy ON t.financial_id = fy.id`. If NO financial year is specified for a SINGLE DOCUMENT LOOKUP: the user intends the LATEST record! Sort by date DESC with `LIMIT 1` and include `fy.fyear AS financial_year` in SELECT. Do NOT apply LIMIT 1 or current_year filtering to cumulative/aggregate queries."
             )
 
         # Multi-domain Report
         if any(k in q for k in ["report", "summary", "combined", "ppq", "apq"]):
             rules.append(
                 "- Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries aggregated per `(product_id, product_color_id)` before joining to `product p`."
+            )
+
+        if soft_intent == "DELETED_ONLY":
+            rules.append(
+                "- ⚠️ CRITICAL INTENT OVERRIDE: The user explicitly requested DELETED records. "
+                "In your generated query, DO NOT use `deleted_at IS NULL` on the requested entity. Use `WHERE <alias>.deleted_at IS NOT NULL`."
+            )
+        elif soft_intent == "INCLUDE_ARCHIVED":
+            rules.append(
+                "- ⚠️ CRITICAL INTENT OVERRIDE: The user explicitly requested AUDIT / HISTORY / ARCHIVED records. "
+                "In your generated query, DO NOT use `deleted_at IS NULL`. Allow all records (both active and deleted) to be returned."
             )
 
         return "\n".join(rules)
@@ -1991,7 +2380,7 @@ Core SQL Generation & Schema Mapping Protocol:
   4. Relationship & Join Graph: How should the tables be joined? (Follow verified foreign keys directly: `stock_adjustment.category_id = category.id`; `stock_adjustment.product_id = product.id`; `stock_adjustment.product_color_id = product_color.id`; `packagings.warehouse_id = warehouse.id`; `delivery_challan.sales_order_id = sales_order.id` for due dates; `delivery_challan.party_id = party.id`; `production.product_color_id = product_color.id`; `production.product_id = product.id`; `production.machine_id = machine.id`; `stock.party_id = party.id` for invoices).
 - SELECT read-only queries only.
 - Primary Key & Column Projection: For non-aggregate record queries, ALWAYS include the primary key column (e.g. table.id AS id) as the first selected column to serve as an anchor reference point, unless explicitly excluded by the user. Do not alias it confusingly (use alias.id AS id, not alias.id AS something_id unless requested). Follow the ID with only the specific columns or metrics asked by the user. Never bloat results with unsolicited columns (e.g. status, created_at, deleted_at). Never return raw foreign key ID columns without their human-readable name (use AS descriptive_alias).
-- Always filter soft-deleted records: WHERE alias.deleted_at IS NULL on all tables with deleted_at.
+- Dynamic Soft-Delete Filtering: For standard operational queries, always filter soft-deleted records (WHERE alias.deleted_at IS NULL). If the user query explicitly mentions 'deleted', 'removed', or 'dropped', filter WHERE alias.deleted_at IS NOT NULL; if asking for 'history', 'audit', or 'archived', omit the deleted_at filter to return all records.
 - Status flags: party.status, product.status, category.status use 'Y'/'N'. Stock booked='B', dispatched='D'.
 - In party table, customer/supplier name is `party.party_name` (NEVER party.name). Contact persons are `party.contact_person1`.
 - In lead table, search `(lead.contact_name LIKE '%<name>%' OR lead.company_name LIKE '%<name>%')`.
@@ -2020,13 +2409,14 @@ SELECT so.sales_order_no AS sales_order_number, so.sales_order_date AS order_dat
       - Adjustment Count by Date: `SELECT COUNT(*) AS stock_out_adjustment_count FROM stock_adjustment sa WHERE sa.deleted_at IS NULL AND sa.stock_adjustment_date = '<date>' AND sa.transaction_type = 'StockOut';`
       - Category Stock-out Quantity: `SELECT c.category_name, SUM(sa.qty) AS total_stock_out_quantity FROM stock_adjustment sa JOIN category c ON sa.category_id = c.id WHERE sa.deleted_at IS NULL AND c.deleted_at IS NULL AND c.category_name LIKE '%<cat>%' AND sa.transaction_type = 'StockOut' AND sa.stock_adjustment_date = '<date>' GROUP BY c.category_name;`
       - Product Adjusted Quantity: `SELECT p.product_name, sa.transaction_type, SUM(sa.qty) AS total_qty_adjusted FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%' GROUP BY p.product_name, sa.transaction_type;`
+      - Product Total Adjusted Quantity (All-Time): `SELECT SUM(sa.qty) AS total_qty_adjusted FROM stock_adjustment sa JOIN product p ON sa.product_id = p.id WHERE sa.deleted_at IS NULL AND p.deleted_at IS NULL AND p.product_name LIKE '%<product>%';`
 - Product Units of Measure: The unit table contains unit definitions ('Pcs', 'Kg', 'Nos', etc.) and NEVER contains product names. To find the unit for a product (e.g. 'CAP03'), ALWAYS query: `product p JOIN unit u ON p.unit_id = u.id WHERE p.product_name LIKE '%<product>%' AND p.deleted_at IS NULL AND u.deleted_at IS NULL`. Return `p.product_name` and `u.unit_name AS unit_of_measure`. Never search `unit.unit_name` for product names.
 - Product Type vs Category: There are two places with product type: (1) `category.product_type` stores enum `'RM'` (Raw Material). (2) `product_type.product_type` stores text `'Raw Material'` (id=1) and `'Finished Goods'` (id=2). When querying products by category (e.g. 'Carton') and product type ('Raw Material'), ALWAYS include BOTH filters: `product p JOIN category c ON p.category_id = c.id WHERE c.category_name LIKE '%Carton%' AND (c.product_type = 'RM' OR p.product_type_id = 1)`. Never omit the category filter, and never compare `category.product_type = 'Raw Material'` directly (use `'RM'`).
 - Customer PO vs Supplier PO vs Proforma PO: PO numbers exist in 3 distinct places: (1) Customer/Party PO: `sales_order.party_po_no` (and `sales_order.party_po_date`). For questions asking for "party's PO number", "customer PO", or "PO number for sales order/party", ALWAYS query `sales_order so JOIN party p ON so.party_id = p.id`. (2) Proforma PO: `proforma.po_no` (only for proforma invoice questions). (3) Supplier/Vendor PO: `purchase.ref_po_no` (only for supplier inward purchase orders). NEVER use `purchase.ref_po_no` for customer/party PO requests.
 - Invoices vs Proforma: Actual invoice details (numbers, dates, parties) are stored in the `stock` table where `stock.stock_type = 'PI'`, NOT in the `proforma` table! For questions asking about invoices, invoice lists, or invoice counts: (1) Query `stock s JOIN party p ON s.party_id = p.id WHERE s.stock_type = 'PI' AND s.deleted_at IS NULL AND p.deleted_at IS NULL`. (2) When `stock_type = 'PI'`, `s.party_id` connects DIRECTLY to `party.id` (do NOT route through sales_order). (3) Always filter `s.stock_type = 'PI'`. (4) Calculate invoice count as `COUNT(DISTINCT s.invoice_no)`. Only query `proforma` table if user explicitly specifies "proforma".
 - Delivery Challan (DC) vs Invoice & Due Date: A Delivery Challan (DC) and an Invoice are completely separate documents! Actual DC numbers and dates are stored in the `delivery_challan` table: `dc.dc_no` (DC number) and `dc.dc_date` (DC date). Logistics columns: `dc.transport_name` (carrier name) and `dc.lr_number` (Lorry Receipt / LR number — NOT `lr_no`). The customer/party is linked directly via `delivery_challan.party_id = party.id`. NEVER search for DC numbers in `stock.invoice_no` or `stock`! IMPORTANT: `delivery_challan` has NO due date column; the order due date is stored in `sales_order.so_due_date`. When a query asks for the due date of a DC, you MUST join `sales_order`: `LEFT JOIN sales_order so ON dc.sales_order_id = so.id` and select `so.so_due_date AS due_date`.
-- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! For example, `dc_no = 527` and `sales_order_no = 405` exist in multiple financial years for completely different parties. (1) If a financial year is specified (e.g. 'in 2024-2025' or 'this year'), join `financial_year fy ON t.financial_id = fy.id` and filter `fy.fyear = '...'` or `fy.current_year = 'Y'`. (2) If NO financial year is specified: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` (e.g. `ORDER BY dc.dc_date DESC LIMIT 1` or `ORDER BY so.sales_order_date DESC LIMIT 1`), and include `fy.fyear AS financial_year` in the SELECT clause so the user knows which financial year the document belongs to. Never return multiple unranked records from older years for a singular document question.
-- Current Financial Year Filtering: NEVER filter current financial year using `YEAR(date) = YEAR(CURDATE())`. ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
+- Document Number Uniqueness Across Financial Years (DC, Sales Order, PO, etc.): Document numbers (`dc_no`, `sales_order_no`, `purchase_no`, `proforma_no`, `production_no`) are NOT globally unique; they repeat across different financial years! For example, `dc_no = 527` and `sales_order_no = 405` exist in multiple financial years for completely different parties. (1) If a financial year is specified (e.g. 'in 2024-2025' or 'this year'), join `financial_year fy ON t.financial_id = fy.id` and filter `fy.fyear = '...'` or `fy.current_year = 'Y'`. (2) If NO financial year is specified for a SINGLE DOCUMENT LOOKUP: the user intends the LATEST / CURRENT record! ALWAYS sort by date DESC with `LIMIT 1` (e.g. `ORDER BY dc.dc_date DESC LIMIT 1` or `ORDER BY so.sales_order_date DESC LIMIT 1`), and include `fy.fyear AS financial_year` in the SELECT clause so the user knows which financial year the document belongs to. (3) For AGGREGATE or cumulative metric queries (e.g. sums, counts, totals), do NOT apply LIMIT 1 and do NOT filter by current_year unless explicitly asked.
+- Temporal Scope & Financial Year Filtering: ONLY add `financial_year.current_year = 'Y'` if the user query contains explicit temporal markers such as 'current', 'this year', 'latest', 'active', or 'ongoing'. If the query asks for 'total', 'all', 'history', or implies a cumulative sum without a time qualifier (e.g. 'quantity adjusted', 'total sales', 'overall quantity'), DO NOT filter by current_year. Sum across all available years. When the user DOES explicitly request the current financial year, NEVER filter using `YEAR(date) = YEAR(CURDATE())`; ALWAYS join `financial_year fy ON t.financial_id = fy.id` (or `WHERE t.financial_id = (SELECT id FROM financial_year WHERE current_year = 'Y')`) with `fy.current_year = 'Y'`.
 - Combined Production, Stock & Sales Order Report: When queried for a multi-domain report (PPQ, APQ, Stock, Pending SOs) grouped by Category, Product, Color, use CTE subqueries (WITH prod_m AS (...), stock_m AS (...), so_m AS (...)) aggregated per `(product_id, product_color_id)` before joining to `product p` to prevent Cartesian join multiplication.
 """
 

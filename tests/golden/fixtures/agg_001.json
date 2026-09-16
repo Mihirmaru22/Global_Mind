@@ -1,0 +1,50 @@
+{
+  "case_id": "agg_001",
+  "category": "AGGREGATION",
+  "result": {
+    "answer": "Results for: HD-BLOW 54GB quantity adjusted sum.",
+    "sql": "SELECT * FROM stock_adjustment WHERE stock_adjustment.deleted_at IS NULL LIMIT 100;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-agg_001",
+    "request_id": "req-agg_001",
+    "query": "HD-BLOW 54GB quantity adjusted sum",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-agg_001",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "stock_adjustment"
+          ]
+        }
+      }
+    ]
+  }
+}

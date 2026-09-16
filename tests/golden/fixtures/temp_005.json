@@ -1,0 +1,50 @@
+{
+  "case_id": "temp_005",
+  "category": "TEMPORAL",
+  "result": {
+    "answer": "Results for: Production batches created between 2025-05-01 and 2025-05-31.",
+    "sql": "SELECT * FROM production WHERE production.deleted_at IS NULL AND production.created_at >= '2025-01-01' LIMIT 100;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-temp_005",
+    "request_id": "req-temp_005",
+    "query": "Production batches created between 2025-05-01 and 2025-05-31",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-temp_005",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "production"
+          ]
+        }
+      }
+    ]
+  }
+}

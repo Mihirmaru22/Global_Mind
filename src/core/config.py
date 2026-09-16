@@ -85,15 +85,16 @@ class Settings(BaseSettings):
     ocr_confidence_threshold: float = 0.75
     chunk_target_tokens: int = 500
     chunk_overlap_fraction: float = 0.12
-    retrieval_top_k: int = 50
-    rerank_top_k: int = 25
+    enable_deep_rerank: bool = True
+    retrieval_top_k: int = 150
+    rerank_top_k: int = 75
     # How many of the top reranked chunks are actually fed into the generation
     # prompt. Reranking still scores the wider rerank_top_k set for accuracy,
     # but only the best few carry the answer — feeding all of them mostly buys
     # input tokens and latency, not quality. Exhaustive ("list every X")
     # queries bypass this cap to preserve recall. Floored at 2 so short-document
     # answers never starve.
-    generation_context_k: int = 5
+    generation_context_k: int = 10
     # Rough token budget for the context block placed in the generation
     # prompt (see _build_context). Estimated at ~3 chars/token — deliberately
     # conservative since content varies (markdown tables and non-English text

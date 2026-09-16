@@ -30,10 +30,15 @@ from src.utils.query_classifier import QueryType, classify_query
 from src.utils.semantic_cache import get_semantic_cache
 from src.utils.query_budget import get_or_create_budget_controller
 from src.utils.telemetry import get_or_create_query_id, log_telemetry, set_current_query_id, timed_stage
+from src.utils.feature_flags import is_feature_enabled
+from src.guards.citation_guard import evaluate_rag_citations, sanitize_hallucinated_citations
+from src.models.trace import Trace
+from src.utils.trace_context import branch_context, get_current_span, start_trace
+from src.utils.trace_writer import emit_trace
 
 logger = logging.getLogger(__name__)
 
-_MIN_RELEVANCE_SCORE = 0.15
+_MIN_RELEVANCE_SCORE = 0.01
 
 # Shown when the live-database path found nothing NOT because the data is
 # missing, but because the LLM providers needed to generate the SQL were all
@@ -242,7 +247,8 @@ class QueryPipeline:
             # Short-circuit: "what files/documents do you have?" — answer from registry
             if _is_document_listing_query(question) and mode != "sql":
                 # ARCH-9: registry reads block; run off the event loop.
-                answer = await asyncio.to_thread(_build_document_list_answer)
+                user_id = filters.get("user_id") if filters else None
+                answer = await asyncio.to_thread(_build_document_list_answer, user_id)
                 return QueryResult(
                     query=question,
                     answer=answer,
@@ -276,24 +282,27 @@ class QueryPipeline:
             doc_subquery = search_query
             if effective_mode == "sql":
                 logger.info("[Tokens: %d/%d] [Mode: SQL] Querying live database only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                sql_chunks = await self._sql_retriever.retrieve(search_query)
+                with branch_context("sql_branch"):
+                    sql_chunks = await self._sql_retriever.retrieve(search_query)
                 vector_chunks = []
                 if not sql_chunks and mode == "auto":
                     logger.info("Auto mode SQL returned no rows; falling back to documents")
+                    with branch_context("rag_branch"):
+                        vector_chunks = await self._retriever.retrieve(
+                            search_query,
+                            top_k=settings.retrieval_top_k,
+                            filters=filters,
+                            exhaustive=exhaustive,
+                        )
+            elif effective_mode == "rag":
+                logger.info("[Tokens: %d/%d] [Mode: RAG] Searching documents only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
+                with branch_context("rag_branch"):
                     vector_chunks = await self._retriever.retrieve(
                         search_query,
                         top_k=settings.retrieval_top_k,
                         filters=filters,
                         exhaustive=exhaustive,
                     )
-            elif effective_mode == "rag":
-                logger.info("[Tokens: %d/%d] [Mode: RAG] Searching documents only", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                vector_chunks = await self._retriever.retrieve(
-                    search_query,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
                 sql_chunks = []
             else:
                 # Concurrent independent retrieval tasks without shared mutable state (Phase L3)
@@ -301,15 +310,22 @@ class QueryPipeline:
                 sql_subquery, doc_subquery = _decompose_hybrid_query(search_query)
                 if sql_subquery != search_query or doc_subquery != search_query:
                     logger.info("Decomposed hybrid query into SQL: '%s' | DOC: '%s'", sql_subquery, doc_subquery)
-                sql_coro = self._sql_retriever.retrieve(sql_subquery)
-                doc_coro = self._retriever.retrieve(
-                    doc_subquery,
-                    top_k=settings.retrieval_top_k,
-                    filters=filters,
-                    exhaustive=exhaustive,
-                )
+
+                async def _run_sql():
+                    with branch_context("sql_branch"):
+                        return await self._sql_retriever.retrieve(sql_subquery)
+
+                async def _run_rag():
+                    with branch_context("rag_branch"):
+                        return await self._retriever.retrieve(
+                            doc_subquery,
+                            top_k=settings.retrieval_top_k,
+                            filters=filters,
+                            exhaustive=exhaustive,
+                        )
+
                 # Coordinator merges isolated outputs after gather completes
-                sql_chunks, vector_chunks = await asyncio.gather(sql_coro, doc_coro)
+                sql_chunks, vector_chunks = await asyncio.gather(_run_sql(), _run_rag())
 
             logger.info("Retrieved %d vector chunks and %d SQL chunks", len(vector_chunks), len(sql_chunks))
             sql_infra_error = self._sql_retriever.last_infra_error
@@ -351,12 +367,13 @@ class QueryPipeline:
             # re-attaches the SQL chunk to the front unconditionally afterward, so
             # it always survives to generation regardless of what the reranker did
             # with the documents.
+            rerank_k = settings.rerank_top_k if settings.enable_deep_rerank else min(settings.rerank_top_k, 25)
             if exhaustive or not vector_chunks:
-                reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
+                reranked = _enforce_document_diversity(vector_chunks, rerank_k)
             else:
                 logger.info("[Tokens: %d/%d] [Stage 13] Reranking", budget_ctrl.get_current_usage(), budget_ctrl.max_tokens)
-                reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=settings.rerank_top_k)
-                reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+                reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=rerank_k)
+                reranked = _enforce_document_diversity(reranked, rerank_k)
             reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
             reranked = _pin_sql_result_chunks(reranked, sql_chunks)
             logger.info("Final context: %d chunks", len(reranked))
@@ -391,6 +408,37 @@ class QueryPipeline:
             result.chunks_retrieved = len(vector_chunks + sql_chunks)
             result.chunks_after_rerank = len(reranked)
 
+            # RAG Citation Guard Evaluation (Hard Enforced or Shadow)
+            if reranked or (result and getattr(result, "citations", None)):
+                citation_guard_res = evaluate_rag_citations(
+                    answer=result.answer if result else "",
+                    retrieved_chunks=reranked,
+                    citations=[getattr(c, "chunk_id", None) or getattr(c, "source", None) or str(c) for c in (getattr(result, "citations", None) or [])],
+                )
+                curr_span = get_current_span()
+                if curr_span:
+                    curr_span.add_guard(citation_guard_res)
+
+                # Hard Enforcement Graceful Degradation / Fallback
+                if not citation_guard_res.passed and citation_guard_res.mode == "ENFORCED":
+                    if is_feature_enabled("enable_fallback_on_guard_failure"):
+                        if citation_guard_res.failure_category == "CITATION_MISMATCH":
+                            hallucinated = citation_guard_res.metadata.get("hallucinated_citations", [])
+                            result.answer = sanitize_hallucinated_citations(result.answer, hallucinated)
+                            if hasattr(result, "citations") and result.citations:
+                                result.citations = [c for c in result.citations if (getattr(c, "chunk_id", None) or getattr(c, "source", None) or str(c)) not in hallucinated]
+                            if curr_span:
+                                curr_span.status = "FALLBACK"
+                                curr_span.metadata["citation_fallback_applied"] = True
+                        elif citation_guard_res.failure_category == "UNSUPPORTED_ANSWER_CLAIM":
+                            result.answer = (
+                                "I could not verify sufficient factual grounding in the retrieved documents to answer this accurately.\n\n"
+                                "*(Note: Some specific source citations could not be verified and have been omitted for accuracy.)*"
+                            )
+                            if curr_span:
+                                curr_span.status = "FALLBACK"
+                                curr_span.metadata["citation_fallback_applied"] = True
+
             total_used = budget_ctrl.get_current_usage()
             status_str = "Truncated" if budget_ctrl.counter.is_exceeded else "Success"
             logger.info(
@@ -416,6 +464,37 @@ class QueryPipeline:
 
             return result
 
+    async def query_with_trace(
+        self,
+        query: str,
+        filters: dict | None = None,
+        history: list[dict] | None = None,
+        mode: str = "auto",
+        request_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> tuple[QueryResult, Trace]:
+        """Execute a query wrapped in end-to-end distributed tracing with shadow and enforced guards."""
+        trace = start_trace(
+            query=query,
+            mode=mode,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+        try:
+            result = await self.query(question=query, filters=filters, history=history, mode=mode)
+            trace.complete(
+                status="SUCCESS" if not getattr(result, "error", None) else "FAILED",
+                final_response=result.answer[:200] if result and result.answer else "",
+            )
+            if hasattr(result, "usage") and result.usage:
+                trace.record_tokens(result.usage.input_tokens, result.usage.output_tokens)
+            emit_trace(trace)
+            return result, trace
+        except Exception as exc:
+            trace.complete(status="FAILED")
+            emit_trace(trace)
+            raise
+
     async def query_stream(
         self, question: str, filters: dict | None = None, history: list[dict] | None = None, mode: str = "auto"
     ):
@@ -435,7 +514,8 @@ class QueryPipeline:
         # Short-circuit: document listing question — answer from registry
         if _is_document_listing_query(question) and mode != "sql":
             # ARCH-9: registry reads block; run off the event loop.
-            answer = await asyncio.to_thread(_build_document_list_answer)
+            user_id = filters.get("user_id") if filters else None
+            answer = await asyncio.to_thread(_build_document_list_answer, user_id)
             yield answer
             yield QueryResult(
                 query=question,
@@ -588,11 +668,12 @@ class QueryPipeline:
             return
 
         # Stage 13 — Reranking. SQL chunks NEVER go here — solo or blended.
+        rerank_k = settings.rerank_top_k if settings.enable_deep_rerank else min(settings.rerank_top_k, 25)
         if exhaustive or not vector_chunks:
-            reranked = _enforce_document_diversity(vector_chunks, settings.rerank_top_k)
+            reranked = _enforce_document_diversity(vector_chunks, rerank_k)
         else:
-            reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=settings.rerank_top_k)
-            reranked = _enforce_document_diversity(reranked, settings.rerank_top_k)
+            reranked = await self._reranker.rerank(doc_subquery, vector_chunks, top_k=rerank_k)
+            reranked = _enforce_document_diversity(reranked, rerank_k)
         reranked = [c for c in reranked if c.score is None or c.score >= _MIN_RELEVANCE_SCORE]
         reranked = _pin_sql_result_chunks(reranked, sql_chunks)
 
@@ -690,15 +771,15 @@ def _is_document_listing_query(question: str) -> bool:
     return True
 
 
-def _build_document_list_answer() -> str:
+def _build_document_list_answer(user_id: str | None = None) -> str:
     """Build a human-friendly answer from the ingestion registry."""
     from src.core.ingestion_registry import IngestionRegistry
     import datetime
 
     registry = IngestionRegistry()
-    # Only the current (active) version of each document Ã¢â¬â superseded versions
+    # Only the current (active) version of each document — superseded versions
     # are history, not part of the live knowledge base.
-    entries = registry.get_active()
+    entries = registry.get_active(user_id=user_id)
 
     if not entries:
         return "I don't have any documents ingested yet. Please upload some files first."

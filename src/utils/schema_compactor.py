@@ -8,6 +8,7 @@ and Join Hints.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import sqlglot
@@ -77,12 +78,24 @@ def compact_ddl(ddl: str, dialect: str | None = None) -> str:
 
     raw_ddl = ddl.strip()
 
+    # Pre-clean DDL for sqlglot parsing:
+    # 1. Normalize 'TABLE <name>' into standard 'CREATE TABLE <name>'
+    # 2. Preserve any trailing comma before comments, e.g. 'col type -- comment,' -> 'col type,'
+    # 3. Strip line comments (-- ...)
+    # 4. Normalize bare 'enum' without values (e.g. 'col enum,') into 'enum('val')' for standard SQL grammar
+    ddl_to_parse = raw_ddl
+    if re.match(r"^\s*TABLE\s+", ddl_to_parse, re.IGNORECASE):
+        ddl_to_parse = re.sub(r"^\s*TABLE\s+", "CREATE TABLE ", ddl_to_parse, count=1, flags=re.IGNORECASE)
+    ddl_to_parse = re.sub(r"--\s*(.*?)(,\s*)$", r",", ddl_to_parse, flags=re.MULTILINE)
+    ddl_to_parse = re.sub(r"--.*?$", "", ddl_to_parse, flags=re.MULTILINE)
+    ddl_to_parse = re.sub(r"\benum\b(?!\s*\()", "enum('val')", ddl_to_parse, flags=re.IGNORECASE)
+
     try:
-        parsed_expressions = sqlglot.parse(raw_ddl, read=dialect)
+        parsed_expressions = sqlglot.parse(ddl_to_parse, read=dialect)
     except Exception as exc:
         logger.debug("sqlglot.parse failed with dialect '%s': %s. Retrying with default dialect.", dialect, exc)
         try:
-            parsed_expressions = sqlglot.parse(raw_ddl)
+            parsed_expressions = sqlglot.parse(ddl_to_parse)
         except Exception as exc2:
             logger.warning("sqlglot could not parse DDL: %s. Falling back to raw DDL.", exc2)
             return raw_ddl

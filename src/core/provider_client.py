@@ -1091,6 +1091,8 @@ class ProviderRouter:
                     self.last_used = f"{option.provider_name}/{option.model}"
                     self.usage.add_call(call_usage)
                     cb.record_success(option.provider_name)
+                    if call_usage.total_tokens > 0:
+                        self._rate_limiter.record_tokens(option.provider_name, call_usage.total_tokens)
                     if budget_ctrl is not None:
                         budget_ctrl.record_call(tokens_used=call_usage.total_tokens, is_repair=is_repair)
                     fell_back = (option.provider_name != top_preferred)
@@ -1273,6 +1275,8 @@ class ProviderRouter:
                     self.last_used = f"{option.provider_name}/{option.model}"
                     self.usage.add_call(call_usage)
                     cb.record_success(option.provider_name)
+                    if call_usage.total_tokens > 0:
+                        self._rate_limiter.record_tokens(option.provider_name, call_usage.total_tokens)
                     if budget_ctrl is not None:
                         budget_ctrl.record_call(tokens_used=call_usage.total_tokens, is_repair=is_repair)
                     log_telemetry(
@@ -1362,6 +1366,7 @@ class ProviderRouter:
                     max_tokens=max_tokens,
                 )
                 self.last_used = f"{option.provider_name}/{option.model}"
+                self._rate_limiter.record_tokens(option.provider_name, 1000)
                 logger.debug(
                     "Vision task '%s' completed via %s/%s",
                     task,

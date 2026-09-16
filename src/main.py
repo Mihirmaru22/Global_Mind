@@ -108,7 +108,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins_list,
-    allow_credentials=False,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.ngrok(-free)?\.app)(:\d+)?",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -122,10 +123,12 @@ if frontend_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
 
 # Register API routes
+from src.api.auth import router as auth_router  # noqa: E402
 from src.api.upload import router as upload_router  # noqa: E402
 from src.api.query import router as query_router  # noqa: E402
 from src.api.ui import router as ui_router  # noqa: E402
 
+app.include_router(auth_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(query_router, prefix="/api")
 app.include_router(ui_router, prefix="/api")

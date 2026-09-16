@@ -10,6 +10,8 @@ import {
   Trash2,
   PencilLine,
   SquarePen,
+  LogOut,
+  User,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -88,6 +90,8 @@ export default function Sidebar() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
+  const currentUser = useAppStore((state) => state.currentUser)
+  const logoutUser = useAppStore((state) => state.logoutUser)
 
   const navigate = useNavigate()
   const location = useLocation()
@@ -322,8 +326,63 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* Footer — Settings only */}
-        <footer className="sidebar__footer">
+        {/* Footer — User info and Settings */}
+        <footer className="sidebar__footer" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {currentUser && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 12px',
+                borderRadius: '8px',
+                background: 'var(--bg-soft, rgba(0,0,0,0.03))',
+                fontSize: '13px',
+                marginBottom: '4px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: '24px',
+                    height: '24px',
+                    borderRadius: '50%',
+                    background: 'var(--primary)',
+                    color: '#fff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    flexShrink: 0,
+                  }}
+                >
+                  {currentUser.slice(0, 1)}
+                </div>
+                <span style={{ fontWeight: 600, color: 'var(--text-primary)', textTransform: 'capitalize', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {currentUser}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={logoutUser}
+                title="Log out"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  color: 'var(--text-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  borderRadius: '4px',
+                }}
+              >
+                <LogOut size={15} />
+              </button>
+            </div>
+          )}
           <NavLink
             to="/settings"
             className={({ isActive }) => `nav-item nav-item--footer ${isActive ? 'nav-item--active' : ''}`}

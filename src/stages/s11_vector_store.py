@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Module-level singletons — shared across all QdrantStore instances in the
 # same process so _ensure_collection() only runs once and never wipes data.
 _global_client: Any = None
+_global_client_loop: Any = None
 _global_has_sparse: bool = False
 
 
@@ -83,8 +84,10 @@ class QdrantStore:
         self._has_sparse: bool = False  # Set True once sparse collection is confirmed
 
     async def _get_client(self) -> Any:
-        global _global_client, _global_has_sparse
-        if _global_client is None:
+        global _global_client, _global_client_loop, _global_has_sparse
+        import asyncio
+        current_loop = asyncio.get_running_loop()
+        if _global_client is None or _global_client_loop is not current_loop or current_loop.is_closed():
             from qdrant_client import AsyncQdrantClient
 
             if settings.qdrant_url and settings.qdrant_api_key:
@@ -97,6 +100,7 @@ class QdrantStore:
                 _global_client = AsyncQdrantClient(location=":memory:")
                 logger.info("Using in-memory Qdrant (no QDRANT_URL configured)")
 
+            _global_client_loop = current_loop
             await self._ensure_collection(_global_client)
 
         self._has_sparse = _global_has_sparse
@@ -185,6 +189,7 @@ class QdrantStore:
             ("active", PayloadSchemaType.BOOL),
             ("document_id", PayloadSchemaType.KEYWORD),
             ("chunk_type", PayloadSchemaType.KEYWORD),
+            ("user_id", PayloadSchemaType.KEYWORD),
         ]
         for field_name, field_schema in indexes:
             try:
@@ -248,6 +253,7 @@ class QdrantStore:
                 "source_file": chunk.source_file,
                 "confidence": chunk.confidence,
                 "token_count": chunk.token_count,
+                "user_id": getattr(chunk, "user_id", None) or chunk.metadata.get("user_id", "system"),
                 # Version lifecycle: chunks are born active. A later replacement
                 # flips the superseded version's chunks to active=False (see
                 # set_document_active), and retrieval excludes those.
@@ -467,6 +473,17 @@ class QdrantStore:
             conditions.append(
                 FieldCondition(key="page_number", range=Range(gte=filters["page_number"]))
             )
+        if "user_id" in filters and filters["user_id"]:
+            target_user = str(filters["user_id"]).strip()
+            if target_user and target_user not in ("*", "all"):
+                from qdrant_client.models import IsEmptyCondition, MatchAny, PayloadField
+                user_clause = Filter(
+                    should=[
+                        FieldCondition(key="user_id", match=MatchAny(any=[target_user, "system", "shared"])),
+                        IsEmptyCondition(is_empty=PayloadField(key="user_id")),
+                    ]
+                )
+                conditions.append(user_clause)
 
         # Always hide superseded chunks.
         exclude_inactive = [FieldCondition(key="active", match=MatchValue(value=False))]
@@ -497,6 +514,7 @@ class QdrantStore:
             document_type=payload.get("document_type", "general"),
             source_file=payload.get("source_file", ""),
             confidence=payload.get("confidence", 1.0),
+            metadata={"user_id": payload.get("user_id", "system")},
         )
         return RetrievedChunk(
             chunk=chunk,

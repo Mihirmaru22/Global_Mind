@@ -1,0 +1,50 @@
+{
+  "case_id": "soft_002",
+  "category": "SOFT_DELETE",
+  "result": {
+    "answer": "Results for: List active suppliers.",
+    "sql": "SELECT * FROM party WHERE party.deleted_at IS NULL LIMIT 100;",
+    "citations": [],
+    "chunks": []
+  },
+  "trace": {
+    "trace_id": "tr-soft_002",
+    "request_id": "req-soft_002",
+    "query": "List active suppliers",
+    "mode": "sql",
+    "status": "SUCCESS",
+    "failure_category": null,
+    "total_tokens": 180,
+    "total_latency_ms": 210.5,
+    "spans": [
+      {
+        "span_id": "sp-sql-soft_002",
+        "name": "sql_generation",
+        "branch": "sql_branch",
+        "status": "OK",
+        "start_time_ms": 100.0,
+        "end_time_ms": 250.0,
+        "latency_ms": 150.0,
+        "guard_results": [
+          {
+            "guard_name": "sql_safety",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Read-only pass"
+          },
+          {
+            "guard_name": "sql_soft_delete",
+            "passed": true,
+            "mode": "ENFORCED",
+            "message": "Soft delete pass"
+          }
+        ],
+        "metadata": {
+          "tables": [
+            "party"
+          ]
+        }
+      }
+    ]
+  }
+}
