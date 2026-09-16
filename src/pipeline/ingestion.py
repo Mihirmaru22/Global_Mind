@@ -107,7 +107,7 @@ class IngestionPipeline:
         self._store = vector_store or QdrantStore(embedding_service=self._embeddings)
         self._registry = registry or IngestionRegistry()
 
-    async def ingest(self, file_path: str | Path) -> "IngestionResult":
+    async def ingest(self, file_path: str | Path, user_id: str = "system") -> "IngestionResult":
         """Ingest a single document through the full pipeline.
 
         Checks the content-addressed registry first:
@@ -121,12 +121,12 @@ class IngestionPipeline:
         Returns an IngestionResult with metadata about what was processed.
         """
         path = Path(file_path)
-        logger.info("=== Ingesting: %s ===", path.name)
+        logger.info("=== Ingesting: %s (user: %s) ===", path.name, user_id)
 
         # ── Deduplication check ──────────────────────────────────────────────
         # ARCH-9: registry.check() hashes the file (blocking for large PDFs)
         # and reads the JSON/Qdrant registry — both must run off the event loop.
-        check = await asyncio.to_thread(self._registry.check, path)
+        check = await asyncio.to_thread(self._registry.check, path, user_id)
 
         if check.status == RegistryStatus.ALREADY_INGESTED:
             entry = check.old_entry or {}
@@ -150,7 +150,7 @@ class IngestionPipeline:
         # is detected and skipped instead of double-ingested.
         async with _lock_for_hash(check.sha256):
             dupe = await asyncio.to_thread(
-                self._registry.active_entry_for_hash, check.sha256
+                self._registry.active_entry_for_hash, check.sha256, user_id
             )
             if dupe is not None:
                 logger.info(
@@ -168,7 +168,7 @@ class IngestionPipeline:
                     document_id=dupe.get("document_id", ""),
                 )
 
-            result = await self._run_pipeline(path)
+            result = await self._run_pipeline(path, user_id=user_id)
 
             # Register after successful ingestion (brand-new document, no supersede)
             await self._commit_version(
@@ -177,6 +177,7 @@ class IngestionPipeline:
                 total_chunks=result.total_chunks,
                 content_hash=check.sha256,
                 supersedes=None,
+                user_id=user_id,
             )
 
         return result
@@ -188,6 +189,7 @@ class IngestionPipeline:
         total_chunks: int,
         content_hash: str,
         supersedes: str | None,
+        user_id: str = "system",
     ) -> None:
         """Commit a freshly-indexed version, performing the cutover if replacing.
 
@@ -210,6 +212,7 @@ class IngestionPipeline:
             total_chunks,
             document_id,
             supersedes,
+            user_id,
         )
         if not supersedes:
             return
@@ -226,7 +229,7 @@ class IngestionPipeline:
         logger.info("Cutover complete: %s → %s", supersedes, document_id)
 
     async def ingest_with_progress(
-        self, file_path: str | Path, supersedes: str | None = None
+        self, file_path: str | Path, supersedes: str | None = None, user_id: str = "system"
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Async generator that yields SSE-compatible progress events for each stage.
 
@@ -244,7 +247,7 @@ class IngestionPipeline:
         # new, distinct document (a same-name file never displaces an existing
         # one), so there is nothing to delete first.
         # ARCH-9: SHA-256 hashing blocks; run off the event loop.
-        check = await asyncio.to_thread(self._registry.check, path)
+        check = await asyncio.to_thread(self._registry.check, path, user_id)
         if check.status == RegistryStatus.ALREADY_INGESTED:
             entry = check.old_entry or {}
             _discard_redundant_upload(path)
@@ -267,7 +270,7 @@ class IngestionPipeline:
         # rather than double-ingested.
         async with _lock_for_hash(check.sha256):
             dupe = await asyncio.to_thread(
-                self._registry.active_entry_for_hash, check.sha256
+                self._registry.active_entry_for_hash, check.sha256, user_id
             )
             if dupe is not None:
                 _discard_redundant_upload(path)
@@ -393,6 +396,8 @@ class IngestionPipeline:
         yield _event(8, "running")
         try:
             chunks = chunk_document(document)
+            for c in chunks:
+                c.metadata["user_id"] = user_id
             yield _event(8, "done", detail=f"{len(chunks)} chunks")
         except Exception as e:
             yield _event(8, "error", error=str(e))
@@ -442,6 +447,7 @@ class IngestionPipeline:
             total_chunks=len(chunks),
             content_hash=content_hash,
             supersedes=supersedes,
+            user_id=user_id,
         )
 
         yield {
@@ -518,6 +524,7 @@ class IngestionPipeline:
             total_chunks=result.total_chunks,
             content_hash=check.sha256,
             supersedes=old_document_id,
+            user_id=user_id,
         )
 
         logger.info(
@@ -533,7 +540,7 @@ class IngestionPipeline:
     # Internal: shared pipeline logic (no progress events)
     # ------------------------------------------------------------------
 
-    async def _run_pipeline(self, path: Path) -> "IngestionResult":
+    async def _run_pipeline(self, path: Path, user_id: str = "system") -> "IngestionResult":
         """Run the full ingestion pipeline without progress events."""
         # Stage 1 — File Detection
         logger.info("[Stage 1] File detection")
@@ -576,6 +583,8 @@ class IngestionPipeline:
         # Stage 9 — Chunking
         logger.info("[Stage 9] Chunking")
         chunks = chunk_document(document)
+        for c in chunks:
+            c.metadata["user_id"] = user_id
 
         if not chunks:
             logger.warning("No chunks produced from '%s'", path.name)

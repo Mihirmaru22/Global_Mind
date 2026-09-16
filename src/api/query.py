@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
+from src.api.auth import get_current_user_optional
 from src.pipeline.query import QueryPipeline
 
 logger = logging.getLogger(__name__)
@@ -21,23 +22,13 @@ class QueryRequest(BaseModel):
     top_k: int = 30
     rerank_top_k: int = 6
     filters: dict[str, Any] | None = None
-    """Optional metadata filters to constrain retrieval.
-
-    Supported keys:
-    - ``document_type`` (str): exact match on document type enum value.
-    - ``source_file`` (str): substring match on the source filename.
-    - ``page_number`` (int): retrieve only chunks at or after this page.
-    - ``document_id`` (str): restrict to a specific ingested document.
-    - ``chunk_type`` (str): exact match on chunk type (prose, table, etc.).
-
-    Example::
-
-        {"source_file": "q3_report.pdf", "page_number": 10}
-    """
 
 
 @router.post("/query")
-async def query_documents(request: QueryRequest) -> dict:
+async def query_documents(
+    request: QueryRequest,
+    current_user: str = Depends(get_current_user_optional),
+) -> dict:
     """Query ingested documents using the RAG pipeline.
 
     Supports optional metadata filtering via the ``filters`` field to
@@ -46,9 +37,13 @@ async def query_documents(request: QueryRequest) -> dict:
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
+    query_filters = dict(request.filters or {})
+    if current_user and current_user not in ("*", "all", "anonymous"):
+        query_filters.setdefault("user_id", current_user)
+
     try:
         pipeline = QueryPipeline()
-        result = await pipeline.query(request.question, filters=request.filters)
+        result = await pipeline.query(request.question, filters=query_filters or None)
         return {
             "status": "success",
             "query": result.query,

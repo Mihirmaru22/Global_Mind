@@ -9,9 +9,10 @@ import shutil
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from src.api.auth import get_current_user_optional
 from src.core.config import settings
 from src.core.paths import safe_basename, unique_upload_dest
 from src.pipeline.ingestion import IngestionPipeline
@@ -35,7 +36,10 @@ def _resolve_upload_path(filename: str | None) -> Path:
 
 
 @router.post("/upload")
-async def upload_document(file: UploadFile = File(...)) -> dict:
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user_optional),
+) -> dict:
     """Upload and ingest a single document into the RAG pipeline."""
     upload_path = _resolve_upload_path(file.filename)
     try:
@@ -47,7 +51,7 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
 
     try:
         pipeline = IngestionPipeline()
-        result = await pipeline.ingest(upload_path)
+        result = await pipeline.ingest(upload_path, user_id=current_user)
         return {
             "status": "success",
             "message": f"Ingested '{upload_path.name}' successfully",
@@ -59,7 +63,10 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
 
 
 @router.post("/upload/batch")
-async def upload_documents_batch(files: list[UploadFile] = File(...)) -> dict:
+async def upload_documents_batch(
+    files: list[UploadFile] = File(...),
+    current_user: str = Depends(get_current_user_optional),
+) -> dict:
     """Upload and ingest multiple documents concurrently (max 3 at a time)."""
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
@@ -89,7 +96,7 @@ async def upload_documents_batch(files: list[UploadFile] = File(...)) -> dict:
 
         async with semaphore:
             try:
-                res = await pipeline.ingest(upload_path)
+                res = await pipeline.ingest(upload_path, user_id=current_user)
                 results.append(res.to_dict())
             except Exception:
                 logger.exception("Batch ingestion failed for '%s'", name)
@@ -107,7 +114,10 @@ async def upload_documents_batch(files: list[UploadFile] = File(...)) -> dict:
 
 
 @router.post("/upload/stream")
-async def upload_document_stream(file: UploadFile = File(...)):
+async def upload_document_stream(
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user_optional),
+):
     """Upload a document and receive real-time ingestion progress via SSE."""
     upload_path = _resolve_upload_path(file.filename)
     try:
@@ -121,7 +131,7 @@ async def upload_document_stream(file: UploadFile = File(...)):
 
     async def _event_generator() -> AsyncGenerator[str, None]:
         try:
-            async for event in pipeline.ingest_with_progress(upload_path):
+            async for event in pipeline.ingest_with_progress(upload_path, user_id=current_user):
                 # Format as Server-Sent Events (SSE)
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception:
@@ -157,7 +167,11 @@ async def scan_ingest_folder() -> dict:
 
 
 @router.post("/documents/{old_document_id}/replace")
-async def replace_document(old_document_id: str, file: UploadFile = File(...)) -> dict:
+async def replace_document(
+    old_document_id: str,
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user_optional),
+) -> dict:
     """Replace an existing document with a new file (safe atomic cutover).
 
     The old version stays live until the new one is fully indexed, so a failure
@@ -173,7 +187,7 @@ async def replace_document(old_document_id: str, file: UploadFile = File(...)) -
 
     try:
         pipeline = IngestionPipeline()
-        result = await pipeline.replace(old_document_id, upload_path)
+        result = await pipeline.replace(old_document_id, upload_path, user_id=current_user)
         return {
             "status": "success",
             "message": f"Replaced document with '{upload_path.name}'",
@@ -188,7 +202,11 @@ async def replace_document(old_document_id: str, file: UploadFile = File(...)) -
 
 
 @router.post("/documents/{old_document_id}/replace/stream")
-async def replace_document_stream(old_document_id: str, file: UploadFile = File(...)):
+async def replace_document_stream(
+    old_document_id: str,
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user_optional),
+):
     """Replace a document and receive real-time ingestion progress via SSE.
 
     Streams the same per-stage progress as ``/upload/stream``; the version
@@ -212,7 +230,7 @@ async def replace_document_stream(old_document_id: str, file: UploadFile = File(
     async def _event_generator() -> AsyncGenerator[str, None]:
         try:
             async for event in pipeline.ingest_with_progress(
-                upload_path, supersedes=old_document_id
+                upload_path, supersedes=old_document_id, user_id=current_user
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception:

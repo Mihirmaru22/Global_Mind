@@ -96,7 +96,7 @@ class UIStateManager:
 
     # --- Chats ---
 
-    def get_chats(self) -> list[dict[str, Any]]:
+    def get_chats(self, user_id: str | None = None) -> list[dict[str, Any]]:
         chats = self._load_json(self.chats_file, [])
         # Auto-recover any chats that exist in messages.json but were missing in chats.json
         all_messages = self.get_all_messages()
@@ -116,6 +116,13 @@ class UIStateManager:
                 dirty = True
         if dirty:
             self.save_chats(chats)
+
+        if user_id and user_id not in ("*", "all", "anonymous", "admin"):
+            return [
+                c for c in chats
+                if (c.get("userId") or c.get("user_id")) in (user_id, "system", "shared")
+            ]
+
         return chats
 
     def save_chats(self, chats: list[dict[str, Any]]) -> None:
@@ -174,10 +181,13 @@ class UIStateManager:
             title = message.get("content", "").strip()
             if len(title) > 40:
                 title = title[:37].rstrip() + "..."
+            msg_user = message.get("userId") or message.get("user_id")
             self.create_chat({
                 "id": chat_id,
                 "title": title or "New Chat",
                 "updatedAt": message.get("createdAt") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "userId": msg_user,
+                "user_id": msg_user,
             })
 
     def set_message_feedback(

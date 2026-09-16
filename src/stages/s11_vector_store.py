@@ -189,6 +189,7 @@ class QdrantStore:
             ("active", PayloadSchemaType.BOOL),
             ("document_id", PayloadSchemaType.KEYWORD),
             ("chunk_type", PayloadSchemaType.KEYWORD),
+            ("user_id", PayloadSchemaType.KEYWORD),
         ]
         for field_name, field_schema in indexes:
             try:
@@ -252,6 +253,7 @@ class QdrantStore:
                 "source_file": chunk.source_file,
                 "confidence": chunk.confidence,
                 "token_count": chunk.token_count,
+                "user_id": getattr(chunk, "user_id", None) or chunk.metadata.get("user_id", "system"),
                 # Version lifecycle: chunks are born active. A later replacement
                 # flips the superseded version's chunks to active=False (see
                 # set_document_active), and retrieval excludes those.
@@ -471,6 +473,17 @@ class QdrantStore:
             conditions.append(
                 FieldCondition(key="page_number", range=Range(gte=filters["page_number"]))
             )
+        if "user_id" in filters and filters["user_id"]:
+            target_user = str(filters["user_id"]).strip()
+            if target_user and target_user not in ("*", "all"):
+                from qdrant_client.models import IsEmptyCondition, MatchAny, PayloadField
+                user_clause = Filter(
+                    should=[
+                        FieldCondition(key="user_id", match=MatchAny(any=[target_user, "system", "shared"])),
+                        IsEmptyCondition(is_empty=PayloadField(key="user_id")),
+                    ]
+                )
+                conditions.append(user_clause)
 
         # Always hide superseded chunks.
         exclude_inactive = [FieldCondition(key="active", match=MatchValue(value=False))]
@@ -501,6 +514,7 @@ class QdrantStore:
             document_type=payload.get("document_type", "general"),
             source_file=payload.get("source_file", ""),
             confidence=payload.get("confidence", 1.0),
+            metadata={"user_id": payload.get("user_id", "system")},
         )
         return RetrievedChunk(
             chunk=chunk,

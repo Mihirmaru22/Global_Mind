@@ -118,7 +118,7 @@ class IngestionRegistry:
     # Deduplication check
     # ------------------------------------------------------------------
 
-    def check(self, file_path: str | Path) -> RegistryCheckResult:
+    def check(self, file_path: str | Path, user_id: str | None = None) -> RegistryCheckResult:
         """Compute the content SHA-256 and check for an active duplicate.
 
         An exact content match against an **active** version is a duplicate to
@@ -130,7 +130,7 @@ class IngestionRegistry:
         file_hash = self._sha256(path)
         registry = self._backend.load_all()
 
-        active_dupe = self._find_active_by_hash(registry, file_hash)
+        active_dupe = self._find_active_by_hash(registry, file_hash, user_id=user_id)
         if active_dupe is not None:
             entry = registry[active_dupe]
             logger.info(
@@ -167,6 +167,7 @@ class IngestionRegistry:
         total_chunks: int,
         document_id: str | None = None,
         supersedes: str | None = None,
+        user_id: str = "system",
     ) -> dict[str, Any]:
         """Record a freshly-indexed document as a new **active** version.
 
@@ -208,6 +209,7 @@ class IngestionRegistry:
             "superseded_by": None,
             "active": True,
             "lineage_root": lineage_root,
+            "user_id": user_id,
         }
         self._backend.write_batch([entry], [])
         logger.info(
@@ -311,11 +313,17 @@ class IngestionRegistry:
         """Look up a single version by its document_id."""
         return self._backend.load_all().get(document_id)
 
-    def get_active(self) -> list[dict[str, Any]]:
+    def get_active(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """Return all currently-active document versions."""
-        return [e for e in self._backend.load_all().values() if e.get("active", True)]
+        entries = [e for e in self._backend.load_all().values() if e.get("active", True)]
+        if user_id and user_id not in ("*", "all", "anonymous", "admin"):
+            return [
+                e for e in entries
+                if e.get("user_id") in (user_id, "system", "shared") or not e.get("user_id")
+            ]
+        return entries
 
-    def active_entry_for_hash(self, content_hash: str) -> dict[str, Any] | None:
+    def active_entry_for_hash(self, content_hash: str, user_id: str | None = None) -> dict[str, Any] | None:
         """Return the active version whose content matches ``content_hash``, if any.
 
         Unlike :meth:`check`, this does not hash a file — it takes an already
@@ -324,7 +332,7 @@ class IngestionRegistry:
         same document.
         """
         registry = self._backend.load_all()
-        doc_id = self._find_active_by_hash(registry, content_hash)
+        doc_id = self._find_active_by_hash(registry, content_hash, user_id=user_id)
         return registry[doc_id] if doc_id is not None else None
 
     def get_active_ids(self) -> set[str]:
@@ -384,10 +392,15 @@ class IngestionRegistry:
         return h.hexdigest()
 
     @staticmethod
-    def _find_active_by_hash(registry: dict, content_hash: str) -> str | None:
+    def _find_active_by_hash(registry: dict, content_hash: str, user_id: str | None = None) -> str | None:
         for doc_id, entry in registry.items():
             if entry.get("content_hash") == content_hash and entry.get("active", True):
-                return doc_id
+                if user_id is None or user_id in ("*", "all", "system"):
+                    return doc_id
+                entry_user = entry.get("user_id")
+                # Deduplicate if uploaded by the same user or if it is an existing shared system doc
+                if entry_user == user_id or entry_user in ("system", "shared", None):
+                    return doc_id
         return None
 
     @staticmethod

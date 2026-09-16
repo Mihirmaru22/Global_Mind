@@ -247,7 +247,8 @@ class QueryPipeline:
             # Short-circuit: "what files/documents do you have?" — answer from registry
             if _is_document_listing_query(question) and mode != "sql":
                 # ARCH-9: registry reads block; run off the event loop.
-                answer = await asyncio.to_thread(_build_document_list_answer)
+                user_id = filters.get("user_id") if filters else None
+                answer = await asyncio.to_thread(_build_document_list_answer, user_id)
                 return QueryResult(
                     query=question,
                     answer=answer,
@@ -513,7 +514,8 @@ class QueryPipeline:
         # Short-circuit: document listing question — answer from registry
         if _is_document_listing_query(question) and mode != "sql":
             # ARCH-9: registry reads block; run off the event loop.
-            answer = await asyncio.to_thread(_build_document_list_answer)
+            user_id = filters.get("user_id") if filters else None
+            answer = await asyncio.to_thread(_build_document_list_answer, user_id)
             yield answer
             yield QueryResult(
                 query=question,
@@ -769,15 +771,15 @@ def _is_document_listing_query(question: str) -> bool:
     return True
 
 
-def _build_document_list_answer() -> str:
+def _build_document_list_answer(user_id: str | None = None) -> str:
     """Build a human-friendly answer from the ingestion registry."""
     from src.core.ingestion_registry import IngestionRegistry
     import datetime
 
     registry = IngestionRegistry()
-    # Only the current (active) version of each document Ã¢â¬â superseded versions
+    # Only the current (active) version of each document — superseded versions
     # are history, not part of the live knowledge base.
-    entries = registry.get_active()
+    entries = registry.get_active(user_id=user_id)
 
     if not entries:
         return "I don't have any documents ingested yet. Please upload some files first."
