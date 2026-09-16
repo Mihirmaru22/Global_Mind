@@ -23,6 +23,9 @@ import {
   replaceDocumentStream,
   deleteDocument as deleteDocumentApi,
   syncSchema,
+  loginApi,
+  logoutApi,
+  getMeApi,
 } from '../services/api.js'
 
 // Pluralization helper for the inbox-scan popup ("1 file" vs "2 files").
@@ -370,6 +373,62 @@ export const useAppStore = create((set, get) => ({
   ingestionProgress: null,
   searchMode: 'auto', // 'auto' | 'sql' | 'rag'
   setSearchMode: (searchMode) => set({ searchMode }),
+
+  // --- Alpha Authentication State ---
+  currentUser: null,
+  isAuthChecking: true,
+  loginLoading: false,
+  loginError: null,
+
+  checkAuth: async () => {
+    set({ isAuthChecking: true })
+    try {
+      const data = await getMeApi()
+      if (data && data.authenticated && data.user_id && data.user_id !== 'anonymous') {
+        set({ currentUser: data.user_id, isAuthChecking: false })
+        await get().initApp()
+      } else {
+        set({ currentUser: null, isAuthChecking: false, loading: false })
+      }
+    } catch {
+      set({ currentUser: null, isAuthChecking: false, loading: false })
+    }
+  },
+
+  loginUser: async (username, password) => {
+    set({ loginLoading: true, loginError: null })
+    try {
+      const data = await loginApi(username, password)
+      const user = data.user_id || data.user || username
+      set({ currentUser: user, loginLoading: false, loginError: null })
+      toast.success(`Welcome back, ${user}!`)
+      await get().initApp()
+      return true
+    } catch (err) {
+      const msg = err.response?.data?.detail || 'Invalid username or password'
+      set({ loginLoading: false, loginError: msg })
+      toast.error(msg)
+      return false
+    }
+  },
+
+  logoutUser: async () => {
+    try {
+      await logoutApi()
+    } catch {
+      // ignore
+    }
+    set({
+      currentUser: null,
+      chats: [],
+      messagesByChatId: {},
+      activeChatId: null,
+      documents: [],
+      overview: null,
+      loading: false,
+    })
+    toast.info('Logged out of Alpha workspace')
+  },
 
   initApp: async () => {
     set({ loading: true })

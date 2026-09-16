@@ -1,12 +1,16 @@
 import { useEffect, useRef } from 'react'
 import { Outlet } from 'react-router-dom'
+import { Loader2 } from 'lucide-react'
 import Header from './Header.jsx'
 import Sidebar from './Sidebar.jsx'
+import Login from '../pages/Login.jsx'
 import { useAppStore } from '../store/store.js'
 import { useResolvedTheme } from '../utils/theme.js'
 
 export function Layout() {
-  const initApp = useAppStore((state) => state.initApp)
+  const checkAuth = useAppStore((state) => state.checkAuth)
+  const currentUser = useAppStore((state) => state.currentUser)
+  const isAuthChecking = useAppStore((state) => state.isAuthChecking)
   const theme = useAppStore((state) => state.settings?.theme)
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const appliedTheme = useResolvedTheme(theme)
@@ -15,8 +19,8 @@ export function Layout() {
   useEffect(() => {
     if (initialized.current) return
     initialized.current = true
-    initApp()
-  }, [initApp])
+    checkAuth()
+  }, [checkAuth])
 
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -46,6 +50,31 @@ export function Layout() {
       delete root.dataset.scrolling
     }
   }, [])
+
+  if (isAuthChecking) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          width: '100vw',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--bg)',
+          gap: '12px',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        <Loader2 className="animate-spin" size={32} style={{ color: 'var(--primary)' }} />
+        <span style={{ fontSize: '14px' }}>Loading workspace…</span>
+      </div>
+    )
+  }
+
+  if (!currentUser) {
+    return <Login />
+  }
 
   return (
     <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed ? 'true' : 'false'}>
