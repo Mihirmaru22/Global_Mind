@@ -1,15 +1,28 @@
 import { useState } from 'react'
-import { Eye, EyeOff, KeyRound, Lock, ShieldCheck, User } from 'lucide-react'
+import { Eye, EyeOff, Lock, Moon, ShieldCheck, Sun, User } from 'lucide-react'
 import BrandMark from '../components/BrandMark.jsx'
 import { useAppStore } from '../store/store.js'
+import { useResolvedTheme } from '../utils/theme.js'
 
 export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [userFocused, setUserFocused] = useState(false)
+  const [passFocused, setPassFocused] = useState(false)
+
   const loginUser = useAppStore((state) => state.loginUser)
   const loginLoading = useAppStore((state) => state.loginLoading)
   const loginError = useAppStore((state) => state.loginError)
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+
+  const appliedTheme = useResolvedTheme(settings?.theme)
+
+  const handleToggleTheme = () => {
+    const nextMode = appliedTheme.mode === 'dark' ? 'light' : 'dark'
+    updateSettings({ theme: nextMode })
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -29,8 +42,38 @@ export default function Login() {
         color: 'var(--text-primary)',
         padding: '24px',
         boxSizing: 'border-box',
+        position: 'relative',
+        transition: 'background 0.2s ease, color 0.2s ease',
       }}
     >
+      {/* Theme Toggle Button */}
+      <button
+        type="button"
+        onClick={handleToggleTheme}
+        aria-label="Toggle theme"
+        title={`Switch to ${appliedTheme.mode === 'dark' ? 'light' : 'dark'} mode`}
+        style={{
+          position: 'fixed',
+          top: '24px',
+          right: '24px',
+          width: '40px',
+          height: '40px',
+          borderRadius: '12px',
+          border: '1px solid var(--panel-border)',
+          background: 'var(--panel)',
+          color: 'var(--text-primary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          boxShadow: 'var(--shadow)',
+          transition: 'all 0.15s ease',
+          zIndex: 10,
+        }}
+      >
+        {appliedTheme.mode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+      </button>
+
       <div
         style={{
           width: '100%',
@@ -45,6 +88,7 @@ export default function Login() {
           alignItems: 'center',
           gap: '24px',
           boxSizing: 'border-box',
+          transition: 'background 0.2s ease, border-color 0.2s ease',
         }}
       >
         {/* Brand Header */}
@@ -103,18 +147,22 @@ export default function Login() {
                 display: 'flex',
                 alignItems: 'center',
                 background: 'var(--input-bg)',
-                border: '1px solid var(--input-border)',
+                border: userFocused ? '1px solid var(--primary)' : '1px solid var(--input-border)',
+                boxShadow: userFocused ? '0 0 0 3px rgba(168, 93, 63, 0.2)' : 'none',
                 borderRadius: '12px',
                 padding: '0 12px',
                 gap: '10px',
                 height: '42px',
+                transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
               }}
             >
-              <User size={16} style={{ color: 'var(--text-muted)' }} />
+              <User size={16} style={{ color: userFocused ? 'var(--primary)' : 'var(--text-muted)' }} />
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
+                onFocus={() => setUserFocused(true)}
+                onBlur={() => setUserFocused(false)}
                 placeholder="Enter username"
                 required
                 autoFocus
@@ -125,6 +173,7 @@ export default function Login() {
                   outline: 'none',
                   color: 'var(--text-primary)',
                   fontSize: '14px',
+                  caretColor: 'var(--primary)',
                 }}
               />
             </div>
@@ -140,18 +189,22 @@ export default function Login() {
                 display: 'flex',
                 alignItems: 'center',
                 background: 'var(--input-bg)',
-                border: '1px solid var(--input-border)',
+                border: passFocused ? '1px solid var(--primary)' : '1px solid var(--input-border)',
+                boxShadow: passFocused ? '0 0 0 3px rgba(168, 93, 63, 0.2)' : 'none',
                 borderRadius: '12px',
                 padding: '0 12px',
                 gap: '10px',
                 height: '42px',
+                transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
               }}
             >
-              <Lock size={16} style={{ color: 'var(--text-muted)' }} />
+              <Lock size={16} style={{ color: passFocused ? 'var(--primary)' : 'var(--text-muted)' }} />
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                onFocus={() => setPassFocused(true)}
+                onBlur={() => setPassFocused(false)}
                 placeholder="Enter password"
                 required
                 style={{
@@ -161,6 +214,7 @@ export default function Login() {
                   outline: 'none',
                   color: 'var(--text-primary)',
                   fontSize: '14px',
+                  caretColor: 'var(--primary)',
                 }}
               />
               <button

@@ -85,7 +85,9 @@
   --placeholder-color: #9a918b;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme='dark'],
+:root[data-theme-mode='dark'] {
+  color-scheme: dark;
   --bg: #151515;
   --bg-soft: #171717;
   --panel: #1b1b1a;
@@ -95,6 +97,11 @@
   --text-primary: #e8e6e1;
   --text-secondary: #b2b0aa;
   --text-muted: #7d7c76;
+  --icon-primary: #e8e6e1;
+  --icon-secondary: #b2b0aa;
+  --input-bg: #20201f;
+  --input-border: #383836;
+  --focus-ring: #a85d3f;
   --accent: var(--primary);
   --accent-strong: var(--primary-border);
   --accent-on: #151515;
@@ -129,6 +136,8 @@
   --text-muted: #9a918b;
   --icon-primary: #332d29;
   --icon-secondary: #756d68;
+  --input-bg: #ffffff;
+  --input-border: #d6cec8;
   --accent: var(--primary);
   --accent-strong: var(--primary-border);
   --accent-on: #fffcf9;
@@ -831,8 +840,35 @@ html[data-scrolling='true'] .scrollbar-auto::-webkit-scrollbar-thumb {
   border-color: var(--panel-border-strong);
 }
 
-:root[data-theme='dark'] .theme-preview {
+:root[data-theme='dark'] .theme-preview,
+:root[data-theme-mode='dark'] .theme-preview {
   border-color: var(--panel-border);
+}
+
+:root[data-theme='dark'] input:-webkit-autofill,
+:root[data-theme='dark'] input:-webkit-autofill:hover, 
+:root[data-theme='dark'] input:-webkit-autofill:focus,
+:root[data-theme-mode='dark'] input:-webkit-autofill,
+:root[data-theme-mode='dark'] input:-webkit-autofill:hover, 
+:root[data-theme-mode='dark'] input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text-primary) !important;
+  -webkit-box-shadow: 0 0 0px 1000px #20201f inset !important;
+  box-shadow: 0 0 0px 1000px #20201f inset !important;
+  caret-color: var(--text-primary) !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+:root[data-theme='light'] input:-webkit-autofill,
+:root[data-theme='light'] input:-webkit-autofill:hover, 
+:root[data-theme='light'] input:-webkit-autofill:focus,
+:root[data-theme-mode='light'] input:-webkit-autofill,
+:root[data-theme-mode='light'] input:-webkit-autofill:hover, 
+:root[data-theme-mode='light'] input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text-primary) !important;
+  -webkit-box-shadow: 0 0 0px 1000px #ffffff inset !important;
+  box-shadow: 0 0 0px 1000px #ffffff inset !important;
+  caret-color: var(--text-primary) !important;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .sidebar__footer {

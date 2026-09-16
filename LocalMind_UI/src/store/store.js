@@ -81,6 +81,16 @@ function writeStoredBoolean(key, value) {
 // PATCH support) would be needed for that.
 const PINNED_CHATS_KEY = 'localmind-pinned-chats'
 
+function readStoredSettings() {
+  try {
+    const raw = localStorage.getItem('localmind-settings')
+    if (raw) return JSON.parse(raw)
+  } catch {
+    // Ignore storage issues and use defaults
+  }
+  return { theme: 'system' }
+}
+
 function readStoredIdSet(key) {
   try {
     const raw = localStorage.getItem(key)
@@ -353,7 +363,7 @@ export const useAppStore = create((set, get) => ({
   draftsByChatId: {},
   documents: [],
   overview: null,
-  settings: null,
+  settings: readStoredSettings(),
   providers: [],
   providerUsage: [],
   loading: false,
@@ -1066,7 +1076,11 @@ export const useAppStore = create((set, get) => ({
     } catch {
       // Ignore storage write errors; the local demo state still updates.
     }
-    await saveSettings(settings)
+    try {
+      await saveSettings(settings)
+    } catch {
+      // If unauthenticated or offline, local state and localStorage are preserved.
+    }
   },
 
   selectDocument: (docId) => set({ selectedDocId: docId }),
