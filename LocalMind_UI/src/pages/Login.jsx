@@ -11,8 +11,6 @@ export default function Login() {
   const loginLoading = useAppStore((state) => state.loginLoading)
   const loginError = useAppStore((state) => state.loginError)
 
-  const quickUsers = ['admin', 'pm', 'vedanshi', 'pinal']
-
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!username.trim() || !password) return
@@ -75,35 +73,6 @@ export default function Login() {
           </p>
         </div>
 
-        {/* Quick User Selector Pills */}
-        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Alpha Testers
-          </span>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-            {quickUsers.map((u) => (
-              <button
-                key={u}
-                type="button"
-                onClick={() => setUsername(u)}
-                style={{
-                  fontSize: '12px',
-                  padding: '5px 10px',
-                  borderRadius: '100px',
-                  background: username.toLowerCase() === u ? 'var(--primary)' : 'var(--bg-soft, rgba(0,0,0,0.05))',
-                  color: username.toLowerCase() === u ? '#fff' : 'var(--text-secondary)',
-                  border: '1px solid ' + (username.toLowerCase() === u ? 'var(--primary)' : 'var(--panel-border)'),
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                {u}
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* Login Form */}
         <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {loginError && (
@@ -146,7 +115,7 @@ export default function Login() {
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. vedanshi, pm, admin"
+                placeholder="Enter username"
                 required
                 autoFocus
                 style={{
