@@ -65,75 +65,13 @@ By combining **dynamic multi-provider routing**, a **14-stage ingestion pipeline
 
 ## 🏛️ High-Level System Architecture
 
-GlobleMind's unified orchestrator bridges unstructured document RAG and structured transactional databases into a coherent cognitive interface:
+GlobleMind's unified orchestrator bridges unstructured document RAG and structured transactional databases into a single coherent cognitive interface:
 
-```mermaid
-flowchart TB
-    subgraph Clients["Presentation & Ingestion Channels"]
-        UI["React SPA (LocalMind UI)<br>SSE Live Streaming & Mermaid"]
-        CLI["CLI Tool (globle-mind)<br>Batch Ingest & Query"]
-        DropBox["Watched Folder (data/inbox/)<br>Background Auto-Ingest"]
-    end
-
-    subgraph API["FastAPI Gateway (src/main.py)"]
-        Routes["Endpoints: /query, /chats, /upload, /telemetry, /health"]
-        FileLock["Cross-Platform Advisory Locking (portalocker)"]
-        State["JSON State DAO (data/chats.json, data/messages.json)"]
-    end
-
-    subgraph Latency["3-Layer Latency Acceleration"]
-        L1["Layer 1: Semantic Cache (Cosine >= 0.95, Dynamic TTLs, RBAC Scopes)"]
-        L2["Layer 2: Template Fast-Path (Instant Markdown Table Formatting)"]
-        L3["Layer 3: Async Query Coordinator (asyncio.gather Parallelization)"]
-    end
-
-    subgraph RetrievalEngines["Dual Retrieval Engines"]
-        subgraph VectorRAG["Hybrid Document RAG"]
-            S12["Hybrid Search (Dense + Sparse)"]
-            Qdrant[("Qdrant Cloud / Local<br>1024-dim Dense + Sparse RRF")]
-            S13["Cross-Encoder Reranker (Jina AI)"]
-        end
-
-        subgraph TextToSQL["9-Stage Cognitive Text-to-SQL"]
-            Intent["1. Intent Extraction & Directionality"]
-            Atlas["2. Behavioral Schema Atlas & Anchor Inject"]
-            GraphJoin["3. 1-Hop FK Graph Expansion (162 FK Paths)"]
-            NL2SQL["4. Dialect-Aware Generation (SQLite / MySQL)"]
-            ASTGate["5. AST Validation Gate (sqlglot SELECT Enforcer)"]
-            DeltaRepair["6. Delta Self-Repair Loop (<400 tokens)"]
-            LiveDB[("Live DB: SQLite / MySQL<br>25s Timeout, Capped 500 Rows")]
-        end
-    end
-
-    subgraph Guardrails["Security & Verification Guardrails"]
-        CiteGuard["Citation Guard (Strict Grounding & Footnotes)"]
-        TempGuard["Temporal Guard (Filter vs Projection Disambiguation)"]
-        SchemaGuard["Schema Guard (DDL Drift & Context Budgeting)"]
-        Sanitizer["SQL AST Sanitizer (Soft-Delete Injection & Clamping)"]
-    end
-
-    subgraph Routing["Dynamic Provider Routing (config/providers.yaml)"]
-        Pool["Multi-Key Rotating Groq Pool (1.0M+ daily tokens)"]
-        Fallback["Ordered Fallback: Gemini -> Groq -> NVIDIA NIM -> OpenRouter"]
-        RateLimit["Provider Rate Limiter & Circuit Breakers"]
-    end
-
-    Clients --> API
-    API --> Latency
-    L1 -- "Cache Hit (<0.8s)" --> UI
-    L1 -- "Cache Miss" --> L2
-    L2 -- "Factual Aggregate Hit" --> UI
-    L2 -- "Complex / Analytical Miss" --> L3
-
-    L3 --> VectorRAG
-    L3 --> TextToSQL
-
-    VectorRAG --> Guardrails
-    TextToSQL --> Guardrails
-
-    Guardrails --> Routing
-    Routing --> UI
-```
+<div align="center">
+  <img src="docs/architecture_diagram.jpg" alt="GlobleMind System Architecture" width="720" />
+  <br>
+  <em>End-to-end data flow: from user interaction through ingestion, retrieval, and LLM synthesis.</em>
+</div>
 
 ---
 
