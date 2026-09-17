@@ -23,7 +23,6 @@ export async function sendMessage(chatId, message, provider, mode = 'auto') {
 export async function sendMessageStream(chatId, message, onChunk, signal, provider, mode = 'auto') {
   const response = await fetch(`${http.defaults.baseURL}/chats/${chatId}/messages/stream`, {
     method: 'POST',
-    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -139,7 +138,6 @@ export async function uploadDocumentStream(file, onEvent, signal) {
 
   const response = await fetch(`${http.defaults.baseURL}/upload/stream`, {
     method: 'POST',
-    credentials: 'include',
     body: formData,
     signal,
   })
@@ -197,7 +195,7 @@ export async function replaceDocumentStream(oldDocumentId, file, onEvent, signal
 
   const response = await fetch(
     `${http.defaults.baseURL}/documents/${oldDocumentId}/replace/stream`,
-    { method: 'POST', credentials: 'include', body: formData, signal },
+    { method: 'POST', body: formData, signal },
   )
 
   if (!response.ok || !response.body) {
@@ -283,3 +281,4 @@ export async function getMeApi() {
   const response = await http.get('/auth/me')
   return response.data
 }
+

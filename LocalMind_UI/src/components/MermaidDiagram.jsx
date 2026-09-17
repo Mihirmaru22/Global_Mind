@@ -32,8 +32,8 @@ function isDarkTheme() {
 // Mid-luminance categorical palette that reads well on both light and dark
 // backgrounds. The app accent leads so single-series charts match the brand.
 const BASE_PALETTE = [
-  '#4c78a8', '#59a14f', '#e1a54b', '#8a6bbf',
-  '#d1495b', '#43938a', '#b07aa1', '#6b8e23',
+  '#3C6573', '#2F6B52', '#8A5A22', '#6F5E95',
+  '#A43D3A', '#43938A', '#8C6C86', '#5D7243',
 ]
 
 // Count the x-axis categories in an xychart-beta block so we can give each one

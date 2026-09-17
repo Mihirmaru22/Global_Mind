@@ -1,65 +1,30 @@
 import {
   Library,
+  LogOut,
   MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  PencilLine,
   Pin,
   PinOff,
   Settings,
-  Trash2,
-  PencilLine,
   SquarePen,
-  LogOut,
-  User,
+  Trash2,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../store/store.js'
+import { useDialogA11y } from '../utils/useDialogA11y.js'
 
 function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
-  const titleRef = useRef(null)
-  const windowRef = useRef(null)
-  const [offset, setOffset] = useState(0)
-
-  const handleMouseEnter = () => {
-    if (!titleRef.current || !windowRef.current) return
-    const overflow = titleRef.current.scrollWidth - windowRef.current.clientWidth
-    if (overflow > 1) {
-      setOffset(overflow)
-    }
-  }
-
-  const handleMouseLeave = () => {
-    setOffset(0)
-  }
-
   return (
-    <div
-      className={`chat-item ${isActive ? 'chat-item--active' : ''} ${isMenuOpen ? 'chat-item--menu-open' : ''}`}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-    >
-      <button
-        type="button"
-        className="chat-item__main"
-        onClick={onSelect}
-      >
+    <div className={`chat-item ${isActive ? 'chat-item--active' : ''} ${isMenuOpen ? 'chat-item--menu-open' : ''}`}>
+      <button type="button" className="chat-item__main" onClick={onSelect}>
         <MessageSquare size={14} className="chat-item__icon" aria-hidden="true" />
-        <span ref={windowRef} className="chat-item__title-window">
-          <span
-            ref={titleRef}
-            className="chat-item__title"
-            style={{
-              transform: offset > 0 ? `translateX(-${offset}px)` : 'translateX(0)',
-              transition: offset > 0
-                ? `transform ${Math.max(1.6, offset * 0.022)}s linear 0.35s`
-                : 'transform 0.22s ease-out',
-            }}
-          >
-            {chat.title}
-          </span>
+        <span className="chat-item__title-window">
+          <span className="chat-item__title">{chat.title}</span>
         </span>
       </button>
 
@@ -68,7 +33,7 @@ function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
           type="button"
           className="chat-item__menu-trigger"
           aria-label={`Chat actions for ${chat.title}`}
-          onClick={(e) => onToggleMenu(chat, e)}
+          onClick={(event) => onToggleMenu(chat, event)}
         >
           <MoreHorizontal size={15} />
         </button>
@@ -78,6 +43,8 @@ function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
 }
 
 export default function Sidebar() {
+  const currentUser = useAppStore((state) => state.currentUser)
+  const logoutUser = useAppStore((state) => state.logoutUser)
   const chats = useAppStore((state) => state.chats)
   const activeChatId = useAppStore((state) => state.activeChatId)
   const selectChat = useAppStore((state) => state.selectChat)
@@ -90,23 +57,34 @@ export default function Sidebar() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
-  const currentUser = useAppStore((state) => state.currentUser)
-  const logoutUser = useAppStore((state) => state.logoutUser)
+  const chatsLoading = useAppStore((state) => state.chatsLoading)
 
   const navigate = useNavigate()
   const location = useLocation()
-  const isChatRouteActive = location.pathname === '/chat'
-  const chatsLoading = useAppStore((state) => state.chatsLoading)
+  const isChatRouteActive = location.pathname === '/' || location.pathname === '/chat'
   const [openMenuId, setOpenMenuId] = useState(null)
   const [menuPosition, setMenuPosition] = useState(null)
   const [dialog, setDialog] = useState({ type: null, chat: null, value: '' })
+  const dialogRef = useRef(null)
+  const dialogInputRef = useRef(null)
+  const dialogCancelRef = useRef(null)
+
+  const closeDialog = () => setDialog({ type: null, chat: null, value: '' })
+  const closeMenu = () => {
+    setOpenMenuId(null)
+    setMenuPosition(null)
+  }
+
+  useDialogA11y({
+    isOpen: Boolean(dialog.type),
+    onClose: closeDialog,
+    containerRef: dialogRef,
+    initialFocusRef: dialog.type === 'rename' ? dialogInputRef : dialogCancelRef,
+  })
 
   useEffect(() => {
     if (!openMenuId) return undefined
-    const handleViewportChange = () => {
-      setOpenMenuId(null)
-      setMenuPosition(null)
-    }
+    const handleViewportChange = () => closeMenu()
     window.addEventListener('scroll', handleViewportChange, true)
     window.addEventListener('resize', handleViewportChange)
     return () => {
@@ -118,40 +96,35 @@ export default function Sidebar() {
   const { pinned, recent } = useMemo(() => {
     const pinnedList = []
     const recentList = []
+
     for (const chat of chats) {
       if (pinnedChatIds.has(chat.id)) pinnedList.push(chat)
       else recentList.push(chat)
     }
+
     return { pinned: pinnedList, recent: recentList }
   }, [chats, pinnedChatIds])
 
   const handleNewChat = async () => {
-    setOpenMenuId(null)
-    setMenuPosition(null)
+    closeMenu()
     await newChat()
     navigate('/chat')
   }
 
   const handleRename = (chat) => {
-    setOpenMenuId(null)
-    setMenuPosition(null)
+    closeMenu()
     setDialog({ type: 'rename', chat, value: chat.title })
   }
 
   const handleDelete = (chat) => {
-    setOpenMenuId(null)
-    setMenuPosition(null)
+    closeMenu()
     setDialog({ type: 'delete', chat, value: '' })
   }
 
   const handlePin = (chat) => {
-    setOpenMenuId(null)
-    setMenuPosition(null)
+    closeMenu()
     togglePinChat(chat.id)
   }
-
-  const closeDialog = () => setDialog({ type: null, chat: null, value: '' })
-  const closeMenu = () => { setOpenMenuId(null); setMenuPosition(null) }
 
   const toggleChatMenu = (chat, event) => {
     const triggerRect = event.currentTarget.getBoundingClientRect()
@@ -161,7 +134,12 @@ export default function Sidebar() {
     const viewportHeight = window.innerHeight
     const nextLeft = Math.max(12, Math.min(triggerRect.right - menuWidth, viewportWidth - menuWidth - 12))
     const enoughRoomBelow = triggerRect.bottom + menuHeight + 12 <= viewportHeight
-    if (openMenuId === chat.id) { closeMenu(); return }
+
+    if (openMenuId === chat.id) {
+      closeMenu()
+      return
+    }
+
     setOpenMenuId(chat.id)
     setMenuPosition(
       enoughRoomBelow
@@ -174,7 +152,10 @@ export default function Sidebar() {
     if (!dialog.chat) return
     if (dialog.type === 'rename') {
       const nextTitle = dialog.value.trim()
-      if (!nextTitle || nextTitle === dialog.chat.title) { closeDialog(); return }
+      if (!nextTitle || nextTitle === dialog.chat.title) {
+        closeDialog()
+        return
+      }
       await renameChat(dialog.chat.id, nextTitle)
     }
     if (dialog.type === 'delete') {
@@ -184,7 +165,7 @@ export default function Sidebar() {
     closeDialog()
   }
 
-  const activeMenuChat = chats.find((c) => c.id === openMenuId)
+  const activeMenuChat = chats.find((chat) => chat.id === openMenuId)
   const activeMenuIsPinned = activeMenuChat ? pinnedChatIds.has(activeMenuChat.id) : false
 
   const renderChatList = (list) =>
@@ -204,7 +185,6 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Collapsed rail for desktop */}
       <aside className="sidebar-rail" aria-label="Collapsed sidebar">
         <button
           type="button"
@@ -228,9 +208,7 @@ export default function Sidebar() {
 
         <NavLink
           to="/documents"
-          className={({ isActive }) =>
-            `sidebar-rail__btn ${isActive ? 'sidebar-rail__btn--active' : ''}`
-          }
+          className={({ isActive }) => `sidebar-rail__btn ${isActive ? 'sidebar-rail__btn--active' : ''}`}
           title="Documents"
           aria-label="Documents"
         >
@@ -241,20 +219,28 @@ export default function Sidebar() {
 
         <NavLink
           to="/settings"
-          className={({ isActive }) =>
-            `sidebar-rail__btn ${isActive ? 'sidebar-rail__btn--active' : ''}`
-          }
+          className={({ isActive }) => `sidebar-rail__btn ${isActive ? 'sidebar-rail__btn--active' : ''}`}
           title="Settings"
           aria-label="Settings"
         >
           <Settings size={18} />
         </NavLink>
+
+        {currentUser && (
+          <button
+            type="button"
+            className="sidebar-rail__btn"
+            onClick={logoutUser}
+            title={`Log out (${currentUser})`}
+            aria-label={`Log out (${currentUser})`}
+            style={{ color: 'var(--color-danger)' }}
+          >
+            <LogOut size={18} />
+          </button>
+        )}
       </aside>
 
-      {/* Expanded sidebar */}
       <aside className="sidebar" data-open={sidebarOpen} data-collapsed={sidebarCollapsed}>
-
-        {/* Brand — fixed, compact lockup: mark + name + tagline */}
         <div className="brand">
           <div className="brand__row">
             <div className="brand__lockup">
@@ -274,7 +260,6 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* New chat */}
         <div className="sidebar__new-chat-row">
           <button type="button" className="new-chat-action" onClick={handleNewChat}>
             <SquarePen size={16} />
@@ -282,8 +267,6 @@ export default function Sidebar() {
           </button>
         </div>
 
-        {/* Documents — a permanent library, not a chat. Ingestion happens
-            entirely on that page; nothing here spawns a conversation. */}
         <nav className="sidebar__documents-row">
           <NavLink
             to="/documents"
@@ -300,8 +283,8 @@ export default function Sidebar() {
             <section className="sidebar__section sidebar__section--grow">
               <p className="section-title">Recent chats</p>
               <div className="chat-list" aria-busy="true" aria-label="Loading chats">
-                {[0, 1, 2, 3].map((i) => (
-                  <div key={i} className="chat-item-skeleton" style={{ animationDelay: `${i * 80}ms` }} />
+                {[0, 1, 2, 3].map((index) => (
+                  <div key={index} className="chat-item-skeleton" style={{ animationDelay: `${index * 80}ms` }} />
                 ))}
               </div>
             </section>
@@ -326,19 +309,18 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* Footer — User info and Settings */}
-        <footer className="sidebar__footer" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <footer className="sidebar__footer" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {currentUser && (
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                background: 'var(--bg-soft, rgba(0,0,0,0.03))',
+                padding: '8px 10px',
+                borderRadius: 'var(--radius-control)',
+                background: 'var(--color-control)',
+                border: '1px solid var(--color-border)',
                 fontSize: '13px',
-                marginBottom: '4px',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
@@ -347,8 +329,8 @@ export default function Sidebar() {
                     width: '24px',
                     height: '24px',
                     borderRadius: '50%',
-                    background: 'var(--primary)',
-                    color: '#fff',
+                    background: 'var(--accent)',
+                    color: 'var(--accent-on)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -360,7 +342,16 @@ export default function Sidebar() {
                 >
                   {currentUser.slice(0, 1)}
                 </div>
-                <span style={{ fontWeight: 600, color: 'var(--text-primary)', textTransform: 'capitalize', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <span
+                  style={{
+                    fontWeight: 600,
+                    color: 'var(--color-text)',
+                    textTransform: 'capitalize',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
                   {currentUser}
                 </span>
               </div>
@@ -368,16 +359,20 @@ export default function Sidebar() {
                 type="button"
                 onClick={logoutUser}
                 title="Log out"
+                aria-label="Log out"
                 style={{
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
                   padding: '4px',
-                  color: 'var(--text-muted)',
+                  color: 'var(--color-text-muted)',
                   display: 'flex',
                   alignItems: 'center',
                   borderRadius: '4px',
+                  transition: 'color 0.15s ease',
                 }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-danger)')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-muted)')}
               >
                 <LogOut size={15} />
               </button>
@@ -394,7 +389,6 @@ export default function Sidebar() {
         </footer>
       </aside>
 
-      {/* Portal for chat menu */}
       {openMenuId && activeMenuChat ? createPortal(
         <div className="chat-menu-backdrop" role="presentation" onClick={closeMenu}>
           <div
@@ -402,24 +396,15 @@ export default function Sidebar() {
             role="menu"
             aria-label="Chat actions"
             style={menuPosition ?? undefined}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
           >
-            <button
-              type="button"
-              className="chat-menu__item"
-              onClick={() => handlePin(activeMenuChat)}
-              role="menuitem"
-            >
+            <button type="button" className="chat-menu__item" onClick={() => handlePin(activeMenuChat)} role="menuitem">
               {activeMenuIsPinned ? <PinOff size={14} /> : <Pin size={14} />}
               <span>{activeMenuIsPinned ? 'Unpin' : 'Pin'}</span>
             </button>
-            <button
-              type="button"
-              className="chat-menu__item"
-              onClick={() => handleRename(activeMenuChat)}
-              role="menuitem"
-            >
-              <PencilLine size={14} /><span>Rename</span>
+            <button type="button" className="chat-menu__item" onClick={() => handleRename(activeMenuChat)} role="menuitem">
+              <PencilLine size={14} />
+              <span>Rename</span>
             </button>
             <button
               type="button"
@@ -427,11 +412,12 @@ export default function Sidebar() {
               onClick={() => handleDelete(activeMenuChat)}
               role="menuitem"
             >
-              <Trash2 size={14} /><span>Delete</span>
+              <Trash2 size={14} />
+              <span>Delete</span>
             </button>
           </div>
         </div>,
-        document.body
+        document.body,
       ) : null}
 
       {sidebarOpen ? (
@@ -440,27 +426,37 @@ export default function Sidebar() {
 
       {dialog.type ? (
         <div className="dialog-backdrop" role="presentation" onClick={closeDialog}>
-          <div className="dialog-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+          <div
+            ref={dialogRef}
+            className="dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="chat-dialog-title"
+            aria-describedby="chat-dialog-desc"
+            onClick={(event) => event.stopPropagation()}
+          >
             <p className="dialog-card__eyebrow">Chat action</p>
-            <h3 className="dialog-card__title">
+            <h3 id="chat-dialog-title" className="dialog-card__title">
               {dialog.type === 'rename' ? 'Rename chat' : 'Delete chat'}
             </h3>
-            <p className="dialog-card__text">
+            <p id="chat-dialog-desc" className="dialog-card__text">
               {dialog.type === 'rename'
                 ? 'Give this conversation a new name.'
-                : `This will remove "${dialog.chat?.title}" from recent chats.`}
+                : `This will remove "${dialog.chat?.title}" from your chats.`}
             </p>
             {dialog.type === 'rename' ? (
               <input
-                autoFocus
+                ref={dialogInputRef}
                 className="dialog-card__input"
                 value={dialog.value}
-                onChange={(e) => setDialog((c) => ({ ...c, value: e.target.value }))}
+                onChange={(event) => setDialog((current) => ({ ...current, value: event.target.value }))}
                 placeholder="Chat title"
               />
             ) : null}
             <div className="dialog-card__actions">
-              <button type="button" className="secondary-button" onClick={closeDialog}>Cancel</button>
+              <button ref={dialogCancelRef} type="button" className="secondary-button" onClick={closeDialog}>
+                Cancel
+              </button>
               <button
                 type="button"
                 className={`primary-button ${dialog.type === 'delete' ? 'primary-button--danger' : ''}`}

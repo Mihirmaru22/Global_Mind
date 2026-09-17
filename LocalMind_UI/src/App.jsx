@@ -1,7 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { Layout } from './components/Layout.jsx'
-import About from './pages/About.jsx'
 import Documents from './pages/Documents.jsx'
 import Home from './pages/Home.jsx'
 import Settings from './pages/Settings.jsx'
@@ -24,7 +23,6 @@ function App() {
           <Route path="chat" element={<Home />} />
           <Route path="documents" element={<Documents />} />
           <Route path="settings" element={<Settings />} />
-          <Route path="about" element={<About />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -35,15 +33,9 @@ function App() {
         closeButton
         toastOptions={{
           style: {
-            background:
-              themeMode === 'light'
-                ? 'rgba(255, 253, 251, 0.95)'
-                : 'rgba(18, 18, 18, 0.95)',
-            color: 'var(--text-primary)',
-            border:
-              themeMode === 'light'
-                ? '1px solid rgba(35, 35, 35, 0.12)'
-                : '1px solid rgba(255, 255, 255, 0.08)',
+            background: 'var(--color-surface)',
+            color: 'var(--color-text)',
+            border: '1px solid var(--color-border-strong)',
           },
         }}
       />

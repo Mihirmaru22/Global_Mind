@@ -61,13 +61,13 @@ export function Layout() {
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          background: 'var(--bg)',
+          background: 'var(--canvas-bg, var(--color-bg))',
           gap: '12px',
-          color: 'var(--text-secondary)',
+          color: 'var(--color-text-muted)',
         }}
       >
-        <Loader2 className="animate-spin" size={32} style={{ color: 'var(--primary)' }} />
-        <span style={{ fontSize: '14px' }}>Loading workspace…</span>
+        <Loader2 className="spin" size={32} style={{ color: 'var(--accent)' }} />
+        <span style={{ fontSize: '14px', fontWeight: 500 }}>Loading workspace…</span>
       </div>
     )
   }
@@ -82,7 +82,7 @@ export function Layout() {
       <main className="content">
         <Header />
         <div className="main-scroll">
-          <div className="surface">
+          <div className="workspace">
             <Outlet />
           </div>
         </div>

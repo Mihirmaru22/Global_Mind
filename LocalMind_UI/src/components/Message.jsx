@@ -1,9 +1,11 @@
 import { motion } from 'framer-motion'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Copy,
   PencilLine,
   RefreshCw,
@@ -24,10 +26,12 @@ import ThinkingTrace from './ThinkingTrace.jsx'
 import TokenUsage from './TokenUsage.jsx'
 import rehypeCitations from './rehypeCitations.js'
 import DatabaseResultCard from './DatabaseResultCard.jsx'
+import CodeBlock from './CodeBlock.jsx'
 
 /** Recursively flatten a react-markdown children tree back into plain text.
  * rehype-highlight can split code into nested <span> tokens, so a simple
  * String() is not enough — we walk the tree and concatenate the text. */
+/** Recursively flatten a react-markdown children tree back into plain text. */
 function nodeText(node) {
   if (node == null || node === false) return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)
@@ -160,13 +164,14 @@ function splitMessageContent(rawText, sqlPayload) {
 }
 
 // Custom renderers for assistant markdown: mermaid code blocks become diagrams,
-// everything else falls through to the default <pre>.
+// code blocks become styled CodeBlock with tabs and Copy button,
+// tables become MarkdownTable.
 const markdownComponents = {
   pre(props) {
     const { children, ...rest } = props
     const source = mermaidSource(children)
     if (source !== null) return <MermaidDiagram code={source} />
-    return <pre {...rest}>{children}</pre>
+    return <CodeBlock {...rest}>{children}</CodeBlock>
   },
   table(props) {
     return <MarkdownTable {...props} />
@@ -224,11 +229,16 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
   const [copied, setCopied] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(message.content || '')
+  const [expanded, setExpanded] = useState(false)
+  const [canExpand, setCanExpand] = useState(false)
+  const bubbleRef = useRef(null)
   
+
   const submitFeedbackComment = useAppStore((state) => state.submitFeedbackComment)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedbackText, setFeedbackText] = useState('')
   
+
   const editRef = useRef(null)
   const copyTimerRef = useRef(null)
   const typedContent = useTypewriterText(
@@ -242,6 +252,7 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
   // typing AND while real tokens are streaming in live from the backend —
   // the latter never touches useTypewriterText's animation path (isNew is
   // never set for streamed completions), so it needs its own indicator.
+
   const isTyping =
     (isAssistant && !isLoading && typedContent.length < (message.content || '').length) || isStreaming
   const feedback = message.feedback || null
@@ -273,6 +284,17 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
     },
     [],
   )
+
+  useLayoutEffect(() => {
+    if (isAssistant || isEditing) return
+    const node = bubbleRef.current
+    if (!node) return
+    setExpanded(false)
+    const frame = window.requestAnimationFrame(() => {
+      setCanExpand(node.scrollHeight - node.clientHeight > 4)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [isAssistant, isEditing, message.content])
 
   useEffect(() => {
     if (!chatId || !message.isNew || isTyping) return
@@ -331,7 +353,7 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
         className="message message--assistant message--ingestion"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.24, delay: index * 0.03 }}
+        transition={{ duration: 0.2, delay: index * 0.03 }}
       >
         <IngestionCard message={message} />
       </motion.div>
@@ -345,10 +367,10 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
       })}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.24, delay: index * 0.03 }}
+      transition={{ duration: 0.2, delay: index * 0.03 }}
     >
       {isLoading ? (
-        <div className="message__assistant message__assistant--loading" aria-live="polite">
+        <div className="message__assistant-body message__assistant-body--loading" aria-live="polite">
           {message.thinking?.length ? (
             <ThinkingTrace steps={message.thinking} streaming />
           ) : (
@@ -361,10 +383,21 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
         </div>
       ) : isAssistant ? (
         <div className="message__content">
+          {/* Source evidence badge for hybrid answers */}
+          {(dbPayload && referencesText) ? (
+            <div className="message__source-badge">
+              <span className="message__source-tag message__source-tag--sql">Database</span>
+              <span className="message__source-divider">·</span>
+              <span className="message__source-tag message__source-tag--doc">Document</span>
+            </div>
+          ) : null}
+
           {message.thinking?.length ? (
             <ThinkingTrace steps={message.thinking} streaming={isStreaming} />
           ) : null}
-          <div className="message__assistant markdown">
+
+          {/* Open content — no card border */}
+          <div className="message__assistant-body markdown">
             {dbPayload || referencesText ? (
               <>
                 {mainText ? (
@@ -400,6 +433,7 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
             )}
             {isTyping ? <span className="typing-cursor" aria-hidden="true" /> : null}
           </div>
+
           {hasVersions ? (
             <div className="message__versions" role="group" aria-label="Answer versions">
               <button
@@ -425,44 +459,56 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
               </button>
             </div>
           ) : null}
-          <div className="message__actions" aria-label="Assistant actions">
-            <button
-              type="button"
-              className={clsx('message__action', copied && 'message__action--active')}
-              onClick={handleCopy}
-              aria-label="Copy message"
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-            </button>
-            <button
-              type="button"
-              className={clsx('message__action', feedback === 'up' && 'message__action--active')}
-              onClick={() => handleFeedback('up')}
-              aria-label="Thumbs up"
-            >
-              <ThumbsUp size={14} />
-            </button>
-            <button
-              type="button"
-              className={clsx('message__action', feedback === 'down' && 'message__action--active')}
-              onClick={() => handleFeedback('down')}
-              aria-label="Thumbs down"
-            >
-              <ThumbsDown size={14} />
-            </button>
-            {canRegenerate ? (
+
+          {/* Token usage — part of the same response card, below the answer */}
+          {!isStreaming ? <TokenUsage usage={message.usage} /> : null}
+
+          {/* Answer actions — four icon-only actions, left side, shown on hover */}
+          <div className="message__bottom-bar">
+            <div className="message__actions" aria-label="Answer actions">
               <button
                 type="button"
-                className="message__action"
-                onClick={() => regenerateMessage(chatId, message.id)}
-                aria-label="Regenerate reply"
-                disabled={loading}
+                className={clsx('message__action', copied && 'message__action--active')}
+                onClick={handleCopy}
+                aria-label="Copy message"
+                title="Copy"
               >
-                <RefreshCw size={14} />
+                {copied ? <Check size={15} /> : <Copy size={15} />}
               </button>
-            ) : null}
+              <button
+                type="button"
+                className={clsx('message__action', feedback === 'up' && 'message__action--active')}
+                onClick={() => handleFeedback('up')}
+                aria-label="Good response"
+                title="Good response"
+              >
+                <ThumbsUp size={15} />
+              </button>
+              <button
+                type="button"
+                className={clsx('message__action', feedback === 'down' && 'message__action--active')}
+                onClick={() => handleFeedback('down')}
+                aria-label="Bad response"
+                title="Bad response"
+              >
+                <ThumbsDown size={15} />
+              </button>
+              {canRegenerate ? (
+                <button
+                  type="button"
+                  className="message__action"
+                  onClick={() => regenerateMessage(chatId, message.id)}
+                  aria-label="Regenerate response"
+                  title="Regenerate"
+                  disabled={loading}
+                >
+                  <RefreshCw size={15} className={loading ? 'spin' : ''} />
+                </button>
+              ) : null}
+            </div>
           </div>
           
+
           {feedbackOpen && (
             <motion.div
               className="message__feedback"
@@ -484,12 +530,9 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
               </button>
             </motion.div>
           )}
-
-          {/* Token cost of this answer — a collapsible footer, mirroring the
-              thinking trace at the top. Self-hides when no usage was captured. */}
-          {!isStreaming ? <TokenUsage usage={message.usage} /> : null}
         </div>
       ) : (
+        /* User message */
         <div className="message__content">
           {isEditing ? (
             <div className="message__edit-shell">
@@ -530,7 +573,10 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
             </div>
           ) : (
             <>
-              <div className="message__bubble markdown">
+              <div
+                ref={bubbleRef}
+                className={clsx('message__bubble', 'markdown', !expanded && canExpand && 'message__bubble--clamped')}
+              >
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }], rehypeCitations]}
@@ -538,12 +584,23 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
                   {message.content}
                 </ReactMarkdown>
               </div>
+              {canExpand ? (
+                <button
+                  type="button"
+                  className="message__show-more"
+                  onClick={() => setExpanded((value) => !value)}
+                >
+                  <span>{expanded ? 'Show less' : 'Show more'}</span>
+                  {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+              ) : null}
               <div className="message__actions message__actions--user">
                 <button
                   type="button"
                   className={clsx('message__action', copied && 'message__action--active')}
                   onClick={handleCopy}
                   aria-label="Copy message"
+                  title="Copy"
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
@@ -553,6 +610,7 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
                     className="message__action"
                     onClick={() => setIsEditing(true)}
                     aria-label="Edit message"
+                    title="Edit"
                   >
                     <PencilLine size={14} />
                   </button>

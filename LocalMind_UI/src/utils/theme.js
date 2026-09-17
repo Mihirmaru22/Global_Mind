@@ -6,6 +6,7 @@ const themeMap = {
 }
 
 export function resolveTheme(theme) {
+  return themeMap[theme] || themeMap.dark
   return themeMap[theme] || themeMap.light
 }
 
@@ -20,6 +21,7 @@ function subscribeToSystemTheme(callback) {
 
 function getSystemPrefersDarkSnapshot() {
   if (typeof window === 'undefined' || !window.matchMedia) return true
+  if (typeof window === 'undefined' || !window.matchMedia) return false
   return window.matchMedia(DARK_QUERY).matches
 }
 
@@ -32,6 +34,7 @@ export function useResolvedTheme(theme) {
     subscribeToSystemTheme,
     getSystemPrefersDarkSnapshot,
     () => true,
+    () => false,
   )
 
   if (theme === 'system') {

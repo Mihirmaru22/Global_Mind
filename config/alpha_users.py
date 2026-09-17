@@ -7,5 +7,8 @@ ALPHA_USERS: dict[str, str] = {
     "pm": "pm123",
     "vedanshi": "vedanshi123",
     "pinal": "pinal123",
-
+    "mihir": "alpha_pass_1",
+    "rahul": "alpha_pass_2",
+    "priya": "alpha_pass_3",
+    "tester": "alpha_test_pass",
 }

@@ -1,4 +1,4 @@
-export default function Loader({ label = 'Loading demo data' }) {
+export default function Loader({ label = 'Loading your workspace' }) {
   return (
     <div className="loader" role="status" aria-live="polite">
       <span className="loader__dot" />

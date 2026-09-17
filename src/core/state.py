@@ -233,7 +233,7 @@ class UIStateManager:
             "contextLength": "8192",
             "streamResponses": False,
             "autoSync": True,
-            "theme": "dark",
+            "theme": "light",
         }
         saved = self._load_json(self.settings_file, {})
         default_settings.update(saved)

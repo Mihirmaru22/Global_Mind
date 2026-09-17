@@ -81,16 +81,6 @@ function writeStoredBoolean(key, value) {
 // PATCH support) would be needed for that.
 const PINNED_CHATS_KEY = 'localmind-pinned-chats'
 
-function readStoredSettings() {
-  try {
-    const raw = localStorage.getItem('localmind-settings')
-    if (raw) return JSON.parse(raw)
-  } catch {
-    // Ignore storage issues and use defaults
-  }
-  return { theme: 'system' }
-}
-
 function readStoredIdSet(key) {
   try {
     const raw = localStorage.getItem(key)
@@ -363,7 +353,7 @@ export const useAppStore = create((set, get) => ({
   draftsByChatId: {},
   documents: [],
   overview: null,
-  settings: readStoredSettings(),
+  settings: null,
   providers: [],
   providerUsage: [],
   loading: false,
@@ -384,7 +374,7 @@ export const useAppStore = create((set, get) => ({
   searchMode: 'auto', // 'auto' | 'sql' | 'rag'
   setSearchMode: (searchMode) => set({ searchMode }),
 
-  // --- Alpha Authentication State ---
+  // --- Authentication State ---
   currentUser: null,
   isAuthChecking: true,
   loginLoading: false,
@@ -437,7 +427,7 @@ export const useAppStore = create((set, get) => ({
       overview: null,
       loading: false,
     })
-    toast.info('Logged out of Alpha workspace')
+    toast.info('Logged out of workspace')
   },
 
   initApp: async () => {
@@ -774,6 +764,80 @@ export const useAppStore = create((set, get) => ({
     get().finalizeChatTitle(activeChatId)
   },
 
+  // For starter-card answers that don't need a real DB/document search (e.g.
+  // "what file formats do you support"). Skips the backend entirely, but
+  // still shows the user message, a brief loading state, and then reveals
+  // the given answer with the same typewriter effect as any other answer —
+  // so it reads exactly like a normal generated response.
+  sendCannedPrompt: async (question, answer) => {
+    let { activeChatId, pendingChat } = get()
+    if (get().activeRequest) return
+
+    if (pendingChat || !activeChatId) {
+      const chat = await createChat('New Chat')
+      const pendingDraft = get().draftsByChatId['__pending__']
+      set((state) => {
+        const nextDrafts = { ...state.draftsByChatId }
+        delete nextDrafts['__pending__']
+        if (pendingDraft) nextDrafts[chat.id] = pendingDraft
+        return {
+          chats: [{ ...chat, title: 'New Chat', isUntitled: true }, ...normalizeList(state.chats, [])],
+          activeChatId: chat.id,
+          pendingChat: false,
+          messagesByChatId: { ...state.messagesByChatId, [chat.id]: [] },
+          draftsByChatId: nextDrafts,
+        }
+      })
+      activeChatId = chat.id
+    }
+    if (!activeChatId) return
+
+    const requestId = ++requestSequence
+    const placeholder = createLoadingAssistantMessage(requestId)
+    const userMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: question,
+      createdAt: new Date().toISOString(),
+    }
+
+    set((state) => ({
+      messagesByChatId: {
+        ...state.messagesByChatId,
+        [activeChatId]: [...(state.messagesByChatId[activeChatId] || []), userMessage, placeholder],
+      },
+      draftsByChatId: { ...state.draftsByChatId, [activeChatId]: '' },
+      activeRequest: { id: requestId, chatId: activeChatId, placeholderId: placeholder.id },
+      loading: true,
+    }))
+
+    const activeChat = get().chats.find((chat) => chat.id === activeChatId)
+    if (activeChat?.isUntitled) {
+      set((state) => ({
+        chats: state.chats.map((chat) =>
+          chat.id === activeChatId ? { ...chat, title: buildUntitledChatTitle(question) } : chat,
+        ),
+      }))
+    }
+
+    // Brief pause so it still feels like a real request is in flight, then
+    // reveal the canned answer — no DB/document search happens here at all.
+    await new Promise((resolve) => setTimeout(resolve, 650))
+
+    set((state) => ({
+      messagesByChatId: {
+        ...state.messagesByChatId,
+        [activeChatId]: (state.messagesByChatId[activeChatId] || []).map((message) =>
+          message.id === placeholder.id
+            ? { ...message, content: answer, status: 'done', isNew: true }
+            : message,
+        ),
+      },
+      activeRequest: null,
+      loading: false,
+    }))
+  },
+
   stopGeneration: () => {
     const request = get().activeRequest
     if (!request?.abortController) return
@@ -976,12 +1040,14 @@ export const useAppStore = create((set, get) => ({
         description: `Successfully embedded ${tables} table${plural(tables)} into the vector store.`,
         duration: 5000,
       })
+      return { ok: true, tables }
     } catch (error) {
       toast.error('Schema sync failed', {
         id: toastId,
         description: error.response?.data?.detail || error.message || 'Could not sync schema.',
         duration: 6000,
       })
+      return { ok: false, error }
     }
   },
 
@@ -1076,11 +1142,7 @@ export const useAppStore = create((set, get) => ({
     } catch {
       // Ignore storage write errors; the local demo state still updates.
     }
-    try {
-      await saveSettings(settings)
-    } catch {
-      // If unauthenticated or offline, local state and localStorage are preserved.
-    }
+    await saveSettings(settings)
   },
 
   selectDocument: (docId) => set({ selectedDocId: docId }),

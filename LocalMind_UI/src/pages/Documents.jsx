@@ -13,10 +13,11 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
+import { useDialogA11y } from '../utils/useDialogA11y.js'
 
 function formatBytes(bytes) {
   const value = Number(bytes)
-  if (!value || value < 0) return '—'
+  if (!value || value < 0) return '-'
   const units = ['B', 'KB', 'MB', 'GB']
   let size = value
   let unit = 0
@@ -57,6 +58,15 @@ export default function Documents() {
   const [isUploading, setIsUploading] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const dialogRef = useRef(null)
+  const dialogCancelRef = useRef(null)
+
+  useDialogA11y({
+    isOpen: Boolean(deleteTarget),
+    onClose: () => setDeleteTarget(null),
+    containerRef: dialogRef,
+    initialFocusRef: dialogCancelRef,
+  })
 
   const handleUploadClick = () => uploadInputRef.current?.click()
 
@@ -69,7 +79,7 @@ export default function Documents() {
       await ingestDocument(file)
     } catch (error) {
       console.error(error)
-      toast.error('Upload failed. Check server logs.')
+      toast.error('Upload failed. Try another file or retry.')
     } finally {
       setIsUploading(false)
       if (uploadInputRef.current) uploadInputRef.current.value = ''
@@ -126,13 +136,13 @@ export default function Documents() {
         <div>
           <h2 className="section__title">Documents</h2>
           <p className="section__subtitle">
-            Upload your files to add them to the knowledge base. You can reupload a file to replace it, or delete it if you no longer need it.
+            Add source material for LocalMind to search and analyze.
           </p>
         </div>
         <div className="section__header-actions">
           <button type="button" className="primary-button" disabled={isUploading} onClick={handleUploadClick}>
             {isUploading ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
-            <span>{isUploading ? 'Ingesting…' : 'Upload'}</span>
+            <span>{isUploading ? 'Processing...' : 'Upload document'}</span>
           </button>
         </div>
       </div>
@@ -151,30 +161,36 @@ export default function Documents() {
           ) : (
             <div className="doc-list">
               {documents.map((doc) => (
-                <button
+                <article
                   key={doc.id}
-                  type="button"
-                  className={`doc-row doc-row--selectable ${selectedDocId === doc.id && !showingLive ? 'doc-row--active' : ''}`}
-                  onClick={() => handleSelectRow(doc)}
+                  className={`doc-row ${selectedDocId === doc.id && !showingLive ? 'doc-row--active' : ''}`}
                 >
-                  <FileText size={16} className="doc-row__icon" />
-                  <div className="doc-row__body">
-                    <p className="doc-row__title">
-                      {doc.name}
-                      {doc.versionCount > 1 ? <span className="doc-row__badge"> · v{doc.versionCount}</span> : null}
-                    </p>
-                    <p className="doc-row__meta">
-                      {fileExtension(doc.name)} · {formatBytes(doc.sizeBytes)} · {doc.chunks ?? 0} chunks
-                      {doc.ingestedAt ? ` · Added ${dayjs(doc.ingestedAt).format('MMM D, HH:mm')}` : ''}
-                    </p>
-                  </div>
+                  <button
+                    type="button"
+                    className="doc-row__select"
+                    aria-label={`Inspect ${doc.name}`}
+                    onClick={() => handleSelectRow(doc)}
+                  >
+                    <FileText size={16} className="doc-row__icon" aria-hidden="true" />
+                    <div className="doc-row__body">
+                      <p className="doc-row__title">
+                        {doc.name}
+                        {doc.versionCount > 1 ? <span className="doc-row__badge"> / v{doc.versionCount}</span> : null}
+                      </p>
+                      <p className="doc-row__meta">
+                        {fileExtension(doc.name)} / {formatBytes(doc.sizeBytes)} / {doc.chunks ?? 0} chunks
+                        {doc.ingestedAt ? ` / Added ${dayjs(doc.ingestedAt).format('MMM D, HH:mm')}` : ''}
+                      </p>
+                    </div>
+                  </button>
                   <div className="doc-row__actions">
                     <button
                       type="button"
                       className="icon-button"
                       title="Reupload / replace"
+                      aria-label={`Replace ${doc.name}`}
                       disabled={busyId === doc.id}
-                      onClick={(e) => { e.stopPropagation(); openReplacePicker(doc.id) }}
+                      onClick={() => openReplacePicker(doc.id)}
                     >
                       <RotateCcw size={15} />
                     </button>
@@ -182,13 +198,14 @@ export default function Documents() {
                       type="button"
                       className="icon-button icon-button--danger"
                       title="Delete"
+                      aria-label={`Delete ${doc.name}`}
                       disabled={busyId === doc.id}
-                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(doc) }}
+                      onClick={() => setDeleteTarget(doc)}
                     >
                       <Trash2 size={15} />
                     </button>
                   </div>
-                </button>
+                </article>
               ))}
             </div>
           )}
@@ -240,7 +257,7 @@ export default function Documents() {
                   <div>
                     <span className="ingestion-panel__summary-label">Added</span>
                     <span className="ingestion-panel__summary-value">
-                      {selectedDoc.ingestedAt ? dayjs(selectedDoc.ingestedAt).format('MMM D, YYYY') : '—'}
+                      {selectedDoc.ingestedAt ? dayjs(selectedDoc.ingestedAt).format('MMM D, YYYY') : '-'}
                     </span>
                   </div>
                   <div>
@@ -249,13 +266,13 @@ export default function Documents() {
                   </div>
                 </div>
                 <p className="ingestion-panel__note">
-                  Already ingested — live per-stage detail is only available while a document is actively processing.
+                  Already ingested. Live per-stage detail is only available while a document is actively processing.
                   Reupload to watch it run again.
                 </p>
               </>
             ) : (
               <div className="ingestion-panel__empty">
-                <p>Select a document to see its details, or upload a new one to watch it ingest live.</p>
+                <p>Select a document to inspect its metadata, or upload one to watch processing live.</p>
               </div>
             )}
           </div>
@@ -264,14 +281,22 @@ export default function Documents() {
 
       {deleteTarget ? (
         <div className="dialog-backdrop" role="presentation" onClick={() => setDeleteTarget(null)}>
-          <div className="dialog-card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+          <div
+            ref={dialogRef}
+            className="dialog-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="doc-dialog-title"
+            aria-describedby="doc-dialog-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
             <p className="dialog-card__eyebrow">Document</p>
-            <h3 className="dialog-card__title">Delete document</h3>
-            <p className="dialog-card__text">
+            <h3 id="doc-dialog-title" className="dialog-card__title">Delete document</h3>
+            <p id="doc-dialog-desc" className="dialog-card__text">
               This removes "{deleteTarget.name}" from the knowledge base. This can't be undone.
             </p>
             <div className="dialog-card__actions">
-              <button type="button" className="secondary-button" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              <button ref={dialogCancelRef} type="button" className="secondary-button" onClick={() => setDeleteTarget(null)}>Cancel</button>
               <button type="button" className="primary-button primary-button--danger" onClick={confirmDelete}>
                 Delete
               </button>
