@@ -19,12 +19,34 @@ import { useAppStore } from '../store/store.js'
 import { useDialogA11y } from '../utils/useDialogA11y.js'
 
 function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
+  const windowRef = useRef(null)
+  const titleRef = useRef(null)
+  const [marquee, setMarquee] = useState(null)
+
+  // Only start the marquee when the title is really cut off, and never for reduced motion.
+  const startMarquee = () => {
+    const viewport = windowRef.current
+    const title = titleRef.current
+    if (!viewport || !title) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const distance = Math.ceil(title.scrollWidth - viewport.clientWidth)
+    if (distance <= 1) return
+    setMarquee({ distance, duration: Math.max(1.5, distance / 40) })
+  }
+
+  const stopMarquee = () => setMarquee(null)
+
   return (
-    <div className={`chat-item ${isActive ? 'chat-item--active' : ''} ${isMenuOpen ? 'chat-item--menu-open' : ''}`}>
+    <div
+      className={`chat-item ${isActive ? 'chat-item--active' : ''} ${isMenuOpen ? 'chat-item--menu-open' : ''} ${marquee ? 'chat-item--marquee' : ''}`}
+      style={marquee ? { '--marquee-distance': `${marquee.distance}px`, '--marquee-duration': `${marquee.duration}s` } : undefined}
+      onMouseEnter={startMarquee}
+      onMouseLeave={stopMarquee}
+    >
       <button type="button" className="chat-item__main" onClick={onSelect}>
         <MessageSquare size={14} className="chat-item__icon" aria-hidden="true" />
-        <span className="chat-item__title-window">
-          <span className="chat-item__title">{chat.title}</span>
+        <span className="chat-item__title-window" ref={windowRef}>
+          <span className="chat-item__title" ref={titleRef}>{chat.title}</span>
         </span>
       </button>
 

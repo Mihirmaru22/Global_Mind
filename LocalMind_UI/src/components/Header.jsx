@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, FileCheck2, FileText, Loader2 } from 'lucide-react'
+import { Download, FileText } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { toast } from 'sonner'
 import { useAppStore } from '../store/store.js'
-import { generateChatDocument } from '../services/api.js'
-import { exportChatTranscript, exportProfessionalDocument } from '../utils/pdfExport.js'
+import { exportChatTranscript } from '../utils/pdfExport.js'
 
 function useDismiss(ref, onDismiss, active) {
   useEffect(() => {
@@ -33,7 +32,6 @@ export default function Header() {
   const chats = useAppStore((state) => state.chats)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
   const [downloadOpen, setDownloadOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
   const downloadRef = useRef(null)
 
   const isChatRoute = location.pathname === '/' || location.pathname === '/chat'
@@ -60,22 +58,6 @@ export default function Header() {
     }
   }
 
-  const handleProfessional = async () => {
-    setDownloadOpen(false)
-    if (!canExport || busy) return
-    setBusy(true)
-    toast.info('Building your professional document...')
-    try {
-      const { markdown, title: docTitle } = await generateChatDocument(activeChatId)
-      await exportProfessionalDocument({ title: docTitle, markdown })
-    } catch (error) {
-      console.error(error)
-      toast.error('Could not generate the document. Please try again.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <header className="header">
       <div className="header__left">
@@ -95,10 +77,10 @@ export default function Header() {
                 aria-expanded={downloadOpen}
                 aria-label="Download conversation"
                 onClick={() => setDownloadOpen((value) => !value)}
-                disabled={!canExport || busy}
+                disabled={!canExport}
                 title="Download conversation"
               >
-                {busy ? <Loader2 size={15} className="spin" /> : <Download size={15} />}
+                <Download size={15} />
               </button>
 
               <AnimatePresence>
@@ -112,19 +94,11 @@ export default function Header() {
                     exit={{ opacity: 0, y: 6, scale: 0.97 }}
                     transition={{ duration: 0.12 }}
                   >
-                    <p className="topbar-menu__header">Download</p>
                     <button type="button" className="topbar-menu__item" role="menuitem" onClick={handleTranscript}>
                       <FileText size={14} />
                       <span>
                         <strong>Chat transcript</strong>
                         <em>Formatted conversation with charts</em>
-                      </span>
-                    </button>
-                    <button type="button" className="topbar-menu__item" role="menuitem" onClick={handleProfessional}>
-                      <FileCheck2 size={14} />
-                      <span>
-                        <strong>Professional document</strong>
-                        <em>Polished report generated from this chat</em>
                       </span>
                     </button>
                   </motion.div>

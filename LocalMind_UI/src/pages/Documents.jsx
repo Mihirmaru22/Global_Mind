@@ -212,7 +212,7 @@ export default function Documents() {
         </div>
 
         <div className="documents-layout__stages">
-          <div className="ingestion-panel">
+          <div className={`ingestion-panel ${!showingLive && selectedDoc ? 'ingestion-panel--doc' : ''}`}>
             <h3 className="ingestion-panel__title">Ingestion Stages</h3>
 
             {showingLive ? (
