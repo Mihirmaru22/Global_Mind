@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, FileText } from 'lucide-react'
+import { Download, FileText, Menu } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { toast } from 'sonner'
@@ -31,6 +31,8 @@ export default function Header() {
   const activeChatId = useAppStore((state) => state.activeChatId)
   const chats = useAppStore((state) => state.chats)
   const messagesByChatId = useAppStore((state) => state.messagesByChatId)
+  const sidebarOpen = useAppStore((state) => state.sidebarOpen)
+  const toggleSidebar = useAppStore((state) => state.toggleSidebar)
   const [downloadOpen, setDownloadOpen] = useState(false)
   const downloadRef = useRef(null)
 
@@ -61,6 +63,15 @@ export default function Header() {
   return (
     <header className="header">
       <div className="header__left">
+        <button
+          type="button"
+          className="header__menu-btn"
+          onClick={toggleSidebar}
+          aria-label="Open navigation"
+          aria-expanded={sidebarOpen}
+        >
+          <Menu size={18} />
+        </button>
         <div className="header__chat-identity">
           <h1 className="header__chat-title">{pageTitle}</h1>
         </div>

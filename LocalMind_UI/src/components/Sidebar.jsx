@@ -11,6 +11,7 @@ import {
   Settings,
   SquarePen,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -64,6 +65,18 @@ function ChatItemRow({ chat, isActive, isMenuOpen, onSelect, onToggleMenu }) {
   )
 }
 
+function useIsMobile() {
+  const query = '(max-width: 768px)'
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    const onChange = (event) => setIsMobile(event.matches)
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
+  return isMobile
+}
+
 export default function Sidebar() {
   const currentUser = useAppStore((state) => state.currentUser)
   const logoutUser = useAppStore((state) => state.logoutUser)
@@ -79,6 +92,7 @@ export default function Sidebar() {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed)
   const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse)
   const closeSidebar = useAppStore((state) => state.closeSidebar)
+  const isMobile = useIsMobile()
   const chatsLoading = useAppStore((state) => state.chatsLoading)
 
   const navigate = useNavigate()
@@ -238,12 +252,13 @@ export default function Sidebar() {
             <button
               type="button"
               className="sidebar__toggle desktop-toggle"
-              onClick={toggleSidebarCollapse}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              onClick={isMobile ? closeSidebar : toggleSidebarCollapse}
+              title={isMobile ? 'Close navigation' : sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={isMobile ? 'Close navigation' : sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             >
               <PanelLeftClose size={18} className="sidebar__toggle-close" />
               <PanelLeftOpen size={18} className="sidebar__toggle-open" />
+              <X size={18} className="sidebar__toggle-x" />
             </button>
           </div>
         </div>
