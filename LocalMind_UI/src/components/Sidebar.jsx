@@ -210,6 +210,10 @@ export default function Sidebar() {
         <div className="sidebar__inner">
         <div className="brand">
           <div className="brand__row">
+            <div className="brand__type sidebar__label">
+              <h1 className="brand__title">Local Mind</h1>
+              <p className="brand__subtitle">Private data intelligence</p>
+            </div>
             <button
               type="button"
               className="sidebar__toggle desktop-toggle"
@@ -229,6 +233,9 @@ export default function Sidebar() {
 
         <div className="sidebar__new-chat-row">
           <button type="button" className="new-chat-action" onClick={handleNewChat} title="New chat">
+        <div className="sidebar__inner">
+        <div className="sidebar__documents-row">
+          <button type="button" className="nav-item" onClick={handleNewChat} title="New chat">
             <SquarePen size={16} />
             <span className="sidebar__label">New chat</span>
           </button>

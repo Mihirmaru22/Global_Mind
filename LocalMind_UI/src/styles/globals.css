@@ -177,6 +177,7 @@ button:disabled { cursor: not-allowed; }
 .sidebar__label { white-space: nowrap; transition: opacity 160ms ease; }
 
 .brand { padding: 2px 0 4px; }
+.brand { flex-shrink: 0; padding: 2px 0 24px; }
 .brand__row,
 .brand__lockup,
 .header__left,
@@ -185,8 +186,10 @@ button:disabled { cursor: not-allowed; }
   align-items: center;
 }
 .brand__row { justify-content: flex-start; gap: 8px; }
+.brand__row { justify-content: space-between; gap: 0; }
 .brand__lockup { gap: 0; min-width: 0; }
 .brand__type { min-width: 0; }
+.brand__type { min-width: 0; overflow: hidden; }
 .brand__title { margin: 0; font-size: 19px; line-height: 1.05; font-weight: 700; color: var(--color-text); }
 .brand__subtitle { margin: 1px 0 0; font-size: var(--text-xs); color: var(--color-text-muted); white-space: nowrap; }
 .brand__mark { width: 34px; height: 34px; border-radius: 9px; object-fit: contain; flex-shrink: 0; }
@@ -218,6 +221,7 @@ button:disabled { cursor: not-allowed; }
   transition: width 220ms cubic-bezier(0.4, 0, 0.2, 1), background-color 160ms ease, box-shadow 160ms ease;
 }
 .new-chat-action svg,
+.new-chat-action { width: 100%; height: 42px; }
 .sidebar__documents-row .nav-item svg { flex-shrink: 0; }
 .new-chat-action:hover,
 .primary-button:hover:not(:disabled),
