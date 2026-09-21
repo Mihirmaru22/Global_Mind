@@ -163,6 +163,14 @@ button:disabled { cursor: not-allowed; }
 .icon-button:hover { background: var(--color-control-hover); color: var(--color-text); }
 .sidebar-rail__btn--active { background: var(--accent); color: #FFFFFF; box-shadow: var(--shadow-accent); }
 .sidebar-rail__spacer { flex: 1; }
+.sidebar-rail__avatar {
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.sidebar-rail__avatar:hover { background: var(--accent-hover); color: var(--accent-on); }
 
 .brand { padding: 2px 4px 4px; }
 .brand__row,
@@ -291,7 +299,58 @@ button:disabled { cursor: not-allowed; }
 .chat-item--menu-open .chat-item__menu-trigger { opacity: 1; }
 .chat-list__empty { margin: 6px 10px; color: var(--color-text-muted); font-size: var(--text-sm); }
 .chat-item-skeleton { height: 36px; border-radius: var(--radius-control); background: var(--color-control); animation: skeleton-pulse 1.4s ease-in-out infinite; }
-.sidebar__footer { flex-shrink: 0; }
+.sidebar__footer { flex-shrink: 0; padding-top: 8px; border-top: 1px solid var(--color-border); }
+.profile-row { display: flex; align-items: center; gap: 6px; }
+.profile-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+}
+.profile-row__main:hover { background: var(--color-control); }
+.profile-avatar {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.profile-row__name {
+  min-width: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  text-transform: capitalize;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-row__settings {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+}
+.profile-row__settings:hover { background: var(--color-control); color: var(--color-text); }
+.profile-row__settings--active { color: var(--accent); }
 .sidebar__footer-divider { height: 1px; background: var(--color-border); margin: 6px 0 8px; }
 
 .header {

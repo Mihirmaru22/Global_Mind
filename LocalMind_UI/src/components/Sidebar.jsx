@@ -64,6 +64,7 @@ export default function Sidebar() {
   const isChatRouteActive = location.pathname === '/' || location.pathname === '/chat'
   const [openMenuId, setOpenMenuId] = useState(null)
   const [menuPosition, setMenuPosition] = useState(null)
+  const [profileMenu, setProfileMenu] = useState(null)
   const [dialog, setDialog] = useState({ type: null, chat: null, value: '' })
   const dialogRef = useRef(null)
   const dialogInputRef = useRef(null)
@@ -148,6 +149,26 @@ export default function Sidebar() {
     )
   }
 
+  const closeProfileMenu = () => setProfileMenu(null)
+
+  const toggleProfileMenu = (event, placement) => {
+    if (profileMenu) {
+      closeProfileMenu()
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    setProfileMenu(
+      placement === 'rail'
+        ? { left: rect.right + 8, bottom: window.innerHeight - rect.bottom }
+        : { left: rect.left, bottom: window.innerHeight - rect.top + 8 },
+    )
+  }
+
+  const handleLogout = () => {
+    closeProfileMenu()
+    logoutUser()
+  }
+
   const confirmDialog = async () => {
     if (!dialog.chat) return
     if (dialog.type === 'rename') {
@@ -229,13 +250,13 @@ export default function Sidebar() {
         {currentUser && (
           <button
             type="button"
-            className="sidebar-rail__btn"
-            onClick={logoutUser}
-            title={`Log out (${currentUser})`}
-            aria-label={`Log out (${currentUser})`}
-            style={{ color: 'var(--color-danger)' }}
+            className="sidebar-rail__btn sidebar-rail__avatar"
+            onClick={(event) => toggleProfileMenu(event, 'rail')}
+            title={currentUser}
+            aria-label={`Profile menu for ${currentUser}`}
+            aria-haspopup="menu"
           >
-            <LogOut size={18} />
+            {currentUser.slice(0, 1)}
           </button>
         )}
       </aside>
@@ -309,83 +330,30 @@ export default function Sidebar() {
           )}
         </div>
 
-        <footer className="sidebar__footer" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {currentUser && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '8px 10px',
-                borderRadius: 'var(--radius-control)',
-                background: 'var(--color-control)',
-                border: '1px solid var(--color-border)',
-                fontSize: '13px',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-                <div
-                  style={{
-                    width: '24px',
-                    height: '24px',
-                    borderRadius: '50%',
-                    background: 'var(--accent)',
-                    color: 'var(--accent-on)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    flexShrink: 0,
-                  }}
-                >
-                  {currentUser.slice(0, 1)}
-                </div>
-                <span
-                  style={{
-                    fontWeight: 600,
-                    color: 'var(--color-text)',
-                    textTransform: 'capitalize',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {currentUser}
-                </span>
-              </div>
+        <footer className="sidebar__footer">
+          <div className="profile-row">
+            {currentUser && (
               <button
                 type="button"
-                onClick={logoutUser}
-                title="Log out"
-                aria-label="Log out"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: '4px',
-                  color: 'var(--color-text-muted)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  borderRadius: '4px',
-                  transition: 'color 0.15s ease',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-danger)')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-muted)')}
+                className="profile-row__main"
+                onClick={(event) => toggleProfileMenu(event, 'sidebar')}
+                aria-label={`Profile menu for ${currentUser}`}
+                aria-haspopup="menu"
               >
-                <LogOut size={15} />
+                <span className="profile-avatar">{currentUser.slice(0, 1)}</span>
+                <span className="profile-row__name">{currentUser}</span>
               </button>
-            </div>
-          )}
-          <NavLink
-            to="/settings"
-            className={({ isActive }) => `nav-item nav-item--footer ${isActive ? 'nav-item--active' : ''}`}
-            onClick={closeSidebar}
-          >
-            <Settings size={16} />
-            <span>Settings</span>
-          </NavLink>
+            )}
+            <NavLink
+              to="/settings"
+              className={({ isActive }) => `profile-row__settings ${isActive ? 'profile-row__settings--active' : ''}`}
+              title="Settings"
+              aria-label="Settings"
+              onClick={closeSidebar}
+            >
+              <Settings size={18} />
+            </NavLink>
+          </div>
         </footer>
       </aside>
 
@@ -414,6 +382,24 @@ export default function Sidebar() {
             >
               <Trash2 size={14} />
               <span>Delete</span>
+            </button>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
+
+      {profileMenu ? createPortal(
+        <div className="chat-menu-backdrop" role="presentation" onClick={closeProfileMenu}>
+          <div
+            className="chat-menu"
+            role="menu"
+            aria-label="Profile actions"
+            style={profileMenu}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="chat-menu__item chat-menu__item--danger" onClick={handleLogout} role="menuitem">
+              <LogOut size={14} />
+              <span>Log out</span>
             </button>
           </div>
         </div>,
