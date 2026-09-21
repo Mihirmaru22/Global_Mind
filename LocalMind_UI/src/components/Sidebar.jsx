@@ -207,7 +207,6 @@ export default function Sidebar() {
   return (
     <>
       <aside className="sidebar" data-open={sidebarOpen} data-collapsed={sidebarCollapsed}>
-        <div className="sidebar__inner">
         <div className="brand">
           <div className="brand__row">
             <div className="brand__type sidebar__label">
@@ -224,15 +223,9 @@ export default function Sidebar() {
               <PanelLeftClose size={18} className="sidebar__toggle-close" />
               <PanelLeftOpen size={18} className="sidebar__toggle-open" />
             </button>
-            <div className="brand__type sidebar__label">
-              <h1 className="brand__title">Local Mind</h1>
-              <p className="brand__subtitle">Private data intelligence</p>
-            </div>
           </div>
         </div>
 
-        <div className="sidebar__new-chat-row">
-          <button type="button" className="new-chat-action" onClick={handleNewChat} title="New chat">
         <div className="sidebar__inner">
         <div className="sidebar__documents-row">
           <button type="button" className="nav-item" onClick={handleNewChat} title="New chat">
