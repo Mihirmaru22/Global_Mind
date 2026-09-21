@@ -206,85 +206,31 @@ export default function Sidebar() {
 
   return (
     <>
-      <aside className="sidebar-rail" aria-label="Collapsed sidebar">
-        <button
-          type="button"
-          className="sidebar-rail__btn"
-          onClick={toggleSidebarCollapse}
-          title="Expand sidebar"
-          aria-label="Expand sidebar"
-        >
-          <PanelLeftOpen size={18} />
-        </button>
-
-        <button
-          type="button"
-          className="sidebar-rail__btn sidebar-rail__new-btn"
-          onClick={handleNewChat}
-          title="New chat"
-          aria-label="New chat"
-        >
-          <SquarePen size={18} />
-        </button>
-
-        <NavLink
-          to="/documents"
-          className={({ isActive }) => `sidebar-rail__btn ${isActive ? 'sidebar-rail__btn--active' : ''}`}
-          title="Documents"
-          aria-label="Documents"
-        >
-          <Library size={18} />
-        </NavLink>
-
-        <div className="sidebar-rail__spacer" />
-
-        <NavLink
-          to="/settings"
-          className={({ isActive }) => `sidebar-rail__btn ${isActive ? 'sidebar-rail__btn--active' : ''}`}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <Settings size={18} />
-        </NavLink>
-
-        {currentUser && (
-          <button
-            type="button"
-            className="sidebar-rail__btn sidebar-rail__avatar"
-            onClick={(event) => toggleProfileMenu(event, 'rail')}
-            title={currentUser}
-            aria-label={`Profile menu for ${currentUser}`}
-            aria-haspopup="menu"
-          >
-            {currentUser.slice(0, 1)}
-          </button>
-        )}
-      </aside>
-
       <aside className="sidebar" data-open={sidebarOpen} data-collapsed={sidebarCollapsed}>
+        <div className="sidebar__inner">
         <div className="brand">
           <div className="brand__row">
-            <div className="brand__lockup">
-              <div className="brand__type">
-                <h1 className="brand__title">Local Mind</h1>
-                <p className="brand__subtitle">Private data intelligence</p>
-              </div>
-            </div>
             <button
               type="button"
-              className="icon-button desktop-toggle"
+              className="sidebar__toggle desktop-toggle"
               onClick={toggleSidebarCollapse}
-              aria-label="Collapse sidebar"
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             >
-              <PanelLeftClose size={18} />
+              <PanelLeftClose size={18} className="sidebar__toggle-close" />
+              <PanelLeftOpen size={18} className="sidebar__toggle-open" />
             </button>
+            <div className="brand__type sidebar__label">
+              <h1 className="brand__title">Local Mind</h1>
+              <p className="brand__subtitle">Private data intelligence</p>
+            </div>
           </div>
         </div>
 
         <div className="sidebar__new-chat-row">
-          <button type="button" className="new-chat-action" onClick={handleNewChat}>
+          <button type="button" className="new-chat-action" onClick={handleNewChat} title="New chat">
             <SquarePen size={16} />
-            <span>New chat</span>
+            <span className="sidebar__label">New chat</span>
           </button>
         </div>
 
@@ -293,9 +239,10 @@ export default function Sidebar() {
             to="/documents"
             className={({ isActive }) => `nav-item nav-item--documents ${isActive ? 'nav-item--active' : ''}`}
             onClick={closeSidebar}
+            title="Documents"
           >
             <Library size={16} />
-            <span>Documents</span>
+            <span className="sidebar__label">Documents</span>
           </NavLink>
         </nav>
 
@@ -336,7 +283,7 @@ export default function Sidebar() {
               <button
                 type="button"
                 className="profile-row__main"
-                onClick={(event) => toggleProfileMenu(event, 'sidebar')}
+                onClick={(event) => toggleProfileMenu(event, sidebarCollapsed && window.innerWidth > 768 ? 'rail' : 'sidebar')}
                 aria-label={`Profile menu for ${currentUser}`}
                 aria-haspopup="menu"
               >
@@ -355,6 +302,7 @@ export default function Sidebar() {
             </NavLink>
           </div>
         </footer>
+        </div>
       </aside>
 
       {openMenuId && activeMenuChat ? createPortal(
