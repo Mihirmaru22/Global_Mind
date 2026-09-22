@@ -1106,6 +1106,36 @@ button:disabled { cursor: not-allowed; }
 .db-result-card__icon { color: var(--accent); flex-shrink: 0; }
 .db-result-card__badge { padding: 2px 8px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; }
 .db-result-card__badge--empty { background: var(--color-control); color: var(--color-text-muted); }
+.db-result-card__header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-right: 4px;
+}
+.db-result-card__excel-btn {
+  height: 28px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-control);
+  color: var(--color-text-soft);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.db-result-card__excel-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.db-result-card__excel-btn svg { flex-shrink: 0; }
 .db-result-card__table-wrapper { overflow-x: auto; }
 .db-result-card__table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .db-result-card__table th,

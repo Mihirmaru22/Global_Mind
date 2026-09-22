@@ -1,8 +1,17 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { Database, ChevronDown, ChevronRight, Copy, Check, Table2 } from 'lucide-react'
+import {
+  Database,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Check,
+  FileSpreadsheet,
+  Table2,
+} from 'lucide-react'
 import clsx from 'clsx'
 import hljs from 'highlight.js'
 import { toast } from 'sonner'
+import { exportDatabaseExcel } from '../utils/excelExport.js'
 
 const PAGE_SIZE = 5
 
@@ -32,7 +41,7 @@ function formatSql(query) {
   return cleaned.trim()
 }
 
-export default function DatabaseResultCard({ payload }) {
+export default function DatabaseResultCard({ payload, reportTitle = 'Database Results' }) {
   const [sqlOpen, setSqlOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [visibleRows, setVisibleRows] = useState(PAGE_SIZE)
@@ -59,6 +68,22 @@ export default function DatabaseResultCard({ payload }) {
       return formatted
     }
   }, [query])
+
+  const handleExportExcel = () => {
+    if (!rows.length) return
+
+    try {
+      exportDatabaseExcel({
+        title: reportTitle,
+        columns,
+        rows,
+      })
+      toast.success(`Exported ${rows.length} records to Excel`)
+    } catch (error) {
+      console.error('Excel export failed:', error)
+      toast.error('Could not export Excel file.')
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -91,14 +116,28 @@ export default function DatabaseResultCard({ payload }) {
           <Database size={15} className="db-result-card__icon" />
           <span>Live Database Results</span>
         </div>
-        <div className="db-result-card__badge">
+        <div className="db-result-card__header-actions">
+          <div className="db-result-card__badge">
+            {rows.length > 0 ? (
+              <span>
+                {totalRows} record{totalRows === 1 ? '' : 's'}
+              </span>
+            ) : (
+              <span className="db-result-card__badge--empty">0 records</span>
+            )}
+          </div>
           {rows.length > 0 ? (
-            <span>
-              {totalRows} record{totalRows === 1 ? '' : 's'}
-            </span>
-          ) : (
-            <span className="db-result-card__badge--empty">0 records</span>
-          )}
+            <button
+              type="button"
+              className="db-result-card__excel-btn"
+              onClick={handleExportExcel}
+              aria-label="Export all database results to Excel"
+              title="Export all records to Excel"
+            >
+              <FileSpreadsheet size={14} />
+              <span>Export Excel</span>
+            </button>
+          ) : null}
         </div>
       </div>
 

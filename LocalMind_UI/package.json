@@ -31,6 +31,7 @@
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
+    "xlsx": "^0.18.5",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

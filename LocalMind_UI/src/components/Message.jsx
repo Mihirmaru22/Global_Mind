@@ -451,7 +451,12 @@ export default function Message({
                   </ReactMarkdown>
                 ) : null}
 
-                {dbPayload ? <DatabaseResultCard payload={dbPayload} /> : null}
+                {dbPayload ? (
+                  <DatabaseResultCard
+                    payload={dbPayload}
+                    reportTitle={sourceQuery ? buildUntitledChatTitle(sourceQuery) : 'Database Results'}
+                  />
+                ) : null}
 
                 {referencesText ? (
                   <ReactMarkdown

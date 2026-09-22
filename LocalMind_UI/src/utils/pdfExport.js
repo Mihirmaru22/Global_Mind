@@ -394,8 +394,8 @@ export async function exportDatabasePdf({ title = 'Database Results', columns = 
               </div>
               <div class="letterhead-company">
                 <div class="company-title">Param Software</div>
-                <div>Science City Road, Sola, Ahmedabad, Gujarat 380060</div>
-                <div>Phone: +91 79 4000 0000 | Email: info@paramsoftware.com | www.paramsoftware.com</div>
+                <div>S-803, Twin Star, 150 ft ring road, Rajkot - 360005, Gujarat, India</div>
+                <div>Email: mail@paramsoftware.com | Website: www.paramsoftware.com</div>
               </div>
             </header>
           </td>
