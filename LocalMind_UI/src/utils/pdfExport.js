@@ -155,31 +155,193 @@ async function printHtml(title, bodyHtml) {
   await renderInPrintFrame(doc)
 }
 
-/** Export the raw conversation as a formatted PDF (charts included). */
+const TRANSCRIPT_PRINT_STYLES = `
+  @page {
+    size: A4;
+    margin: 14mm 14mm 16mm;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #ffffff;
+    color: #1f2937;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.55;
+  }
+  .transcript-header {
+    padding-bottom: 12px;
+    margin-bottom: 22px;
+    border-bottom: 1px solid #d9dde5;
+  }
+  .transcript-brand {
+    margin: 0 0 5px;
+    color: #545df1;
+    font-size: 9pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .transcript-title { margin: 0; color: #111827; font-size: 20pt; line-height: 1.2; font-weight: 700; }
+  .transcript-date { margin-top: 5px; color: #6b7280; font-size: 9pt; }
+
+  /* Long answers must be allowed to flow across pages; only rows/charts
+     inside a message are kept from splitting (see rules further down). */
+  .transcript-message {
+    display: flex;
+    flex-direction: column;
+    margin: 0 0 18px;
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+  .transcript-message--user { align-items: flex-end; }
+  .transcript-message--assistant { align-items: flex-start; }
+  .transcript-message__role { margin-bottom: 5px; color: #6b7280; font-size: 8.5pt; font-weight: 600; }
+  .transcript-message--user .transcript-message__role { text-align: right; }
+
+  .transcript-message__bubble {
+    max-width: 82%;
+    padding: 11px 14px;
+    border-radius: 16px;
+    overflow-wrap: anywhere;
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+  .transcript-message--user .transcript-message__bubble {
+    max-width: 72%;
+    background: #545df1;
+    color: #ffffff;
+    border-radius: 16px 16px 4px 16px;
+  }
+  .transcript-message--assistant .transcript-message__bubble {
+    background: #ffffff;
+    color: #1f2937;
+    border: 1px solid #d9dde5;
+    border-radius: 16px 16px 16px 4px;
+  }
+
+  .transcript-message__bubble p { margin: 0 0 8px; }
+  .transcript-message__bubble p:last-child { margin-bottom: 0; }
+  .transcript-message__bubble ul,
+  .transcript-message__bubble ol { margin: 6px 0 8px 20px; }
+  .transcript-message__bubble li { margin: 2px 0; }
+  .transcript-message__bubble h1,
+  .transcript-message__bubble h2,
+  .transcript-message__bubble h3 { margin: 10px 0 6px; color: inherit; line-height: 1.3; page-break-after: avoid; }
+  .transcript-message__bubble h1 { font-size: 15pt; }
+  .transcript-message__bubble h2 { font-size: 13pt; }
+  .transcript-message__bubble h3 { font-size: 11pt; }
+  .transcript-message__bubble a { color: inherit; }
+  .transcript-message--user .transcript-message__bubble a { color: #ffffff; }
+
+  .transcript-message__bubble code {
+    font-family: Menlo, Monaco, Consolas, monospace;
+    font-size: 9pt;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.06);
+  }
+  .transcript-message--user .transcript-message__bubble code { background: rgba(255, 255, 255, 0.14); }
+
+  .transcript-message__bubble pre {
+    margin: 8px 0;
+    padding: 9px 10px;
+    overflow-x: auto;
+    border: 1px solid #d9dde5;
+    border-radius: 8px;
+    background: #f5f7fa;
+    color: #1f2937;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .transcript-message--user .transcript-message__bubble pre {
+    border-color: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.10);
+    color: #ffffff;
+  }
+  .transcript-message__bubble pre code { padding: 0; background: transparent; }
+
+  .transcript-message__bubble table {
+    width: 100%;
+    margin: 8px 0;
+    border-collapse: collapse;
+    font-size: 8.5pt;
+    page-break-inside: auto;
+  }
+  .transcript-message__bubble thead { display: table-header-group; }
+  .transcript-message__bubble tr { page-break-inside: avoid; break-inside: avoid; }
+  .transcript-message__bubble th,
+  .transcript-message__bubble td { padding: 5px 7px; border: 1px solid #d9dde5; text-align: left; vertical-align: top; }
+  .transcript-message--assistant .transcript-message__bubble th { background: #f3f4f6; font-weight: 600; }
+  .transcript-message--user .transcript-message__bubble th,
+  .transcript-message--user .transcript-message__bubble td { border-color: rgba(255, 255, 255, 0.24); }
+  .transcript-message--user .transcript-message__bubble th { background: rgba(255, 255, 255, 0.10); }
+
+  .transcript-message__bubble blockquote {
+    margin: 8px 0;
+    padding-left: 10px;
+    border-left: 3px solid #d9dde5;
+    color: #6b7280;
+  }
+  .transcript-message--user .transcript-message__bubble blockquote {
+    border-left-color: rgba(255, 255, 255, 0.45);
+    color: rgba(255, 255, 255, 0.9);
+  }
+  .transcript-message__bubble hr { margin: 10px 0; border: 0; border-top: 1px solid #d9dde5; }
+
+  .pdf-chart { max-width: 100%; margin: 10px 0; text-align: center; page-break-inside: avoid; break-inside: avoid; }
+  .pdf-chart svg { max-width: 100%; height: auto; }
+
+  .transcript-empty { color: #6b7280; text-align: center; }
+`
+
+/** Export the raw conversation as a formatted, chat-bubble style PDF (charts included). */
 export async function exportChatTranscript(chat, messages = []) {
   const printable = messages.filter(
     (m) => m.status !== 'loading' && m.kind !== 'ingestion' && (m.content || '').trim(),
   )
 
+  const chatTitle = chat?.title || 'Chat'
+  const exportDate = dayjs().format('DD MMM YYYY')
+
   const parts = [
-    `<div class="doc-header">`,
-    `<h1 class="doc-title">${escapeHtml(chat?.title || 'Chat')}</h1>`,
-    `<p class="doc-subtitle">Chat transcript · Exported ${escapeHtml(dayjs().format('MMM D, YYYY h:mm A'))}</p>`,
+    `<div class="transcript-header">`,
+    `<div class="transcript-brand">LOCALMIND</div>`,
+    `<h1 class="transcript-title">${escapeHtml(chatTitle)}</h1>`,
+    `<div class="transcript-date">${escapeHtml(exportDate)}</div>`,
     `</div>`,
   ]
 
   for (const message of printable) {
-    const role = message.role === 'user' ? 'You' : 'Assistant'
-    const roleClass = message.role === 'user' ? '' : 'msg-role--assistant'
+    const isUser = message.role === 'user'
+    const roleLabel = isUser ? 'You' : 'Assistant'
     const body = await markdownToHtmlWithCharts(message.content)
-    parts.push(
-      `<div class="msg"><div class="msg-role ${roleClass}">${role}</div>${body}</div>`,
-    )
+
+    parts.push(`
+      <section class="transcript-message transcript-message--${isUser ? 'user' : 'assistant'}">
+        <div class="transcript-message__role">${roleLabel}</div>
+        <div class="transcript-message__bubble">
+          ${body}
+        </div>
+      </section>
+    `)
   }
 
-  if (!printable.length) parts.push('<p>No messages to export.</p>')
+  if (!printable.length) {
+    parts.push(`<p class="transcript-empty">No messages to export.</p>`)
+  }
 
-  await printHtml(chat?.title || 'Chat', parts.join('\n'))
+  const doc = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(chatTitle)}</title>
+    <style>${TRANSCRIPT_PRINT_STYLES}</style>
+  </head>
+  <body>${parts.join('\n')}</body>
+</html>`
+
+  await renderInPrintFrame(doc)
 }
 
 /** Export an already-built professional-document Markdown as a formatted PDF. */
