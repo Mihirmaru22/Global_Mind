@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ChevronUp,
   Copy,
+  Download,
   PencilLine,
   RefreshCw,
   ThumbsDown,
@@ -18,7 +19,8 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import clsx from 'clsx'
 import TextareaAutosize from 'react-textarea-autosize'
-import { useAppStore } from '../store/store.js'
+import { useAppStore, buildUntitledChatTitle } from '../store/store.js'
+import { exportDatabasePdf } from '../utils/pdfExport.js'
 import MarkdownTable from './MarkdownTable.jsx'
 import MermaidDiagram from './MermaidDiagram.jsx'
 import IngestionCard from './IngestionCard.jsx'
@@ -216,7 +218,14 @@ function useTypewriterText(text, enabled) {
   return displayedText
 }
 
-export default function Message({ message, index = 0, chatId, isLast = false, hasLaterUserMessage = false }) {
+export default function Message({
+  message,
+  index = 0,
+  chatId,
+  isLast = false,
+  hasLaterUserMessage = false,
+  sourceQuery = '',
+}) {
   const markMessageAsSeen = useAppStore((state) => state.markMessageAsSeen)
   const setMessageFeedback = useAppStore((state) => state.setMessageFeedback)
   const regenerateMessage = useAppStore((state) => state.regenerateMessage)
@@ -237,7 +246,8 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
   const submitFeedbackComment = useAppStore((state) => state.submitFeedbackComment)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedbackText, setFeedbackText] = useState('')
-  
+  const [pdfDialogOpen, setPdfDialogOpen] = useState(false)
+  const [recordCountInput, setRecordCountInput] = useState('')
 
   const editRef = useRef(null)
   const copyTimerRef = useRef(null)
@@ -248,6 +258,17 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
   const { mainText, dbPayload, referencesText } = useMemo(() => {
     return splitMessageContent(typedContent, message.sqlPayload)
   }, [typedContent, message.sqlPayload])
+
+  const dbRows = dbPayload?.rows || []
+  const canDownloadPdf = dbRows.length > 0
+  const totalRecords = dbPayload?.row_count ?? dbRows.length
+  const parsedRecordCount = Number(recordCountInput)
+  const isRecordCountValid =
+    recordCountInput.trim() !== '' &&
+    Number.isInteger(parsedRecordCount) &&
+    parsedRecordCount >= 1 &&
+    parsedRecordCount <= totalRecords
+
   // Show the blinking cursor both while the typewriter fallback is actively
   // typing AND while real tokens are streaming in live from the backend —
   // the latter never touches useTypewriterText's animation path (isNew is
@@ -326,6 +347,26 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
     }
     setFeedbackOpen(false)
     setFeedbackText('')
+  }
+
+  const handleOpenPdfDialog = () => {
+    setRecordCountInput(String(totalRecords))
+    setPdfDialogOpen(true)
+  }
+
+  const handleConfirmDownloadPdf = async () => {
+    if (!isRecordCountValid) return
+
+    const exportColumns = dbPayload.columns?.length ? dbPayload.columns : Object.keys(dbRows[0] || {})
+    const reportTitle = buildUntitledChatTitle(sourceQuery) || 'Database Results'
+
+    setPdfDialogOpen(false)
+    await exportDatabasePdf({
+      title: reportTitle,
+      columns: exportColumns,
+      rows: dbRows.slice(0, parsedRecordCount),
+      recordCount: parsedRecordCount,
+    })
   }
 
   const handleSaveEdit = async () => {
@@ -505,8 +546,63 @@ export default function Message({ message, index = 0, chatId, isLast = false, ha
                   <RefreshCw size={15} className={loading ? 'spin' : ''} />
                 </button>
               ) : null}
+              {canDownloadPdf ? (
+                <button
+                  type="button"
+                  className="message__action"
+                  onClick={handleOpenPdfDialog}
+                  aria-label="Download PDF"
+                  title="Download PDF"
+                >
+                  <Download size={15} />
+                </button>
+              ) : null}
             </div>
           </div>
+
+          {pdfDialogOpen ? (
+            <div
+              className="pdf-export-dialog-backdrop"
+              role="presentation"
+              onClick={() => setPdfDialogOpen(false)}
+            >
+              <div
+                className="pdf-export-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="pdf-export-dialog-title"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <h3 id="pdf-export-dialog-title" className="pdf-export-dialog__title">
+                  Download data as PDF
+                </h3>
+                <p className="pdf-export-dialog__label">How many records do you want to export?</p>
+                <input
+                  type="number"
+                  className="pdf-export-dialog__input"
+                  min={1}
+                  max={totalRecords}
+                  value={recordCountInput}
+                  onChange={(event) => setRecordCountInput(event.target.value)}
+                  autoFocus
+                />
+                <p className="pdf-export-dialog__meta">Available records: {totalRecords}</p>
+                <div className="pdf-export-dialog__actions">
+                  <button type="button" className="secondary-button" onClick={() => setPdfDialogOpen(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleConfirmDownloadPdf}
+                    disabled={!isRecordCountValid}
+                  >
+                    Download PDF
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           
 
           {feedbackOpen && (

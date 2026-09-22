@@ -120,17 +120,7 @@ const PRINT_STYLES = `
  * (where the user chooses "Save as PDF"). Uses a hidden iframe so it never
  * disturbs the app.
  */
-async function printHtml(title, bodyHtml) {
-  const doc = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>${escapeHtml(title)}</title>
-    <style>${PRINT_STYLES}</style>
-  </head>
-  <body>${bodyHtml}</body>
-</html>`
-
+async function renderInPrintFrame(doc) {
   const iframe = document.createElement('iframe')
   iframe.setAttribute('aria-hidden', 'true')
   iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;'
@@ -142,17 +132,27 @@ async function printHtml(title, bodyHtml) {
     idoc.open()
     idoc.write(doc)
     idoc.close()
-    // Some browsers don't fire onload for document.write; fall back on a timer.
     setTimeout(resolve, 400)
   })
 
-  // Give layout/SVG a beat to settle before printing.
   await new Promise((r) => setTimeout(r, 250))
   iframe.contentWindow.focus()
   iframe.contentWindow.print()
 
-  // Clean up after the print dialog has had time to capture the document.
   setTimeout(() => iframe.remove(), 1500)
+}
+
+async function printHtml(title, bodyHtml) {
+  const doc = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>${PRINT_STYLES}</style>
+  </head>
+  <body>${bodyHtml}</body>
+</html>`
+  await renderInPrintFrame(doc)
 }
 
 /** Export the raw conversation as a formatted PDF (charts included). */
@@ -193,3 +193,249 @@ export async function exportProfessionalDocument({ title, markdown }) {
   ].join('\n')
   await printHtml(title || 'Document', html)
 }
+
+function formatCellValue(val) {
+  if (val === null || val === undefined || val === '') return '<span class="cell-null">—</span>'
+  if (typeof val === 'boolean') {
+    return val
+      ? '<span class="status-chip status-chip--active">True</span>'
+      : '<span class="status-chip status-chip--inactive">False</span>'
+  }
+  const str = String(val).trim()
+  const lower = str.toLowerCase()
+  if (['active', 'yes', 'y', 'enabled', 'completed', 'paid', 'open', 'success'].includes(lower)) {
+    return `<span class="status-chip status-chip--active">${escapeHtml(str)}</span>`
+  }
+  if (['inactive', 'no', 'n', 'disabled', 'cancelled', 'canceled', 'unpaid', 'closed', 'failed', 'rejected'].includes(lower)) {
+    return `<span class="status-chip status-chip--inactive">${escapeHtml(str)}</span>`
+  }
+  return escapeHtml(str)
+}
+
+const DB_PRINT_STYLES = `
+  @page {
+    margin: 12mm 15mm 15mm 15mm;
+    size: auto;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    color: #1e293b;
+    margin: 0;
+    padding: 0;
+    font-size: 10pt;
+    line-height: 1.4;
+    background: #ffffff;
+  }
+  table.page-container {
+    width: 100%;
+    border-collapse: collapse;
+    border: none;
+  }
+  table.page-container > thead {
+    display: table-header-group;
+  }
+  table.page-container > tfoot {
+    display: table-footer-group;
+  }
+  table.page-container > thead > tr > td,
+  table.page-container > tfoot > tr > td,
+  table.page-container > tbody > tr > td {
+    border: none;
+    padding: 0;
+  }
+  .letterhead-header {
+    border-bottom: 2px solid #2563eb;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  .letterhead-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .letterhead-logo {
+    height: 48px;
+    max-width: 180px;
+    object-fit: contain;
+  }
+  .letterhead-company {
+    text-align: right;
+    font-size: 8pt;
+    color: #64748b;
+    line-height: 1.4;
+  }
+  .company-title {
+    font-size: 14pt;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 2px;
+  }
+  .letterhead-footer {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 8px;
+    margin-top: 16px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 7.5pt;
+    color: #94a3b8;
+  }
+  .report-meta {
+    margin-bottom: 16px;
+  }
+  .report-title {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0 0 6px;
+  }
+  .report-subtitle {
+    font-size: 9pt;
+    color: #64748b;
+    margin: 0;
+    display: flex;
+    gap: 16px;
+  }
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+    font-size: 9pt;
+  }
+  .data-table thead {
+    display: table-header-group;
+  }
+  .data-table th {
+    background-color: #f1f5f9;
+    color: #334155;
+    font-weight: 600;
+    padding: 7px 10px;
+    text-align: left;
+    border: 1px solid #cbd5e1;
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .data-table td {
+    padding: 6px 10px;
+    border: 1px solid #e2e8f0;
+    color: #1e293b;
+    vertical-align: middle;
+  }
+  .data-table tbody tr:nth-child(even) {
+    background-color: #f8fafc;
+  }
+  .data-table tr {
+    page-break-inside: avoid;
+  }
+  .cell-null {
+    color: #94a3b8;
+    font-style: italic;
+  }
+  .status-chip {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 7.5pt;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+  }
+  .status-chip--active {
+    background-color: #dcfce7;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+  }
+  .status-chip--inactive {
+    background-color: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+  }
+`
+
+/** Export tabular database results as a branded letterhead PDF */
+export async function exportDatabasePdf({ title = 'Database Results', columns = [], rows = [], recordCount = 0 }) {
+  const exportDate = dayjs().format('MMM D, YYYY h:mm A')
+  const formattedTitle = escapeHtml(title || 'Database Results')
+  const count = Number(recordCount) || rows.length
+
+  const colHeaders = columns.map((col) => `<th>${escapeHtml(String(col).replace(/_/g, ' '))}</th>`).join('')
+
+  const tableRows = rows
+    .map((row) => {
+      const cells = columns
+        .map((col) => {
+          const val = row[col]
+          return `<td>${formatCellValue(val)}</td>`
+        })
+        .join('')
+      return `<tr>${cells}</tr>`
+    })
+    .join('')
+
+  const docHtml = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${formattedTitle}</title>
+    <style>${DB_PRINT_STYLES}</style>
+  </head>
+  <body>
+    <table class="page-container">
+      <thead>
+        <tr>
+          <td>
+            <header class="letterhead-header">
+              <div class="letterhead-brand">
+                <img src="/param-software-logo.png" alt="Param Software" class="letterhead-logo" onerror="this.style.display='none'" />
+              </div>
+              <div class="letterhead-company">
+                <div class="company-title">Param Software</div>
+                <div>Science City Road, Sola, Ahmedabad, Gujarat 380060</div>
+                <div>Phone: +91 79 4000 0000 | Email: info@paramsoftware.com | www.paramsoftware.com</div>
+              </div>
+            </header>
+          </td>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>
+            <div class="report-meta">
+              <h1 class="report-title">${formattedTitle}</h1>
+              <div class="report-subtitle">
+                <span><strong>Date:</strong> ${escapeHtml(exportDate)}</span>
+                <span><strong>Records:</strong> ${count}</span>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>${colHeaders}</tr>
+              </thead>
+              <tbody>
+                ${tableRows}
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>
+            <footer class="letterhead-footer">
+              <div>Param Software • Confidential & Proprietary Report</div>
+              <div>Exported on ${escapeHtml(exportDate)}</div>
+            </footer>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </body>
+</html>`
+
+  await renderInPrintFrame(docHtml)
+}
+

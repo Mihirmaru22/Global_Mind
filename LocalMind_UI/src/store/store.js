@@ -100,7 +100,7 @@ function writeStoredIdSet(key, set) {
   }
 }
 
-function buildUntitledChatTitle(prompt) {
+export function buildUntitledChatTitle(prompt) {
   const text = (prompt || '').trim()
   if (!text) return 'New Chat'
 

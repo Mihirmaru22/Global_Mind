@@ -90,6 +90,12 @@ export default function Chat() {
                   chatId={activeChatId}
                   hasLaterUserMessage={messages.slice(index + 1).some((entry) => entry.role === 'user')}
                   isLast={index === messages.length - 1}
+                  sourceQuery={
+                    messages
+                      .slice(0, index)
+                      .reverse()
+                      .find((entry) => entry.role === 'user')?.content || ''
+                  }
                 />
               ))
             ) : (
