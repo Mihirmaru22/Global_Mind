@@ -659,6 +659,9 @@ button:disabled { cursor: not-allowed; }
 }
 .message--assistant .message__assistant-body { background: transparent; padding: 0; }
 .message--assistant .message__content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface);
@@ -1249,6 +1252,7 @@ button:disabled { cursor: not-allowed; }
   .header__chat-identity { min-width: 0; overflow: hidden; }
 
   .message--user .message__content { max-width: 82%; }
+  .message--assistant .message__content { width: 100%; max-width: 100%; }
 
   /* Composer controls may shrink instead of overflowing. */
   .composer__shell { grid-template-columns: minmax(0, 1fr); }
