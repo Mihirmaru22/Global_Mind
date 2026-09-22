@@ -190,7 +190,7 @@ const TRANSCRIPT_PRINT_STYLES = `
   .transcript-message {
     display: flex;
     flex-direction: column;
-    margin: 0 0 16px;
+    margin: 0 0 14px;
     page-break-inside: auto;
     break-inside: auto;
   }
@@ -213,7 +213,8 @@ const TRANSCRIPT_PRINT_STYLES = `
     border-radius: 16px 16px 4px 16px;
   }
   .transcript-message--assistant .transcript-message__bubble {
-    width: min(82%, 760px);
+    width: 100%;
+    max-width: 100%;
     background: #ffffff;
     color: #1f2937;
     border: 1px solid #d9dde5;
@@ -244,7 +245,9 @@ const TRANSCRIPT_PRINT_STYLES = `
   .transcript-message__bubble pre {
     margin: 8px 0;
     padding: 9px 10px;
-    overflow-x: auto;
+    overflow-x: hidden;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
     border: 1px solid #d9dde5;
     border-radius: 8px;
     background: #f5f7fa;
@@ -252,19 +255,28 @@ const TRANSCRIPT_PRINT_STYLES = `
     page-break-inside: avoid;
     break-inside: avoid;
   }
-  .transcript-message__bubble pre code { padding: 0; background: transparent; }
+  .transcript-message__bubble pre code { padding: 0; background: transparent; white-space: pre-wrap; }
 
   .transcript-message__bubble table {
     width: 100%;
+    max-width: 100%;
+    table-layout: auto;
     margin: 8px 0;
     border-collapse: collapse;
-    font-size: 8.5pt;
+    font-size: 9pt;
     page-break-inside: auto;
   }
   .transcript-message__bubble thead { display: table-header-group; }
   .transcript-message__bubble tr { page-break-inside: avoid; break-inside: avoid; }
   .transcript-message__bubble th,
-  .transcript-message__bubble td { padding: 5px 7px; border: 1px solid #d9dde5; text-align: left; vertical-align: top; }
+  .transcript-message__bubble td {
+    padding: 5px 7px;
+    border: 1px solid #d9dde5;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
   .transcript-message__bubble th { background: #f3f4f6; font-weight: 600; }
 
   .transcript-message__bubble blockquote {
