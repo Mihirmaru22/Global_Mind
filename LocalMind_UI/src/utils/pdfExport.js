@@ -170,37 +170,34 @@ const TRANSCRIPT_PRINT_STYLES = `
     line-height: 1.55;
   }
   .transcript-header {
-    padding-bottom: 12px;
-    margin-bottom: 22px;
+    padding-bottom: 8px;
+    margin-bottom: 16px;
     border-bottom: 1px solid #d9dde5;
   }
   .transcript-brand {
-    margin: 0 0 5px;
+    margin: 0 0 4px;
     color: #545df1;
     font-size: 9pt;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .transcript-title { margin: 0; color: #111827; font-size: 20pt; line-height: 1.2; font-weight: 700; }
-  .transcript-date { margin-top: 5px; color: #6b7280; font-size: 9pt; }
+  .transcript-title { margin: 0; color: #111827; font-size: 18pt; line-height: 1.2; font-weight: 700; }
+  .transcript-date { margin-top: 4px; color: #6b7280; font-size: 9pt; }
 
   /* Long answers must be allowed to flow across pages; only rows/charts
-     inside a message are kept from splitting (see rules further down). */
+     inside a message are kept from splitting. */
   .transcript-message {
     display: flex;
     flex-direction: column;
-    margin: 0 0 18px;
+    margin: 0 0 16px;
     page-break-inside: auto;
     break-inside: auto;
   }
   .transcript-message--user { align-items: flex-end; }
   .transcript-message--assistant { align-items: flex-start; }
-  .transcript-message__role { margin-bottom: 5px; color: #6b7280; font-size: 8.5pt; font-weight: 600; }
-  .transcript-message--user .transcript-message__role { text-align: right; }
 
   .transcript-message__bubble {
-    max-width: 82%;
     padding: 11px 14px;
     border-radius: 16px;
     overflow-wrap: anywhere;
@@ -208,12 +205,15 @@ const TRANSCRIPT_PRINT_STYLES = `
     break-inside: auto;
   }
   .transcript-message--user .transcript-message__bubble {
-    max-width: 72%;
-    background: #545df1;
-    color: #ffffff;
+    width: fit-content;
+    max-width: 70%;
+    background: #eceef2;
+    color: #1f2937;
+    border: 1px solid #d9dde5;
     border-radius: 16px 16px 4px 16px;
   }
   .transcript-message--assistant .transcript-message__bubble {
+    width: min(82%, 760px);
     background: #ffffff;
     color: #1f2937;
     border: 1px solid #d9dde5;
@@ -231,8 +231,7 @@ const TRANSCRIPT_PRINT_STYLES = `
   .transcript-message__bubble h1 { font-size: 15pt; }
   .transcript-message__bubble h2 { font-size: 13pt; }
   .transcript-message__bubble h3 { font-size: 11pt; }
-  .transcript-message__bubble a { color: inherit; }
-  .transcript-message--user .transcript-message__bubble a { color: #ffffff; }
+  .transcript-message__bubble a { color: #2563eb; }
 
   .transcript-message__bubble code {
     font-family: Menlo, Monaco, Consolas, monospace;
@@ -241,7 +240,6 @@ const TRANSCRIPT_PRINT_STYLES = `
     border-radius: 4px;
     background: rgba(0, 0, 0, 0.06);
   }
-  .transcript-message--user .transcript-message__bubble code { background: rgba(255, 255, 255, 0.14); }
 
   .transcript-message__bubble pre {
     margin: 8px 0;
@@ -253,11 +251,6 @@ const TRANSCRIPT_PRINT_STYLES = `
     color: #1f2937;
     page-break-inside: avoid;
     break-inside: avoid;
-  }
-  .transcript-message--user .transcript-message__bubble pre {
-    border-color: rgba(255, 255, 255, 0.18);
-    background: rgba(255, 255, 255, 0.10);
-    color: #ffffff;
   }
   .transcript-message__bubble pre code { padding: 0; background: transparent; }
 
@@ -272,20 +265,13 @@ const TRANSCRIPT_PRINT_STYLES = `
   .transcript-message__bubble tr { page-break-inside: avoid; break-inside: avoid; }
   .transcript-message__bubble th,
   .transcript-message__bubble td { padding: 5px 7px; border: 1px solid #d9dde5; text-align: left; vertical-align: top; }
-  .transcript-message--assistant .transcript-message__bubble th { background: #f3f4f6; font-weight: 600; }
-  .transcript-message--user .transcript-message__bubble th,
-  .transcript-message--user .transcript-message__bubble td { border-color: rgba(255, 255, 255, 0.24); }
-  .transcript-message--user .transcript-message__bubble th { background: rgba(255, 255, 255, 0.10); }
+  .transcript-message__bubble th { background: #f3f4f6; font-weight: 600; }
 
   .transcript-message__bubble blockquote {
     margin: 8px 0;
     padding-left: 10px;
     border-left: 3px solid #d9dde5;
     color: #6b7280;
-  }
-  .transcript-message--user .transcript-message__bubble blockquote {
-    border-left-color: rgba(255, 255, 255, 0.45);
-    color: rgba(255, 255, 255, 0.9);
   }
   .transcript-message__bubble hr { margin: 10px 0; border: 0; border-top: 1px solid #d9dde5; }
 
@@ -314,12 +300,10 @@ export async function exportChatTranscript(chat, messages = []) {
 
   for (const message of printable) {
     const isUser = message.role === 'user'
-    const roleLabel = isUser ? 'You' : 'Assistant'
     const body = await markdownToHtmlWithCharts(message.content)
 
     parts.push(`
       <section class="transcript-message transcript-message--${isUser ? 'user' : 'assistant'}">
-        <div class="transcript-message__role">${roleLabel}</div>
         <div class="transcript-message__bubble">
           ${body}
         </div>
