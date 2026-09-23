@@ -9,7 +9,7 @@
  * Dependency-free: walks the hast tree directly instead of pulling in
  * unist-util-visit.
  */
-const CITATION = /\[(\d+)\]/g
+const CITATION = /\s*\[\d+\](?:\s*\[\d+\])*/g
 
 function transformChildren(node) {
   if (!node.children || node.children.length === 0) return
@@ -24,12 +24,6 @@ function transformChildren(node) {
         if (match.index > last) {
           next.push({ type: 'text', value: child.value.slice(last, match.index) })
         }
-        next.push({
-          type: 'element',
-          tagName: 'sup',
-          properties: { className: ['citation-ref'] },
-          children: [{ type: 'text', value: match[0] }],
-        })
         last = match.index + match[0].length
       }
       if (last < child.value.length) {

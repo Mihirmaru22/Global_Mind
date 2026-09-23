@@ -150,12 +150,12 @@
 /* ── Inline code ─────────────────────────────────────────────────── */
 .markdown :not(pre) > code {
   font-family: var(--font-mono);
-  font-size: 13px;
-  padding: 0.15em 0.45em;
-  border-radius: 6px;
-  background: rgba(84, 93, 241, 0.16);
-  color: #FFFFFF;
-  border: 1px solid rgba(84, 93, 241, 0.28);
+  font-size: 0.9em;
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: var(--color-control);
+  color: var(--color-text-soft);
+  border: 1px solid var(--color-border);
   word-break: break-word;
   white-space: pre-wrap;
 }
@@ -321,11 +321,12 @@
 .markdown-table {
   display: table;
   width: 100%;
-  border-collapse: collapse;
-  border-radius: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 8px;
   overflow: hidden;
-  background: #1E2533;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
   font-family: var(--font-ui);
   font-size: 13.5px;
 }
@@ -335,18 +336,25 @@
 }
 
 .markdown-table th {
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border-strong);
   padding: 10px 14px;
   text-align: left;
   font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 600;
-  color: #FFFFFF;
+  color: var(--color-text);
+  background: var(--color-control);
   white-space: nowrap;
 }
 
+.markdown-table th:last-child {
+  border-right: 0;
+}
+
 .markdown-table td {
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
   padding: 10px 14px;
   text-align: left;
   font-family: var(--font-ui);
@@ -354,6 +362,14 @@
   font-weight: 400;
   color: var(--color-text-soft);
   line-height: 1.45;
+}
+
+.markdown-table td:last-child {
+  border-right: 0;
+}
+
+.markdown-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .markdown-table td code {

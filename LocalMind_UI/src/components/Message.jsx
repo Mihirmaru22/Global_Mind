@@ -246,6 +246,8 @@ export default function Message({
   const submitFeedbackComment = useAppStore((state) => state.submitFeedbackComment)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedbackText, setFeedbackText] = useState('')
+  const [feedbackOtherOpen, setFeedbackOtherOpen] = useState(false)
+  const [feedbackKind, setFeedbackKind] = useState(null)
   const [pdfDialogOpen, setPdfDialogOpen] = useState(false)
   const [recordCountInput, setRecordCountInput] = useState('')
 
@@ -339,6 +341,8 @@ export default function Message({
     setMessageFeedback(chatId, message.id, value)
     setFeedbackOpen(true)
     setFeedbackText('')
+    setFeedbackOtherOpen(false)
+    setFeedbackKind(value)
   }
 
   const handleFeedbackSubmit = () => {
@@ -347,6 +351,8 @@ export default function Message({
     }
     setFeedbackOpen(false)
     setFeedbackText('')
+    setFeedbackOtherOpen(false)
+    setFeedbackKind(null)
   }
 
   const handleOpenPdfDialog = () => {
@@ -612,23 +618,93 @@ export default function Message({
 
           {feedbackOpen && (
             <motion.div
-              className="message__feedback"
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
+              className="message__feedback-popover"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.12 }}
             >
-              <input
-                className="message__feedback-input"
-                placeholder="What was wrong? (optional)"
-                value={feedbackText}
-                onChange={(e) => setFeedbackText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleFeedbackSubmit()}
-              />
-              <button className="message__feedback-submit" onClick={handleFeedbackSubmit}>
-                Send
-              </button>
-              <button className="message__feedback-skip" onClick={() => setFeedbackOpen(false)}>
-                Skip
-              </button>
+              {feedbackKind === 'down' ? (
+                <>
+                  <div className="message__feedback-popover-title">What wasn't helpful?</div>
+
+                  <div className="message__feedback-options">
+                    {['Incorrect information', 'Not relevant', 'Incomplete answer', 'Poor formatting'].map(
+                      (reason) => (
+                        <button
+                          key={reason}
+                          type="button"
+                          className={clsx(
+                            'message__feedback-option',
+                            feedbackText === reason && 'message__feedback-option--active',
+                          )}
+                          onClick={() => {
+                            setFeedbackText(reason)
+                            setFeedbackOtherOpen(false)
+                          }}
+                        >
+                          {reason}
+                        </button>
+                      ),
+                    )}
+
+                    <button
+                      type="button"
+                      className={clsx('message__feedback-option', feedbackOtherOpen && 'message__feedback-option--active')}
+                      onClick={() => {
+                        setFeedbackOtherOpen(true)
+                        setFeedbackText('')
+                      }}
+                    >
+                      Other
+                    </button>
+                  </div>
+
+                  {feedbackOtherOpen ? (
+                    <input
+                      className="message__feedback-other"
+                      placeholder="Tell us what went wrong..."
+                      value={feedbackText}
+                      onChange={(event) => setFeedbackText(event.target.value)}
+                      autoFocus
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <div className="message__feedback-popover-title">Anything you'd like to add? (optional)</div>
+                  <input
+                    className="message__feedback-other"
+                    placeholder="Tell us what you liked..."
+                    value={feedbackText}
+                    onChange={(event) => setFeedbackText(event.target.value)}
+                    onKeyDown={(event) => event.key === 'Enter' && handleFeedbackSubmit()}
+                    autoFocus
+                  />
+                </>
+              )}
+
+              <div className="message__feedback-popover-actions">
+                <button
+                  type="button"
+                  className="message__feedback-cancel"
+                  onClick={() => {
+                    setFeedbackOpen(false)
+                    setFeedbackText('')
+                    setFeedbackOtherOpen(false)
+                    setFeedbackKind(null)
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="message__feedback-submit"
+                  onClick={handleFeedbackSubmit}
+                  disabled={feedbackKind === 'down' && !feedbackText.trim()}
+                >
+                  Submit
+                </button>
+              </div>
             </motion.div>
           )}
         </div>
