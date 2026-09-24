@@ -112,10 +112,12 @@ function splitMessageContent(rawText, sqlPayload) {
     text = text.slice(0, refMatch.index).trim()
   }
 
-  // 2. Extract SQL Block if present: SQL Query Executed: `...`
-  const sqlMatch = text.match(/SQL Query Executed:\s*`([\s\S]+?)`([\s\S]*)$/)
+  // 2. Extract SQL result block.
+  // SQL Query Executed belongs ONLY inside DatabaseResultCard.
+  // It must never remain in the normal Markdown answer body.
+  const sqlMatch = text.match(/SQL Query Executed:\s*`([\s\S]*?)`([\s\S]*)$/i)
   if (sqlMatch) {
-    const rawSql = sqlMatch[1].trim()
+    const rawSql = sqlMatch[1].replace(/\s+/g, ' ').trim()
     const tableSection = sqlMatch[2].trim()
 
     if (!dbPayload) {
@@ -153,13 +155,18 @@ function splitMessageContent(rawText, sqlPayload) {
         rows,
         row_count: rows.length,
       }
+    } else if (!dbPayload.query) {
+      // Keep the structured backend payload authoritative, but fill its
+      // query if the query only exists in the answer text.
+      dbPayload = { ...dbPayload, query: rawSql }
     }
 
     // Strip the raw SQL block from the main text so it doesn't render twice!
     text = text.slice(0, sqlMatch.index).trim()
   } else if (dbPayload) {
-    // If structured payload was attached, remove any trailing markdown table or SQL text from mainText
-    text = text.replace(/SQL Query Executed:\s*`[\s\S]+?`[\s\S]*$/, '').trim()
+    // Structured SQL payload exists, so raw SQL must never be rendered
+    // as normal answer Markdown, regardless of where it appears.
+    text = text.replace(/(?:^|\n)\s*SQL Query Executed:\s*`[\s\S]*$/i, '').trim()
   }
 
   return { mainText: text, dbPayload, referencesText }
