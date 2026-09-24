@@ -388,30 +388,29 @@ class Generator:
                 usage=self._router.usage.model_copy(),
                 sql_payload=sql_payload,
             )
-        # Hybrid mode: SQL + doc chunks — build a split prompt so the LLM sees
-        # actual database results alongside document passages without masking.
+        # Hybrid mode: SQL + doc chunks — live database results are kept strictly
+        # private within our infrastructure and never sent to the LLM. Only document
+        # context is sent to the LLM to answer the document/conceptual aspect of the query,
+        # and the exact, authoritative SQL result table is attached directly to the final response.
         if sql_table_md and has_other_chunks:
             doc_chunks_only = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
             doc_context = _build_context(doc_chunks_only) if doc_chunks_only else ""
+            if not doc_context:
+                return QueryResult(
+                    query=query,
+                    answer=sql_table_md,
+                    citations=[],
+                    model_used="sql/direct",
+                    reasoning_task=task,
+                    chunks_retrieved=len(chunks),
+                    chunks_after_rerank=len(chunks),
+                    usage=self._router.usage.model_copy(),
+                    sql_payload=sql_payload,
+                )
             system_prompt = _build_system_prompt(task, source_mode)
-            # Embed the SQL table inline (truncated to 2000 chars to save tokens)
-            sql_section = sql_table_md[:2000]
-            if doc_context:
-                user_prompt = f"""Live Database Results:
----
-{sql_section}
----
-
-Supporting Document Passages:
+            user_prompt = f"""Context (retrieved document chunks):
 ---
 {doc_context}
----
-
-Question: {query}"""
-            else:
-                user_prompt = f"""Live Database Results:
----
-{sql_section}
 ---
 
 Question: {query}"""
@@ -576,30 +575,31 @@ Question: {query}"""
             )
             return
 
-        # Hybrid mode: SQL + doc chunks — build a split prompt so the LLM sees
-        # actual database results alongside document passages without masking.
+        # Hybrid mode: SQL + doc chunks — live database results are kept strictly
+        # private within our infrastructure and never sent to the LLM. Only document
+        # context is sent to the LLM to answer the document/conceptual aspect of the query,
+        # and the exact, authoritative SQL result table is attached directly to the final response.
         if sql_table_md and has_other_chunks:
             doc_chunks_only = [c for c in context_chunks if c.chunk.chunk_type != ChunkType.SQL_RESULT]
             doc_context = _build_context(doc_chunks_only) if doc_chunks_only else ""
+            if not doc_context:
+                yield sql_table_md
+                yield QueryResult(
+                    query=query,
+                    answer=sql_table_md,
+                    citations=[],
+                    model_used="sql/direct",
+                    reasoning_task=task,
+                    chunks_retrieved=len(chunks),
+                    chunks_after_rerank=len(chunks),
+                    usage=self._router.usage.model_copy(),
+                    sql_payload=sql_payload,
+                )
+                return
             system_prompt = _build_system_prompt(task, source_mode)
-            # Embed the SQL table inline (truncated to 2000 chars to save tokens)
-            sql_section = sql_table_md[:2000]
-            if doc_context:
-                user_prompt = f"""Live Database Results:
----
-{sql_section}
----
-
-Supporting Document Passages:
+            user_prompt = f"""Context (retrieved document chunks):
 ---
 {doc_context}
----
-
-Question: {query}"""
-            else:
-                user_prompt = f"""Live Database Results:
----
-{sql_section}
 ---
 
 Question: {query}"""
@@ -637,6 +637,8 @@ Question: {query}"""
                 clean_answer = f"{parts[0].rstrip()}\n\n{sql_table_md}\n\n**References**{parts[1]}"
             else:
                 clean_answer = f"{clean_answer.rstrip()}\n\n{sql_table_md}"
+            # Stream the SQL table chunk so streaming clients receive the live table
+            yield f"\n\n{sql_table_md}\n\n"
 
         yield QueryResult(
             query=query,
@@ -931,11 +933,10 @@ _MODE_INSTRUCTIONS = {
         "introduction. Do not speculate beyond what the data shows."
     ),
     "both": (
-        "The context contains BOTH live database results AND document passages. "
-        "The user query may be a hybrid or multi-part inquiry asking about both domains "
-        "(e.g., operational metrics/counts from the database, and policies, definitions, or entity facts from documents). "
-        "You MUST address BOTH aspects of the question clearly and symmetrically. Never omit the document question in favor of the database table, and never fabricate facts. "
-        "Cite document sources with their bracketed markers (e.g. [1]). If information for either half is missing, explicitly disclose that for that specific part while answering the other."
+        "The user query is a hybrid or multi-part inquiry asking about both database metrics and document information. "
+        "The live database query results are handled directly by our system and appended automatically to the final response. "
+        "Focus your response entirely on answering the document and conceptual aspects of the question accurately using the provided document excerpts. "
+        "Cite document sources with their bracketed markers (e.g. [1]). Do not invent or fabricate database figures or operational numbers."
     ),
     "doc_only": "",  # existing prompt works as-is
 }

@@ -326,6 +326,51 @@ async def test_sql_plus_document_blends_prose_and_appends_exact_table(
     assert result.model_used == "mock/model"
     assert mock_router.chat.await_count >= 1
 
+    # Ensure live database results are strictly kept private and NEVER passed to the LLM prompt
+    call_kwargs = mock_router.chat.call_args.kwargs
+    messages = call_kwargs.get("messages", [])
+    prompt_content = " ".join(m.get("content", "") for m in messages)
+    assert sql_table not in prompt_content
+    assert "Live Database Results:" not in prompt_content
+    assert "Alice" not in prompt_content
+    assert "Bob" not in prompt_content
+
+
+@pytest.mark.asyncio
+async def test_sql_plus_document_blends_streaming_keeps_sql_private(
+    mock_router, mock_store, mock_embeddings
+):
+    sql_table = _sql_table_md()
+    sql_retrieved = _sql_retrieved()
+    vector_retrieved = _doc_retrieved()
+
+    async def _mock_stream(*args, **kwargs):
+        messages = kwargs.get("messages", [])
+        prompt_content = " ".join(m.get("content", "") for m in messages)
+        assert sql_table not in prompt_content
+        assert "Alice" not in prompt_content
+        yield "Streaming answer for document context."
+
+    mock_router.chat_stream = _mock_stream
+    mock_store.search_hybrid = AsyncMock(return_value=[vector_retrieved])
+
+    pipeline = QueryPipeline(
+        router=mock_router,
+        vector_store=mock_store,
+        embedding_service=mock_embeddings,
+    )
+    pipeline._sql_retriever.retrieve = AsyncMock(return_value=[sql_retrieved])
+    pipeline._reranker.rerank = AsyncMock(return_value=[vector_retrieved])
+
+    chunks = []
+    async for chunk in pipeline.query_stream("Show me the live database results"):
+        chunks.append(chunk)
+
+    final_result = [c for c in chunks if isinstance(c, QueryResult)][0]
+    assert "Streaming answer for document context." in final_result.answer
+    assert sql_table in final_result.answer
+    assert final_result.sql_payload is not None
+
 
 @pytest.mark.asyncio
 async def test_sql_only_no_documents_returns_table_direct(
